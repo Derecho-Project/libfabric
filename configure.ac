@@ -906,6 +906,7 @@ FI_PROVIDER_SETUP([psm2])
 FI_PROVIDER_SETUP([psm3])
 FI_PROVIDER_SETUP([sockets])
 FI_PROVIDER_SETUP([verbs])
+FI_PROVIDER_SETUP([dpdk])
 FI_PROVIDER_SETUP([efa])
 dnl The usnic provider must be setup after the verbs provider.  See
 dnl prov/usnic/configure.m4 for details.

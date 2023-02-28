@@ -144,7 +144,8 @@ linkback = src/libfabric.la
 bin_PROGRAMS = \
 	util/fi_info \
 	util/fi_strerror \
-	util/fi_pingpong
+	util/fi_pingpong \
+        util/fi_test
 
 bin_SCRIPTS =
 
@@ -159,6 +160,10 @@ util_fi_strerror_LDADD = $(linkback)
 util_fi_pingpong_SOURCES = \
 	util/pingpong.c
 util_fi_pingpong_LDADD = $(linkback)
+
+util_fi_test_SOURCES = \
+	util/test.c
+util_fi_test_LDADD = $(linkback)
 
 nodist_src_libfabric_la_SOURCES =
 src_libfabric_la_SOURCES =			\
@@ -445,6 +450,7 @@ EXTRA_DIST=
 include prov/sockets/Makefile.include
 include prov/udp/Makefile.include
 include prov/verbs/Makefile.include
+include prov/dpdk/Makefile.include
 include prov/efa/Makefile.include
 include prov/usnic/Makefile.include
 include prov/psm/Makefile.include
