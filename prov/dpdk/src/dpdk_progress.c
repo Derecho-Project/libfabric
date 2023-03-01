@@ -14,6 +14,29 @@ static struct ofi_sockapi dpdk_sockapi_socket = {
     .recvv = ofi_sockapi_recvv_socket,
 };
 
+void dpdk_tx_queue_insert(struct dpdk_ep *ep, struct dpdk_xfer_entry *tx_entry) {
+
+    printf("[dpdk_tx_queue_insert] UNIMPLEMENTED\n");
+    // struct dpdk_progress *progress;
+
+    // progress = dpdk_ep2_progress(ep);
+    // assert(dpdk_progress_locked(progress));
+
+    // if (!ep->cur_tx.entry) {
+    // 	ep->cur_tx.entry = tx_entry;
+    // 	ep->cur_tx.data_left = tx_entry->hdr.base_hdr.size;
+    // 	OFI_DBG_SET(tx_entry->hdr.base_hdr.id, ep->tx_id++);
+    // 	ep->hdr_bswap(ep, &tx_entry->hdr.base_hdr);
+    // 	dpdk_progress_tx(ep);
+    // 	if (dpdk_io_uring)
+    // 		dpdk_submit_uring(&progress->tx_uring);
+    // } else if (tx_entry->ctrl_flags & DPDK_INTERNAL_XFER) {
+    // 	slist_insert_tail(&tx_entry->entry, &ep->priority_queue);
+    // } else {
+    // 	slist_insert_tail(&tx_entry->entry, &ep->tx_queue);
+    // }
+}
+
 static int dpdk_init_uring(struct dpdk_uring *uring, size_t entries,
                            struct ofi_sockapi_uring *sockapi, struct ofi_dynpoll *dynpoll) {
     int ret = 0;
@@ -57,14 +80,106 @@ static void *dpdk_auto_progress(void *arg) {
     return NULL;
 }
 
-void dpdk_run_progress(struct dpdk_progress *progress, bool clear_signal) {
-    printf("UNIMPLEMENTED: dpdk_run_progress\n");
-    // struct ofi_epollfds_event events[DPDK_MAX_EVENTS];
-    // int                       nfds;
+void dpdk_progress_rx(struct dpdk_ep *ep) {
+    int ret;
 
-    // assert(ofi_genlock_held(progress->active_lock));
-    // nfds = ofi_dynpoll_wait(&progress->epoll_fd, events, DPDK_MAX_EVENTS, 0);
-    // dpdk_handle_events(progress, events, nfds, clear_signal);
+    // TODO: Implement
+    printf("UNIMPLEMENTED: dpdk_progress_rx\n");
+
+    // assert(dpdk_progress_locked(dpdk_ep2_progress(ep)));
+    // do {
+    //     if (ep->cur_rx.hdr_done < ep->cur_rx.hdr_len) {
+    //         ret = dpdk_recv_hdr(ep);
+    //     } else {
+    //         ret = ep->cur_rx.handler(ep);
+    //     }
+
+    //     if (OFI_SOCK_TRY_SND_RCV_AGAIN(-ret) || ret == -OFI_EINPROGRESS_URING)
+    //         break;
+
+    //     if (ep->cur_rx.entry)
+    //         dpdk_complete_rx(ep, ret);
+    //     else if (ret)
+    //         dpdk_ep_disable(ep, 0, NULL, 0);
+
+    // } while (!ret && ofi_bsock_readable(&ep->bsock));
+
+    // if (dpdk_io_uring) {
+    //     if (ret == -OFI_EINPROGRESS_URING)
+    //         dpdk_update_pollflag(ep, POLLIN, false);
+    //     else if (!ret || OFI_SOCK_TRY_SND_RCV_AGAIN(-ret))
+    //         dpdk_update_pollflag(ep, POLLIN, true);
+    // }
+}
+
+static void dpdk_submit_uring(struct dpdk_uring *uring) {
+    int submitted;
+    int ready;
+
+    assert(dpdk_io_uring);
+
+    ready = ofi_uring_sq_ready(&uring->ring);
+    if (!ready)
+        return;
+
+    submitted = ofi_uring_submit(&uring->ring);
+    assert(ready == submitted);
+}
+
+static void dpdk_handle_events(struct dpdk_progress *progress, struct ofi_epollfds_event *events,
+                               int nfds, bool clear_signal) {
+    struct fid *fid;
+    bool        pin, pout, perr;
+    int         i;
+
+    assert(ofi_genlock_held(progress->active_lock));
+    for (i = 0; i < nfds; i++) {
+        fid = events[i].data.ptr;
+        assert(fid);
+
+        pin  = events[i].events & POLLIN;
+        pout = events[i].events & POLLOUT;
+        perr = events[i].events & POLLERR;
+
+        switch (fid->fclass) {
+        case FI_CLASS_EP:
+            printf("UNIMPLEMENTED: dpdk_handle_events FI_CLASS_EP\n");
+            // dpdk_run_ep(events[i].data.ptr, pin, pout, perr);
+            break;
+        case FI_CLASS_PEP:
+            printf("UNIMPLEMENTED: dpdk_handle_events FI_CLASS_PEP\n");
+            // dpdk_accept_sock(events[i].data.ptr);
+            break;
+        case FI_CLASS_CONNREQ:
+            printf("UNIMPLEMENTED: dpdk_handle_events FI_CLASS_CONNREQ\n");
+            // dpdk_run_conn(events[i].data.ptr, pin, pout, perr);
+            break;
+        case DPDK_CLASS_URING:
+            printf("UNIMPLEMENTED: dpdk_handle_events DPDK_CLASS_URING\n");
+            // dpdk_progress_uring(progress, events[i].data.ptr);
+            break;
+        default:
+            assert(fid->fclass == DPDK_CLASS_PROGRESS);
+            if (clear_signal)
+                fd_signal_reset(&progress->signal);
+            break;
+        }
+    }
+
+    dpdk_handle_event_list(progress);
+    if (dpdk_io_uring) {
+        dpdk_submit_uring(&progress->tx_uring);
+        dpdk_submit_uring(&progress->rx_uring);
+    }
+}
+
+void dpdk_run_progress(struct dpdk_progress *progress, bool clear_signal) {
+    struct ofi_epollfds_event events[DPDK_MAX_EVENTS];
+    int                       nfds;
+
+    assert(ofi_genlock_held(progress->active_lock));
+    nfds = ofi_dynpoll_wait(&progress->epoll_fd, events, DPDK_MAX_EVENTS, 0);
+    dpdk_handle_events(progress, events, nfds, clear_signal);
 }
 
 int dpdk_start_progress(struct dpdk_progress *progress) {
@@ -216,6 +331,27 @@ err2:
 err1:
     fd_signal_free(&progress->signal);
     return ret;
+}
+
+void dpdk_progress(struct dpdk_progress *progress, bool clear_signal) {
+    ofi_genlock_lock(progress->active_lock);
+    dpdk_run_progress(progress, clear_signal);
+    ofi_genlock_unlock(progress->active_lock);
+}
+
+void dpdk_progress_all(struct dpdk_fabric *fabric) {
+    struct dpdk_domain *domain;
+    struct dlist_entry *item;
+
+    ofi_mutex_lock(&fabric->util_fabric.lock);
+    dlist_foreach(&fabric->util_fabric.domain_list, item) {
+        domain = container_of(item, struct dpdk_domain, util_domain.list_entry);
+        dpdk_progress(&domain->progress, false);
+    }
+
+    ofi_mutex_unlock(&fabric->util_fabric.lock);
+
+    dpdk_progress(&fabric->progress, false);
 }
 
 void dpdk_close_progress(struct dpdk_progress *progress) {

@@ -245,14 +245,16 @@ void do_server() {
     struct fid_ep        *ep;
     struct fid_eq        *eq;
 
-    // TODO: Now, we must find where the event below is generated and "simulate" the reception of a
-    // connection, thus obtaining a valid "event" to continue the creation of the active endpoint..
+    // TODO: We should get an async event from the eq, but we don't have one yet!
+    // n_read = fi_eq_sread(g_ctxt.peq, &event, &entry, sizeof(entry), -1, 0);
+    // if (n_read != sizeof(entry)) {
+    //     printf("Failed to get connection from remote. n_read=%ld\n", n_read);
+    //     exit(2);
+    // }
 
-    n_read = fi_eq_sread(g_ctxt.peq, &event, &entry, sizeof(entry), -1, 0);
-    if (n_read != sizeof(entry)) {
-        printf("Failed to get connection from remote. n_read=%ld\n", n_read);
-        exit(2);
-    }
+    // Instead, we simulate the async event by hand-crafting the entry
+    entry.fid  = &(g_ctxt.pep->fid);
+    entry.info = fi_dupinfo(g_ctxt.fi);
 
     // Create active ep and associate it to serve the incoming connection
     if (init_active_ep(entry.info, &ep, &eq)) {
@@ -270,19 +272,19 @@ void do_server() {
         exit(2);
     }
 
-    // Synchronously read from the eq of the new endpoint
-    n_read = fi_eq_sread(eq, &event, &entry, sizeof(entry), -1, 0);
-    if (n_read != sizeof(entry)) {
-        printf("failed to connect remote. n_read=%ld.\n", n_read);
-        exit(2);
-    }
-
-    if (event != FI_CONNECTED || entry.fid != &(ep->fid)) {
-        fi_freeinfo(entry.info);
-        printf("Unexpected CM event: %d.\n", event);
-        exit(2);
-    }
-    fi_freeinfo(entry.info);
+    // TODO: We should get an async event from the eq, but we don't have one yet!
+    // // Synchronously read from the eq of the new endpoint
+    // n_read = fi_eq_sread(eq, &event, &entry, sizeof(entry), -1, 0);
+    // if (n_read != sizeof(entry)) {
+    //     printf("failed to connect remote. n_read=%ld.\n", n_read);
+    //     exit(2);
+    // }
+    // if (event != FI_CONNECTED || entry.fid != &(ep->fid)) {
+    //     fi_freeinfo(entry.info);
+    //     printf("Unexpected CM event: %d.\n", event);
+    //     exit(2);
+    // }
+    // fi_freeinfo(entry.info);
 
     // Server loop
     struct iovec  msg_iov;
@@ -332,17 +334,17 @@ void do_client() {
         exit(2);
     }
 
+    // TODO: We should get an async event from the eq, but we don't have one yet!
     // Get connection acceptance from the server
-    ssize_t n_read = fi_eq_sread(eq, &event, &entry, sizeof(entry), -1, 0);
-    if (n_read != sizeof(entry)) {
-        printf("failed to connect remote. n_read=%ld.\n", n_read);
-        exit(2);
-    }
-    // TODO: This check should be restored
-    if (event != FI_CONNECTED /* || entry.fid != &ep->fid*/) {
-        printf("RDMC Unexpected CM event: %d.\n", event);
-        exit(2);
-    }
+    // ssize_t n_read = fi_eq_sread(eq, &event, &entry, sizeof(entry), -1, 0);
+    // if (n_read != sizeof(entry)) {
+    //     printf("failed to connect remote. n_read=%ld.\n", n_read);
+    //     exit(2);
+    // }
+    // if (event != FI_CONNECTED || entry.fid != &ep->fid) {
+    //     printf("RDMC Unexpected CM event: %d.\n", event);
+    //     exit(2);
+    // }
 
     // Now the connection is open, I can send
     struct iovec  msg_iov;
@@ -355,6 +357,7 @@ void do_client() {
     msg.addr         = 0;
     msg.context      = NULL;
     msg.data         = 0;
+    msg.msg_iov      = &msg_iov;
 
     // Send message
     char input[8];
@@ -369,8 +372,6 @@ void do_client() {
 
         // Fill the buffer with random content
         memset(g_mr.buffer, 'a', msg_iov.iov_len);
-
-        // TODO: Now, we must implement the sendmsg() function.
 
         // Send
         ret = fi_sendmsg(ep, &msg, FI_COMPLETION);

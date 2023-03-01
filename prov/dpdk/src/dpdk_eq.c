@@ -1,14 +1,49 @@
 #include "fi_dpdk.h"
 
+/* If we don't have an EQ, then we're writing an event for an rdm ep.
+ * That goes directly on the rdm event list.
+ */
+int dpdk_eq_write(struct util_eq *eq, uint32_t event, const void *buf, size_t len, uint64_t flags) {
+    struct dpdk_event        *entry;
+    const struct fi_eq_entry *eq_event;
+    struct dpdk_rdm          *rdm;
+
+    /* If we don't have an EQ, then we're writing an event for an rdm ep.
+     * That goes directly on the rdm event list.
+     */
+    if (eq) {
+        return (int)fi_eq_write(&eq->eq_fid, event, buf, len, flags);
+    }
+
+    eq_event = buf;
+    if (eq_event->fid->fclass == FI_CLASS_EP) {
+        rdm = ((struct dpdk_conn *)eq_event->fid->context)->rdm;
+    } else {
+        assert(eq_event->fid->fclass == FI_CLASS_PEP);
+        rdm = eq_event->fid->context;
+    }
+
+    assert(rdm->util_ep.ep_fid.fid.fclass == FI_CLASS_EP);
+    assert(dpdk_progress_locked(dpdk_rdm2_progress(rdm)));
+    entry = malloc(sizeof(*entry) + len);
+    if (!entry)
+        return -FI_ENOMEM;
+
+    entry->rdm   = rdm;
+    entry->event = event;
+    memcpy(&entry->cm_entry, buf, len);
+    slist_insert_tail(&entry->list_entry, &dpdk_rdm2_progress(rdm)->event_list);
+    return 0;
+}
+
 static ssize_t dpdk_eq_read(struct fid_eq *eq_fid, uint32_t *event, void *buf, size_t len,
                             uint64_t flags) {
-    struct util_eq *eq;
+    struct dpdk_fabric *fabric;
+    struct dpdk_eq     *eq;
 
-    eq = container_of(eq_fid, struct util_eq, eq_fid);
-
-    // TODO: This function should be implemented!!
-    printf("[dpdk_eq_read] UNIMPLEMENTED\n");
-    // dpdk_conn_mgr_run(eq);
+    eq     = container_of(eq_fid, struct dpdk_eq, util_eq.eq_fid);
+    fabric = container_of(eq->util_eq.fabric, struct dpdk_fabric, util_fabric);
+    dpdk_progress_all(fabric);
 
     return ofi_eq_read(eq_fid, event, buf, len, flags);
 }
@@ -44,7 +79,7 @@ static struct fi_ops_eq dpdk_eq_ops = {
     .size     = sizeof(struct fi_ops_eq),
     .read     = dpdk_eq_read,
     .readerr  = ofi_eq_readerr,
-    .sread    = dummy_sread, // ofi_eq_sread, TODO: replace with ofi_eq_sread!!!
+    .sread    = ofi_eq_sread, // dummy_sread,  TODO: replace with ofi_eq_sread!!!
     .write    = ofi_eq_write,
     .strerror = ofi_eq_strerror,
 };

@@ -31,7 +31,6 @@
 #define DPDK_RX_OP_FLAGS (FI_COMPLETION)
 
 #define DPDK_MAX_INJECT 128
-#define DPDK_IOV_LIMIT  8
 
 static struct fi_tx_attr dpdk_tx_attr = {
     .caps          = DPDK_EP_CAPS | DPDK_TX_CAPS,

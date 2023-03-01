@@ -7,6 +7,9 @@
 
 #include <ofi_util.h>
 
+// Defined in a separate file
+extern struct fi_ops_msg dpdk_msg_ops;
+
 static int dpdk_ep_bind(struct fid *fid, struct fid *bfid, uint64_t flags) {
     struct dpdk_ep  *ep;
     struct dpdk_srx *srx;
@@ -102,6 +105,12 @@ static int dpdk_ep_connect(struct fid_ep *ep_fid, const void *addr, const void *
     return 0;
 }
 
+static int dpdk_ep_accept(struct fid_ep *ep, const void *param, size_t paramlen) {
+
+    printf("[dpdk_ep_accept] UNIMPLEMENTED\n");
+    return 0;
+}
+
 static struct fi_ops_cm dpdk_cm_ops = {
     .size     = sizeof(struct fi_ops_cm),
     .setname  = fi_no_setname,
@@ -109,7 +118,7 @@ static struct fi_ops_cm dpdk_cm_ops = {
     .getpeer  = fi_no_getpeer, // TODO: Provide an implementation!
     .connect  = dpdk_ep_connect,
     .listen   = fi_no_listen,
-    .accept   = fi_no_accept, // TODO: Provide accept!
+    .accept   = dpdk_ep_accept,
     .reject   = fi_no_reject,
     .shutdown = fi_no_shutdown, // TODO: Provide shutdown!
     .join     = fi_no_join,
@@ -221,8 +230,8 @@ int dpdk_endpoint(struct fid_domain *domain, struct fi_info *info, struct fid_ep
     *ep_fid            = &ep->util_ep.ep_fid;
     (*ep_fid)->fid.ops = &dpdk_ep_fi_ops;
     // (*ep_fid)->ops     = &dpdk_ep_ops;
-    (*ep_fid)->cm = &dpdk_cm_ops;
-    //     (*ep_fid)->msg     = &dpdk_msg_ops;
+    (*ep_fid)->cm  = &dpdk_cm_ops;
+    (*ep_fid)->msg = &dpdk_msg_ops;
     //     (*ep_fid)->rma     = &dpdk_rma_ops;
     //     (*ep_fid)->tagged  = &dpdk_tagged_ops;
 
@@ -242,7 +251,7 @@ static int dpdk_pep_close(struct fid *fid) {
     return 0;
 }
 
-static int dpdk_pep_bind(struct fid *fid) {
+static int dpdk_pep_bind(struct fid *fid, struct fid *bfid, uint64_t flags) {
 
     printf("[dpdk_pep_bind] UNIMPLEMENTED\n");
     return 0;
@@ -255,7 +264,7 @@ static int dpdk_pep_setname(fid_t fid, void *addr, size_t addrlen) {
     return 0;
 }
 
-static int dpdk_pep_getname(fid_t fid, void *addr, size_t addrlen) {
+static int dpdk_pep_getname(fid_t fid, void *addr, size_t *addrlen) {
 
     printf("[dpdk_pep_getname] UNIMPLEMENTED\n");
     strncpy(addr, "dummy_address", 14);

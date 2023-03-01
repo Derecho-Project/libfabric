@@ -9,7 +9,9 @@ _dpdk_files = \
     prov/dpdk/src/dpdk_eq.c \
     prov/dpdk/src/dpdk_cq.c \
     prov/dpdk/src/dpdk_shared_ctx.c \
-    prov/dpdk/src/dpdk_progress.c
+    prov/dpdk/src/dpdk_progress.c \
+    prov/dpdk/src/dpdk_msg.c   \
+    prov/dpdk/src/dpdk_rdm_cm.c
 
 if HAVE_DPDK_DL
 pkglib_LTLIBRARIES += libdpdk-fi.la
