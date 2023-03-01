@@ -144,8 +144,11 @@ struct fi_info dpdk_info = {.next = &dpdk_srx_info,
  * through ofi_alter_info
  */
 
-size_t dpdk_default_tx_size = 256;
-size_t dpdk_default_rx_size = 256;
+size_t dpdk_default_tx_size  = 256; // TODO: What is this?
+size_t dpdk_default_rx_size  = 256; // TODO: What is this?
+int    dpdk_disable_autoprog = 1;   // TODO: What is this?
+int    dpdk_io_uring         = 0;   // TODO: What is this?
+size_t dpdk_max_inject       = 128; // TODO: What is this?
 
 static void dpdk_alter_defaults(uint32_t version, const struct fi_info *hints,
                                 const struct fi_info *base_info, struct fi_info *dest_info) {

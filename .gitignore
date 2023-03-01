@@ -61,6 +61,7 @@ config/test-driver
 util/fi_info
 util/fi_strerror
 util/fi_pingpong
+util/fi_test
 
 prov/*/*.spec
 
@@ -87,3 +88,4 @@ fabtests/pytest/*/__pycache__
 prov/efa/docs/doxygen/html
 prov/efa/docs/doxygen/latex
 
+.clang-format

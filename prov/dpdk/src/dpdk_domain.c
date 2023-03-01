@@ -19,27 +19,6 @@ static struct fi_ops_domain dpdk_domain_ops = {
     .query_collective = fi_no_query_collective,
 };
 
-static int dpdk_set_ops(struct fid *fid, const char *name, uint64_t flags, void *ops,
-                        void *context) {
-    struct dpdk_domain *domain;
-
-    domain = container_of(fid, struct dpdk_domain, util_domain.domain_fid.fid);
-    if (flags)
-        return -FI_EBADFLAGS;
-
-    if (!strcasecmp(name, OFI_OPS_DYNAMIC_RBUF)) {
-        domain->dynamic_rbuf = ops;
-        if (domain->dynamic_rbuf->size != sizeof(*domain->dynamic_rbuf)) {
-            domain->dynamic_rbuf = NULL;
-            return -FI_ENOSYS;
-        }
-
-        return 0;
-    }
-
-    return -FI_ENOSYS;
-}
-
 static int dpdk_domain_close(fid_t fid) {
     struct dpdk_domain *domain;
     int                 ret;
@@ -60,8 +39,8 @@ static struct fi_ops dpdk_domain_fi_ops = {
     .bind     = ofi_domain_bind,
     .control  = fi_no_control,
     .ops_open = fi_no_ops_open,
-    .tostr    = NULL,
-    .ops_set  = dpdk_set_ops,
+    .tostr    = fi_no_tostr,
+    .ops_set  = fi_no_ops_set,
 };
 
 static struct fi_ops_mr dpdk_domain_fi_ops_mr = {
@@ -71,25 +50,67 @@ static struct fi_ops_mr dpdk_domain_fi_ops_mr = {
     .regattr = ofi_mr_regattr,
 };
 
-int dpdk_domain_open(struct fid_fabric *fabric, struct fi_info *info,
+static int dpdk_add_wait_eq_list(struct dpdk_domain *domain) {
+    struct dpdk_fabric *fabric;
+    struct dpdk_eq     *eq;
+    struct dlist_entry *error_item;
+    struct dlist_entry *item;
+    int                 ret;
+
+    fabric = container_of(domain->util_domain.fabric, struct dpdk_fabric, util_fabric.fabric_fid);
+
+    ofi_mutex_lock(&fabric->util_fabric.lock);
+    dlist_foreach(&fabric->wait_eq_list, item) {
+        eq  = container_of(item, struct dpdk_eq, wait_eq_entry);
+        ret = dpdk_eq_add_progress(eq, &domain->progress, &domain->util_domain.domain_fid);
+        if (ret) {
+            error_item = item;
+            goto clean;
+        }
+    }
+    ofi_mutex_unlock(&fabric->util_fabric.lock);
+    return FI_SUCCESS;
+
+clean:
+    /* Traverse the list backwards from where the error occurred */
+    dlist_foreach_reverse(error_item, item) {
+        eq = container_of(item, struct dpdk_eq, wait_eq_entry);
+        dpdk_eq_del_progress(eq, &domain->progress);
+    }
+    ofi_mutex_unlock(&fabric->util_fabric.lock);
+    return ret;
+}
+
+int dpdk_domain_open(struct fid_fabric *fabric_fid, struct fi_info *info,
                      struct fid_domain **domain_fid, void *context) {
+    struct dpdk_fabric *fabric;
     struct dpdk_domain *domain;
     int                 ret;
 
-    ret = ofi_prov_check_info(&dpdk_util_prov, fabric->api_version, info);
-    if (ret) {
+    fabric = container_of(fabric_fid, struct dpdk_fabric, util_fabric.fabric_fid);
+    ret    = ofi_prov_check_info(&dpdk_util_prov, fabric_fid->api_version, info);
+    if (ret)
         return ret;
-    }
 
     domain = calloc(1, sizeof(*domain));
-    if (!domain) {
+    if (!domain)
         return -FI_ENOMEM;
-    }
 
-    ret = ofi_domain_init(fabric, info, &domain->util_domain, context, OFI_LOCK_MUTEX);
-    if (ret) {
-        goto err;
+    ret = ofi_domain_init(fabric_fid, info, &domain->util_domain, context, OFI_LOCK_NONE);
+    if (ret)
+        goto free;
+
+    ret = dpdk_init_progress(&domain->progress, info);
+    if (ret)
+        goto close;
+
+    if (fabric->progress.auto_progress) {
+        ret = dpdk_start_progress(&domain->progress);
+    } else {
+        ret = dpdk_add_wait_eq_list(domain);
     }
+    if (ret)
+        goto close_prog;
 
     domain->util_domain.domain_fid.fid.ops = &dpdk_domain_fi_ops;
     domain->util_domain.domain_fid.ops     = &dpdk_domain_ops;
@@ -97,7 +118,12 @@ int dpdk_domain_open(struct fid_fabric *fabric, struct fi_info *info,
     *domain_fid                            = &domain->util_domain.domain_fid;
 
     return FI_SUCCESS;
-err:
+
+close_prog:
+    dpdk_close_progress(&domain->progress);
+close:
+    (void)ofi_domain_close(&domain->util_domain);
+free:
     free(domain);
     return ret;
 }

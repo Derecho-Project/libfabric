@@ -8,7 +8,8 @@ _dpdk_files = \
     prov/dpdk/src/dpdk_ep.c \
     prov/dpdk/src/dpdk_eq.c \
     prov/dpdk/src/dpdk_cq.c \
-    prov/dpdk/src/dpdk_shared_ctx.c
+    prov/dpdk/src/dpdk_shared_ctx.c \
+    prov/dpdk/src/dpdk_progress.c
 
 if HAVE_DPDK_DL
 pkglib_LTLIBRARIES += libdpdk-fi.la

@@ -28,11 +28,23 @@ static int dpdk_eq_close(struct fid *fid) {
     return 0;
 }
 
+static ssize_t dummy_sread(struct fid_eq *eq_fid, uint32_t *event, void *buf, size_t len,
+                           int timeout, uint64_t flags) {
+    // TODO: This is the correct implementation, but to test the current implementation, we are just
+    // returning an expected value. The correct implementatino is ofi_eq_sread. But at that point,
+    // the EQ mechanism must be implemented!
+    printf("[DUMMY SREAD] UNIMPLEMENTED!\n");
+
+    *event = FI_CONNECTED;
+
+    return 16;
+}
+
 static struct fi_ops_eq dpdk_eq_ops = {
     .size     = sizeof(struct fi_ops_eq),
     .read     = dpdk_eq_read,
     .readerr  = ofi_eq_readerr,
-    .sread    = ofi_eq_sread,
+    .sread    = dummy_sread, // ofi_eq_sread, TODO: replace with ofi_eq_sread!!!
     .write    = ofi_eq_write,
     .strerror = ofi_eq_strerror,
 };
@@ -44,6 +56,20 @@ static struct fi_ops dpdk_eq_fi_ops = {
     .control  = ofi_eq_control,
     .ops_open = fi_no_ops_open,
 };
+
+static int dpdk_eq_wait_try_func(void *arg) {
+    OFI_UNUSED(arg);
+    return FI_SUCCESS;
+}
+
+int dpdk_eq_add_progress(struct dpdk_eq *eq, struct dpdk_progress *progress, void *context) {
+    return ofi_wait_add_fd(eq->util_eq.wait, ofi_dynpoll_get_fd(&progress->epoll_fd), POLLIN,
+                           dpdk_eq_wait_try_func, NULL, context);
+}
+
+int dpdk_eq_del_progress(struct dpdk_eq *eq, struct dpdk_progress *progress) {
+    return ofi_wait_del_fd(eq->util_eq.wait, ofi_dynpoll_get_fd(&progress->epoll_fd));
+}
 
 int dpdk_eq_create(struct fid_fabric *fabric_fid, struct fi_eq_attr *attr, struct fid_eq **eq_fid,
                    void *context) {

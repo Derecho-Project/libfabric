@@ -42,24 +42,30 @@ int dpdk_create_fabric(struct fi_fabric_attr *attr, struct fid_fabric **fabric_f
     struct dpdk_fabric *fabric;
     int                 ret;
 
-    fabric = calloc(1, sizeof(struct dpdk_fabric));
-    if (!fabric) {
+    fabric = calloc(1, sizeof(*fabric));
+    if (!fabric)
         return -FI_ENOMEM;
-    }
+
+    dlist_init(&fabric->wait_eq_list);
 
     ret = ofi_fabric_init(&dpdk_prov, dpdk_util_prov.info->fabric_attr, attr, &fabric->util_fabric,
                           context);
-    if (ret) {
-        printf("ofi_fabric_init failed: %s\n", fi_strerror(-ret));
-        free(fabric);
-        return ret;
-    }
+    if (ret)
+        goto free;
+
+    ret = dpdk_init_progress(&fabric->progress, NULL);
+    if (ret)
+        goto close;
 
     fabric->util_fabric.fabric_fid.fid.ops = &dpdk_fabric_fi_ops;
     fabric->util_fabric.fabric_fid.ops     = &dpdk_fabric_ops;
     *fabric_fid                            = &fabric->util_fabric.fabric_fid;
 
-    printf("dpdk_create_fabric successful\n");
-
     return 0;
+
+close:
+    (void)ofi_fabric_close(&fabric->util_fabric);
+free:
+    free(fabric);
+    return ret;
 }

@@ -1,76 +1,149 @@
 #include "fi_dpdk.h"
 
+static ssize_t dpdk_cq_readfrom(struct fid_cq *cq_fid, void *buf, size_t count,
+                                fi_addr_t *src_addr) {
+    struct dpdk_cq *cq;
+    ssize_t         ret;
+
+    cq = container_of(cq_fid, struct dpdk_cq, util_cq.cq_fid);
+    ofi_genlock_lock(dpdk_cq2_progress(cq)->active_lock);
+    ret = ofi_cq_readfrom(cq_fid, buf, count, src_addr);
+    ofi_genlock_unlock(dpdk_cq2_progress(cq)->active_lock);
+    return ret;
+}
+
+static ssize_t dpdk_cq_readerr(struct fid_cq *cq_fid, struct fi_cq_err_entry *buf, uint64_t flags) {
+    struct dpdk_cq *cq;
+    ssize_t         ret;
+
+    cq = container_of(cq_fid, struct dpdk_cq, util_cq.cq_fid);
+    ofi_genlock_lock(dpdk_cq2_progress(cq)->active_lock);
+    ret = ofi_cq_readerr(cq_fid, buf, flags);
+    ofi_genlock_unlock(dpdk_cq2_progress(cq)->active_lock);
+    return ret;
+}
+
+static int dpdk_cq_close(struct fid *fid) {
+    int             ret;
+    struct dpdk_cq *cq;
+
+    cq  = container_of(fid, struct dpdk_cq, util_cq.cq_fid.fid);
+    ret = ofi_cq_cleanup(&cq->util_cq);
+    if (ret)
+        return ret;
+
+    free(cq);
+    return 0;
+}
+
+static int dpdk_cq_control(struct fid *fid, int command, void *arg) {
+    struct util_cq *cq;
+    int             ret;
+
+    cq = container_of(fid, struct util_cq, cq_fid.fid);
+
+    switch (command) {
+    case FI_GETWAIT:
+    case FI_GETWAITOBJ:
+        if (!cq->wait)
+            return -FI_ENODATA;
+
+        ret = fi_control(&cq->wait->wait_fid.fid, command, arg);
+        break;
+    default:
+        return -FI_ENOSYS;
+    }
+
+    return ret;
+}
+
+static struct fi_ops dpdk_cq_fi_ops = {
+    .size     = sizeof(struct fi_ops),
+    .close    = dpdk_cq_close,
+    .bind     = fi_no_bind,
+    .control  = dpdk_cq_control,
+    .ops_open = fi_no_ops_open,
+};
+
+static struct fi_ops_cq dpdk_cq_ops = {
+    .size      = sizeof(struct fi_ops_cq),
+    .read      = ofi_cq_read,
+    .readfrom  = dpdk_cq_readfrom,
+    .readerr   = dpdk_cq_readerr,
+    .sread     = ofi_cq_sread,
+    .sreadfrom = ofi_cq_sreadfrom,
+    .signal    = ofi_cq_signal,
+    .strerror  = ofi_cq_strerror,
+};
+
+static void dpdk_cq_progress(struct util_cq *util_cq) {
+    struct dpdk_cq *cq;
+    cq = container_of(util_cq, struct dpdk_cq, util_cq);
+    dpdk_run_progress(dpdk_cq2_progress(cq), false);
+}
+
+static int dpdk_cq_wait_try_func(void *arg) {
+    OFI_UNUSED(arg);
+    return FI_SUCCESS;
+}
+
+static int dpdk_cq_add_progress(struct dpdk_cq *cq, struct dpdk_progress *progress, void *context) {
+    return ofi_wait_add_fd(cq->util_cq.wait, ofi_dynpoll_get_fd(&progress->epoll_fd), POLLIN,
+                           dpdk_cq_wait_try_func, NULL, context);
+}
+
 int dpdk_cq_open(struct fid_domain *domain, struct fi_cq_attr *attr, struct fid_cq **cq_fid,
                  void *context) {
-    // struct dpdk_cq   *cq;
-    // struct fi_cq_attr cq_attr;
-    int ret;
+    struct dpdk_fabric *fabric;
+    struct dpdk_cq     *cq;
+    struct fi_cq_attr   cq_attr;
+    int                 ret;
 
-    // TODO: Implementation of the completion queue
-    printf("[dpdk_cq_open] UNIMPLEMENTED\n");
+    cq = calloc(1, sizeof(*cq));
+    if (!cq)
+        return -FI_ENOMEM;
 
-    //     cq = calloc(1, sizeof(*cq));
-    //     if (!cq) {
-    //         return -FI_ENOMEM;
-    //     }
+    if (!attr->size)
+        attr->size = DPDK_DEF_CQ_SIZE;
 
-    //     if (!attr->size) {
-    //         attr->size = DPDK_DEF_CQ_SIZE;
-    //     }
+    if (attr->wait_obj == FI_WAIT_UNSPEC) {
+        cq_attr          = *attr;
+        cq_attr.wait_obj = FI_WAIT_POLLFD;
+        attr             = &cq_attr;
+    }
 
-    //     ret = ofi_bufpool_create(&cq->xfer_pool, sizeof(struct dpdk_xfer_entry), 16, 0, 1024, 0);
-    //     if (ret) {
-    //         goto free_cq;
-    //     }
+    ret = ofi_cq_init(&dpdk_prov, domain, attr, &cq->util_cq, &dpdk_cq_progress, context);
+    if (ret)
+        goto free_cq;
 
-    //     if (attr->wait_obj == FI_WAIT_NONE || attr->wait_obj == FI_WAIT_UNSPEC) {
-    //         cq_attr          = *attr;
-    //         cq_attr.wait_obj = FI_WAIT_POLLFD;
-    //         attr             = &cq_attr;
-    //     }
+    if (cq->util_cq.wait) {
+        fabric = container_of(cq->util_cq.domain->fabric, struct dpdk_fabric, util_fabric);
+        if (fabric->progress.auto_progress)
+            ret = dpdk_start_progress(dpdk_cq2_progress(cq));
+        else
+            ret = dpdk_cq_add_progress(cq, dpdk_cq2_progress(cq), &cq->util_cq.cq_fid);
+        if (ret)
+            goto cleanup;
+    }
 
-    //     ret = ofi_cq_init(&dpdk_prov, domain, attr, &cq->util_cq, &dpdk_cq_progress, context);
-    //     if (ret) {
-    //         goto destroy_pool;
-    //     }
+    *cq_fid            = &cq->util_cq.cq_fid;
+    (*cq_fid)->fid.ops = &dpdk_cq_fi_ops;
+    (*cq_fid)->ops     = &dpdk_cq_ops;
+    return 0;
 
-    //     *cq_fid            = &cq->util_cq.cq_fid;
-    //     (*cq_fid)->fid.ops = &dpdk_cq_fi_ops;
-    //     return 0;
-
-    // destroy_pool:
-    //     ofi_bufpool_destroy(cq->xfer_pool);
-    // free_cq:
-    //     free(cq);
+cleanup:
+    ofi_cq_cleanup(&cq->util_cq);
+free_cq:
+    free(cq);
     return ret;
 }
 
 int dpdk_cntr_open(struct fid_domain *fid_domain, struct fi_cntr_attr *attr,
                    struct fid_cntr **cntr_fid, void *context) {
-    // struct util_cntr   *cntr;
-    // struct fi_cntr_attr cntr_attr;
+
     int ret = 0;
 
     printf("[dpdk_cntr_open] UNIMPLEMENTED\n");
 
-    //     cntr = calloc(1, sizeof(*cntr));
-    //     if (!cntr)
-    //         return -FI_ENOMEM;
-
-    //     if (attr->wait_obj == FI_WAIT_NONE || attr->wait_obj == FI_WAIT_UNSPEC) {
-    //         cntr_attr          = *attr;
-    //         cntr_attr.wait_obj = FI_WAIT_POLLFD;
-    //         attr               = &cntr_attr;
-    //     }
-
-    //     ret = ofi_cntr_init(&dpdk_prov, fid_domain, attr, cntr, &dpdk_cntr_progress, context);
-    //     if (ret)
-    //         goto free;
-
-    //     *cntr_fid = &cntr->cntr_fid;
-    //     return FI_SUCCESS;
-
-    // free:
-    //     free(cntr);
     return ret;
 }
