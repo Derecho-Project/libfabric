@@ -2,24 +2,28 @@
 
 static ssize_t dpdk_cq_readfrom(struct fid_cq *cq_fid, void *buf, size_t count,
                                 fi_addr_t *src_addr) {
-    struct dpdk_cq *cq;
-    ssize_t         ret;
+    struct dpdk_cq     *cq;
+    ssize_t             ret;
+    struct dpdk_domain *domain;
+    domain = container_of(cq->util_cq.domain, struct dpdk_domain, util_domain);
 
     cq = container_of(cq_fid, struct dpdk_cq, util_cq.cq_fid);
-    ofi_genlock_lock(dpdk_cq2_progress(cq)->active_lock);
+    ofi_genlock_lock(&domain->progress.lock);
     ret = ofi_cq_readfrom(cq_fid, buf, count, src_addr);
-    ofi_genlock_unlock(dpdk_cq2_progress(cq)->active_lock);
+    ofi_genlock_unlock(&domain->progress.lock);
     return ret;
 }
 
 static ssize_t dpdk_cq_readerr(struct fid_cq *cq_fid, struct fi_cq_err_entry *buf, uint64_t flags) {
-    struct dpdk_cq *cq;
-    ssize_t         ret;
+    struct dpdk_cq     *cq;
+    ssize_t             ret;
+    struct dpdk_domain *domain;
+    domain = container_of(cq->util_cq.domain, struct dpdk_domain, util_domain);
 
     cq = container_of(cq_fid, struct dpdk_cq, util_cq.cq_fid);
-    ofi_genlock_lock(dpdk_cq2_progress(cq)->active_lock);
+    ofi_genlock_lock(&domain->progress.lock);
     ret = ofi_cq_readerr(cq_fid, buf, flags);
-    ofi_genlock_unlock(dpdk_cq2_progress(cq)->active_lock);
+    ofi_genlock_unlock(&domain->progress.lock);
     return ret;
 }
 
@@ -79,17 +83,15 @@ static struct fi_ops_cq dpdk_cq_ops = {
 static void dpdk_cq_progress(struct util_cq *util_cq) {
     struct dpdk_cq *cq;
     cq = container_of(util_cq, struct dpdk_cq, util_cq);
-    dpdk_run_progress(dpdk_cq2_progress(cq), false);
+    printf("[dpdk_cq_progress] UNIMPLEMENTED\n");
+
+    // TODO: What am I supposed to put here?
+    // dpdk_run_progress(dpdk_cq2_progress(cq), false);
 }
 
 static int dpdk_cq_wait_try_func(void *arg) {
     OFI_UNUSED(arg);
     return FI_SUCCESS;
-}
-
-static int dpdk_cq_add_progress(struct dpdk_cq *cq, struct dpdk_progress *progress, void *context) {
-    return ofi_wait_add_fd(cq->util_cq.wait, ofi_dynpoll_get_fd(&progress->epoll_fd), POLLIN,
-                           dpdk_cq_wait_try_func, NULL, context);
 }
 
 int dpdk_cq_open(struct fid_domain *domain, struct fi_cq_attr *attr, struct fid_cq **cq_fid,
@@ -116,16 +118,6 @@ int dpdk_cq_open(struct fid_domain *domain, struct fi_cq_attr *attr, struct fid_
     if (ret)
         goto free_cq;
 
-    if (cq->util_cq.wait) {
-        fabric = container_of(cq->util_cq.domain->fabric, struct dpdk_fabric, util_fabric);
-        if (fabric->progress.auto_progress)
-            ret = dpdk_start_progress(dpdk_cq2_progress(cq));
-        else
-            ret = dpdk_cq_add_progress(cq, dpdk_cq2_progress(cq), &cq->util_cq.cq_fid);
-        if (ret)
-            goto cleanup;
-    }
-
     *cq_fid            = &cq->util_cq.cq_fid;
     (*cq_fid)->fid.ops = &dpdk_cq_fi_ops;
     (*cq_fid)->ops     = &dpdk_cq_ops;
@@ -135,15 +127,5 @@ cleanup:
     ofi_cq_cleanup(&cq->util_cq);
 free_cq:
     free(cq);
-    return ret;
-}
-
-int dpdk_cntr_open(struct fid_domain *fid_domain, struct fi_cntr_attr *attr,
-                   struct fid_cntr **cntr_fid, void *context) {
-
-    int ret = 0;
-
-    printf("[dpdk_cntr_open] UNIMPLEMENTED\n");
-
     return ret;
 }

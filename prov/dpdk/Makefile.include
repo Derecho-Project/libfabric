@@ -3,15 +3,13 @@ _dpdk_files = \
 	prov/dpdk/src/fi_dpdk.c	\
 	prov/dpdk/src/fi_dpdk.h \
     prov/dpdk/src/dpdk_fabric.c \
-    prov/dpdk/src/dpdk_attr.c \
+    prov/dpdk/src/dpdk_info.c \
     prov/dpdk/src/dpdk_domain.c \
     prov/dpdk/src/dpdk_ep.c \
     prov/dpdk/src/dpdk_eq.c \
     prov/dpdk/src/dpdk_cq.c \
-    prov/dpdk/src/dpdk_shared_ctx.c \
     prov/dpdk/src/dpdk_progress.c \
-    prov/dpdk/src/dpdk_msg.c   \
-    prov/dpdk/src/dpdk_rdm_cm.c
+    prov/dpdk/src/dpdk_msg.c  
 
 if HAVE_DPDK_DL
 pkglib_LTLIBRARIES += libdpdk-fi.la

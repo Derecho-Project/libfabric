@@ -1,22 +1,5 @@
 #include "fi_dpdk.h"
 
-#include <ifaddrs.h>
-#include <net/if.h>
-#include <poll.h>
-#include <sys/types.h>
-
-#include <ofi_util.h>
-
-// Declared in fi_dpdk.c
-extern struct fi_provider dpdk_prov;
-
-struct fi_ops_fabric dpdk_fabric_ops = {.size       = sizeof(struct fi_ops_fabric),
-                                        .domain     = dpdk_domain_open,
-                                        .passive_ep = dpdk_passive_ep,
-                                        .eq_open    = dpdk_eq_create,
-                                        .wait_open  = ofi_wait_fd_open,
-                                        .trywait    = ofi_trywait};
-
 static int dpdk_fabric_close(fid_t fid) {
     int                 ret;
     struct dpdk_fabric *fabric;
@@ -30,6 +13,14 @@ static int dpdk_fabric_close(fid_t fid) {
     free(fabric);
     return 0;
 }
+
+struct fi_ops_fabric dpdk_fabric_ops = {.size       = sizeof(struct fi_ops_fabric),
+                                        .domain     = dpdk_domain_open,
+                                        .passive_ep = dpdk_passive_ep,
+                                        .eq_open    = dpdk_eq_open,
+                                        .wait_open  = ofi_wait_fd_open,
+                                        .trywait    = ofi_trywait};
+
 struct fi_ops dpdk_fabric_fi_ops = {
     .size     = sizeof(struct fi_ops),
     .close    = dpdk_fabric_close,
@@ -46,16 +37,10 @@ int dpdk_create_fabric(struct fi_fabric_attr *attr, struct fid_fabric **fabric_f
     if (!fabric)
         return -FI_ENOMEM;
 
-    dlist_init(&fabric->wait_eq_list);
-
     ret = ofi_fabric_init(&dpdk_prov, dpdk_util_prov.info->fabric_attr, attr, &fabric->util_fabric,
                           context);
     if (ret)
         goto free;
-
-    ret = dpdk_init_progress(&fabric->progress, NULL);
-    if (ret)
-        goto close;
 
     fabric->util_fabric.fabric_fid.fid.ops = &dpdk_fabric_fi_ops;
     fabric->util_fabric.fabric_fid.ops     = &dpdk_fabric_ops;

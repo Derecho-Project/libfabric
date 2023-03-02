@@ -15,8 +15,8 @@
 // name.
 
 #define DPDK_DOMAIN_CAPS (FI_LOCAL_COMM | FI_REMOTE_COMM)
-#define DPDK_EP_CAPS     (FI_MSG | FI_RMA | FI_READ | FI_WRITE | FI_REMOTE_READ | FI_REMOTE_WRITE)
-#define DPDK_EP_SRX_CAPS (DPDK_EP_CAPS | FI_TAGGED)
+#define DPDK_EP_CAPS     (FI_MSG)       // For the moment we only support MSG endpoints
+#define DPDK_EP_SRX_CAPS (DPDK_EP_CAPS) // For the moment, no FI_TAGGED secondary capability
 #define DPDK_TX_CAPS     (FI_SEND | FI_WRITE | FI_READ)
 #define DPDK_RX_CAPS     (FI_RECV | FI_REMOTE_READ | FI_REMOTE_WRITE | FI_RMA_EVENT)
 
@@ -139,16 +139,13 @@ struct fi_info dpdk_info = {.next = &dpdk_srx_info,
                             .domain_attr = &dpdk_domain_attr,
                             .fabric_attr = &dpdk_fabric_attr};
 
+size_t dpdk_default_tx_size = 256; // TODO: What is this?
+size_t dpdk_default_rx_size = 256; // TODO: What is this?
+size_t dpdk_max_inject      = 128; // TODO: What is this?
+
 /* User hints will still override the modified dest_info attributes
  * through ofi_alter_info
  */
-
-size_t dpdk_default_tx_size  = 256; // TODO: What is this?
-size_t dpdk_default_rx_size  = 256; // TODO: What is this?
-int    dpdk_disable_autoprog = 1;   // TODO: What is this?
-int    dpdk_io_uring         = 0;   // TODO: What is this?
-size_t dpdk_max_inject       = 128; // TODO: What is this?
-
 static void dpdk_alter_defaults(uint32_t version, const struct fi_info *hints,
                                 const struct fi_info *base_info, struct fi_info *dest_info) {
     dest_info->tx_attr->size = dpdk_default_tx_size;
@@ -163,3 +160,60 @@ struct util_prov dpdk_util_prov = {
     .alter_defaults = &dpdk_alter_defaults,
     .flags          = 0,
 };
+
+int dpdk_getinfo(uint32_t version, const char *node, const char *service, uint64_t flags,
+                 const struct fi_info *hints, struct fi_info **info) {
+
+    // TODO: Consider the hints and flags, as well as the version, node, and service parameters
+    // TODO:: For the moment, I have inserted here some default values, but we should really just
+    // take them from those listed in dpdk_info.c, which we shoud also check for correctness! E.g.,
+    // we should find the correct correspondence between the DPDK device and the OFI device.
+
+    // Iterate over the avilable DPDK devices. For each device, create a new fi_info struct and add
+    // it to the info list. => We should filter this list based on the hints, but for now we just
+    // ignore that
+    uint16_t port_id;
+    RTE_ETH_FOREACH_DEV(port_id) {
+
+        // get DPDK device info
+        struct rte_eth_dev_info dev_info;
+        rte_eth_dev_info_get(port_id, &dev_info);
+
+        // Create a new fi_info struct. Who frees this memory?
+        struct fi_info *new_info = ofi_allocinfo_internal();
+        if (!new_info) {
+            return -FI_ENOMEM;
+        }
+
+        // Capabilities from dpdk_info.c => check if they are correct!
+        new_info->caps = dpdk_util_prov.info->caps;
+        new_info->mode = dpdk_util_prov.info->mode;
+
+        // Fabric info from dpdk_info.c
+        new_info->fabric_attr->name =
+            (char *)malloc(strlen(dpdk_util_prov.info->fabric_attr->name) + 1);
+        bzero(new_info->fabric_attr->name, strlen(dpdk_util_prov.info->fabric_attr->name) + 1);
+        strcpy(new_info->fabric_attr->name, dpdk_util_prov.info->fabric_attr->name);
+        new_info->fabric_attr->api_version = dpdk_util_prov.info->fabric_attr->api_version;
+
+        // Domain info //TODO: check the correspondence with the values in dpdk_info.c
+        new_info->domain_attr->name = (char *)malloc(strlen(dev_info.device->name) + 1);
+        bzero(new_info->domain_attr->name, strlen(dev_info.device->name) + 1);
+        // if_indextoname(dev_info.if_index, new_info->domain_attr->name);
+        strcpy(new_info->domain_attr->name, dev_info.device->name);
+        new_info->domain_attr->av_type = dpdk_util_prov.info->domain_attr->av_type;
+
+        // Endpoint type can be:
+        // FI_EP_MSG Reliable-connected => Assuming our impl!
+        // FI_EP_DGRAM Unreliable datagram => Should we also enable this?
+        // FI_EP_RDM Reliable-unconnected
+        new_info->ep_attr->protocol = dpdk_util_prov.info->ep_attr->protocol;
+        new_info->ep_attr->type     = dpdk_util_prov.info->ep_attr->type;
+
+        // Add the new fi_info to the list
+        new_info->next = *info;
+        *info          = new_info;
+    }
+
+    return 0;
+}
