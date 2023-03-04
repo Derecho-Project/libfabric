@@ -154,6 +154,14 @@ int dpdk_endpoint(struct fid_domain *domain, struct fi_info *info, struct fid_ep
     slist_init(&ep->rx_queue);
     slist_init(&ep->tx_queue);
 
+    ofi_genlock_init(&ep->tx_mutex, OFI_LOCK_MUTEX);
+    ofi_genlock_init(&ep->rx_mutex, OFI_LOCK_MUTEX);
+
+    ep->hdr_pool_name = malloc(64);
+    sprintf(ep->hdr_pool_name, "hdr_pool_%s", ep->util_ep.domain->name);
+    ep->hdr_pool = rte_pktmbuf_pool_create(ep->hdr_pool_name, 10240, 64, 0,
+                                           RTE_MBUF_DEFAULT_BUF_SIZE, rte_socket_id());
+
     *ep_fid            = &ep->util_ep.ep_fid;
     (*ep_fid)->fid.ops = &dpdk_ep_fi_ops;
     // (*ep_fid)->ops     = &dpdk_ep_ops;

@@ -69,6 +69,16 @@ enum {
     DPDK_CLASS_PROGRESS,
 };
 
+// ==================== Memory Management ====================
+
+struct dpdk_mr {
+    // Libfabric memory region descriptor
+    struct fid_mr mr_fid;
+    // Memory Region references
+    void  *buf;
+    size_t len;
+};
+
 // ======= Fabric, Domain, Endpoint and Threads  =======
 // Represents a DPDK fabric
 struct dpdk_fabric {
@@ -100,14 +110,29 @@ struct dpdk_domain {
     struct ofi_genlock ep_mutex;
     // Progress thread data
     struct dpdk_progress progress;
+    // Port ID of the DPDK device
+    uint16_t port_id;
+    // Mempool for incoming packets
+    struct rte_mempool *rx_pool;
+    char               *rx_pool_name;
+    // Memory pool to allocate packet descriptors for external buffers
+    struct rte_mempool *ext_pool;
+    char               *ext_pool_name;
 };
 
 // DPDK endpoint: represents an open connection
 struct dpdk_ep {
     // Reference to the associated endpoint
     struct util_ep util_ep;
-    struct slist   rx_queue;
-    struct slist   tx_queue;
+    // Receive and Transmit queues (= indeed, a "queue pair")
+    struct slist rx_queue;
+    struct slist tx_queue;
+    // Mutex to access the queues
+    struct ofi_genlock rx_mutex;
+    struct ofi_genlock tx_mutex;
+    // Memory pool for headers
+    struct rte_mempool *hdr_pool;
+    char               *hdr_pool_name;
     // This is necessary because we keep ep in a list
     struct slist_entry endpoint_list;
 };
@@ -124,7 +149,7 @@ void dpdk_ep_disable(struct dpdk_ep *ep, int cm_err, void *err_data, size_t err_
 int  dpdk_init_progress(struct dpdk_progress *progress, struct fi_info *info);
 int  dpdk_start_progress(struct dpdk_progress *progress);
 void dpdk_close_progress(struct dpdk_progress *progress);
-void dpdk_run_progress(struct dpdk_progress *progress, bool clear_signal);
+int  dpdk_run_progress(void *args);
 void dpdk_progress_rx(struct dpdk_ep *ep);
 
 void dpdk_handle_event_list(struct dpdk_progress *progress);
@@ -160,16 +185,16 @@ int dpdk_passive_ep(struct fid_fabric *fabric, struct fi_info *info, struct fid_
 // point to recv/send message!
 struct dpdk_xfer_entry {
     struct slist_entry entry;
-    void              *user_buf;
-    size_t             iov_cnt;
-    struct iovec       iov[DPDK_IOV_LIMIT + 1];
     struct dpdk_ep    *saving_ep;
     struct dpdk_cq    *cq;
     struct util_cntr  *cntr;
     fi_addr_t          src_addr;
     uint64_t           cq_flags;
     void              *context;
-    char               msg_data[];
+    uint64_t           has_immediate_data;
+    uint64_t           immediate_data;
+    size_t             msg_data_len;
+    void              *msg_data;
 };
 
 // ==================== Completion Queues ====================

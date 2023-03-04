@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mman.h>
 #include <unistd.h>
 
 #include <rdma/fabric.h>
@@ -10,6 +11,10 @@
 #include <rdma/fi_errno.h>
 #include <rdma/fi_rma.h>
 #include <rdma/fi_tagged.h>
+
+// This is not really necessary, but I need a quick way to get the log2 of a number
+// so I'll use this.
+#include <rte_common.h>
 
 #include <ofi.h>
 
@@ -22,6 +27,20 @@
 #define CONF_RDMA_TX_DEPTH 256
 #define CONF_RDMA_RX_DEPTH 256
 #define MAX_PAYLOAD_SIZE   1472
+
+#ifndef MAP_HUGE_SHIFT
+/* older kernels (or FreeBSD) will not have this define */
+#define HUGE_SHIFT (26)
+#else
+#define HUGE_SHIFT MAP_HUGE_SHIFT
+#endif
+
+#ifndef MAP_HUGETLB
+/* FreeBSD may not have MAP_HUGETLB (in fact, it probably doesn't) */
+#define HUGE_FLAG (0x40000)
+#else
+#define HUGE_FLAG MAP_HUGETLB
+#endif
 
 /**
  * Global states
@@ -49,6 +68,31 @@ struct lf_mr {
 /** The global context for libfabric */
 struct lf_ctxt g_ctxt;
 struct lf_mr   g_mr;
+
+static int pagesz_flags(uint64_t page_sz) {
+    /* as per mmap() manpage, all page sizes are log2 of page size
+     * shifted by MAP_HUGE_SHIFT
+     */
+    int log2 = rte_log2_u64(page_sz);
+
+    return (log2 << HUGE_SHIFT);
+}
+
+static void *alloc_mem(size_t memsz, size_t pgsz, bool huge) {
+    void *addr;
+    int   flags;
+
+    /* allocate anonymous hugepages */
+    flags = MAP_ANONYMOUS | MAP_PRIVATE;
+    if (huge) {
+        flags |= HUGE_FLAG | pagesz_flags(pgsz);
+    }
+    addr = mmap(NULL, memsz, PROT_READ | PROT_WRITE, flags, -1, 0);
+    if (addr == MAP_FAILED) {
+        return NULL;
+    }
+    return addr;
+}
 
 static void default_context() {
     memset((void *)&g_ctxt, 0, sizeof(struct lf_ctxt));
@@ -183,8 +227,11 @@ int init_active_ep(struct fi_info *fi, struct fid_ep **ep, struct fid_eq **eq) {
 int register_memory_region() {
     int ret;
 
-    g_mr.size   = 1514;
-    g_mr.buffer = malloc(g_mr.size);
+    // Important: memory allocation should be page aligned to the page size used by the DPDK
+    // provider. The length must be a multiple of the page size.
+    g_mr.size   = RTE_ALIGN(1514, sysconf(_SC_PAGESIZE));
+    g_mr.buffer = alloc_mem(g_mr.size, sysconf(_SC_PAGESIZE), false);
+
     if (!g_mr.buffer || g_mr.size <= 0) {
         printf("Failed to allocate memory for data reception\n");
         return -1;
@@ -304,12 +351,15 @@ void do_server() {
         msg.context   = NULL;
 
         ret = fi_recvmsg(ep, &msg, 0);
-        if (ret) {
+        if (ret == -FI_EAGAIN) {
+            usleep(100);
+            continue;
+        } else if (ret) {
             printf("fi_recvmsg() failed: %s\n", fi_strerror(-ret));
             exit(2);
         }
 
-        printf("Received a new message: %s\n", (char *)g_mr.buffer);
+        printf("Received a new message: %s\n", (char *)msg.msg_iov[0].iov_base);
     }
 }
 
