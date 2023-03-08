@@ -26,8 +26,7 @@ static inline int port_init(struct rte_mempool *mempool, uint16_t port_id, uint1
     // Configure the device
     struct rte_eth_conf port_conf;
     memset(&port_conf, 0, sizeof(port_conf));
-    port_conf.rxmode.mtu            = actual_mtu;
-    port_conf.rxmode.split_hdr_size = 0;
+    port_conf.rxmode.mtu = actual_mtu;
     port_conf.rxmode.offloads |= (RTE_ETH_RX_OFFLOAD_CHECKSUM | RTE_ETH_RX_OFFLOAD_SCATTER);
     port_conf.txmode.mq_mode = RTE_ETH_MQ_TX_NONE;
     port_conf.txmode.offloads |= (RTE_ETH_TX_OFFLOAD_IPV4_CKSUM | RTE_ETH_TX_OFFLOAD_MULTI_SEGS);

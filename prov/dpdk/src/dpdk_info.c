@@ -197,10 +197,10 @@ int dpdk_getinfo(uint32_t version, const char *node, const char *service, uint64
         new_info->fabric_attr->api_version = dpdk_util_prov.info->fabric_attr->api_version;
 
         // Domain info //TODO: check the correspondence with the values in dpdk_info.c
-        new_info->domain_attr->name = (char *)malloc(strlen(dev_info.device->name) + 1);
-        bzero(new_info->domain_attr->name, strlen(dev_info.device->name) + 1);
+        new_info->domain_attr->name = (char *)malloc(strlen(rte_dev_name(dev_info.device)) + 1);
+        bzero(new_info->domain_attr->name, strlen(rte_dev_name(dev_info.device)) + 1);
         // if_indextoname(dev_info.if_index, new_info->domain_attr->name);
-        strcpy(new_info->domain_attr->name, dev_info.device->name);
+        strcpy(new_info->domain_attr->name, rte_dev_name(dev_info.device));
         new_info->domain_attr->av_type = dpdk_util_prov.info->domain_attr->av_type;
 
         // Endpoint type can be:
