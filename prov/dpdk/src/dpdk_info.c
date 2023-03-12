@@ -14,6 +14,13 @@
 // the format of the domain name which should be the PCI address instead of the kernel interface
 // name.
 
+// TODO: This address must be passed by the application
+#define LF_IP_ADDR_DEFAULT "192.168.56.211"
+
+// TODO: This is the base UDP port of the Libfabric DPDK provider. It is used as a base to assign
+// UDP ports to different EPs. This might become a parameter of the provider.
+#define LF_PORT_DEFAULT 2509
+
 #define DPDK_DOMAIN_CAPS (FI_LOCAL_COMM | FI_REMOTE_COMM)
 #define DPDK_EP_CAPS     (FI_MSG)       // For the moment we only support MSG endpoints
 #define DPDK_EP_SRX_CAPS (DPDK_EP_CAPS) // For the moment, no FI_TAGGED secondary capability
@@ -132,16 +139,19 @@ struct fi_info dpdk_srx_info = {.caps = DPDK_DOMAIN_CAPS | DPDK_EP_SRX_CAPS | DP
 
 struct fi_info dpdk_info = {.next = &dpdk_srx_info,
                             .caps = DPDK_DOMAIN_CAPS | DPDK_EP_CAPS | DPDK_TX_CAPS | DPDK_RX_CAPS,
-                            .addr_format = FI_SOCKADDR,
                             .tx_attr     = &dpdk_tx_attr,
                             .rx_attr     = &dpdk_rx_attr,
                             .ep_attr     = &dpdk_ep_attr,
                             .domain_attr = &dpdk_domain_attr,
-                            .fabric_attr = &dpdk_fabric_attr};
+                            .fabric_attr = &dpdk_fabric_attr,
+                            .addr_format = FI_FORMAT_UNSPEC,
+                            .src_addrlen = sizeof(uint64_t)};
 
-size_t dpdk_default_tx_size = 256; // TODO: What is this?
-size_t dpdk_default_rx_size = 256; // TODO: What is this?
-size_t dpdk_max_inject      = 128; // TODO: What is this?
+size_t dpdk_default_tx_size       = 256; // TODO: What is this?
+size_t dpdk_default_rx_size       = 256; // TODO: What is this?
+size_t dpdk_max_inject            = 128; // TODO: What is this?
+size_t dpdk_default_tx_burst_size = 32;  // TODO: Why here? Should be a configurable parameter...
+size_t dpdk_default_rx_burst_size = 32;  // TODO: Why here? Should be a configurable parameter...
 
 /* User hints will still override the modified dest_info attributes
  * through ofi_alter_info
@@ -202,6 +212,18 @@ int dpdk_getinfo(uint32_t version, const char *node, const char *service, uint64
         // if_indextoname(dev_info.if_index, new_info->domain_attr->name);
         strcpy(new_info->domain_attr->name, rte_dev_name(dev_info.device));
         new_info->domain_attr->av_type = dpdk_util_prov.info->domain_attr->av_type;
+
+        new_info->addr_format = dpdk_util_prov.info->addr_format;
+        new_info->src_addrlen = dpdk_util_prov.info->src_addrlen;
+
+        // TODO: Address info must become a parameter!!
+        new_info->src_addr = (void *)malloc(dpdk_util_prov.info->src_addrlen);
+        // The highest 32 bits of the src_addr are the IP address
+        uint32_t ip_addr = inet_addr(LF_IP_ADDR_DEFAULT);
+        // Now copy ip_addr in the most significant 32 bits of the src_addr
+        memcpy(new_info->src_addr, &ip_addr, sizeof(uint32_t));
+        // Now copy the port_id in the least significant 16 bits of the src_addr
+        memcpy(new_info->src_addr + sizeof(uint32_t), LF_PORT_DEFAULT, sizeof(uint16_t));
 
         // Endpoint type can be:
         // FI_EP_MSG Reliable-connected => Assuming our impl!

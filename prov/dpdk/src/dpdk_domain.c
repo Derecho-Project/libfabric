@@ -8,13 +8,14 @@
 /// Helper functions
 
 /* Many configuration parameters required to startup DPDK */
-static inline int port_init(struct rte_mempool *mempool, uint16_t port_id, uint16_t mtu) {
+static inline int port_init(struct rte_mempool *mempool, uint16_t port_id, uint16_t queue_id,
+                            uint16_t mtu) {
     int valid_port = rte_eth_dev_is_valid_port(0);
     if (!valid_port)
         return -1;
 
     struct rte_eth_dev_info dev_info;
-    int                     retval = rte_eth_dev_info_get(0, &dev_info);
+    int                     retval = rte_eth_dev_info_get(port_id, &dev_info);
     if (retval != 0) {
         fprintf(stderr, "[error] cannot get device (port %u) info: %s\n", 0, strerror(-retval));
         return retval;
@@ -36,6 +37,9 @@ static inline int port_init(struct rte_mempool *mempool, uint16_t port_id, uint1
     retval = rte_eth_dev_configure(port_id, rx_rings, tx_rings, &port_conf);
     if (retval != 0)
         return retval;
+
+    // TODO: Here I should retrieve a set of device flages for each function and make it available
+    // in the dpdk_domain struct in order to retrieve it when needed (in the progress thread).
 
     // Set the MTU explicitly
     retval = rte_eth_dev_set_mtu(port_id, actual_mtu);
@@ -142,6 +146,12 @@ int dpdk_domain_open(struct fid_fabric *fabric_fid, struct fi_info *info,
     slist_init(&domain->endpoint_list);
     ofi_genlock_init(&domain->ep_mutex, OFI_LOCK_MUTEX);
 
+    // Get the IP and UDP port info from the configuration
+    // The most significant 32 bytes of the 64-bit integer are the IP address
+    // The least significant 16 bytes of the 64-bit integer are the UDP port
+    domain->address = *(uint64_t *)(info->src_addr);
+    domain->addrlen = info->src_addrlen;
+
     // Allocate the mempool for RX mbufs
     domain->rx_pool_name = malloc(32);
     sprintf(domain->rx_pool_name, "rx_pool_%s", domain->util_domain.name);
@@ -168,8 +178,9 @@ int dpdk_domain_open(struct fid_fabric *fabric_fid, struct fi_info *info,
 
     // Initialize the DPDK device
     // TODO: port_id and mtu should be configurable parameters!
-    domain->port_id = 0;
-    if (port_init(domain->rx_pool, domain->port_id, 1500) < 0) {
+    domain->port_id  = 0;
+    domain->queue_id = 0;
+    if (port_init(domain->rx_pool, domain->port_id, domain->queue_id, 1500) < 0) {
         FI_WARN(&dpdk_prov, FI_LOG_CORE, "Port Init DPDK: error\n");
         goto free;
     };

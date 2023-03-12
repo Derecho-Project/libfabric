@@ -11,14 +11,66 @@
 // === Helper functions ===
 
 static int dpdk_ep_bind(struct fid *fid, struct fid *bfid, uint64_t flags) {
-    struct dpdk_ep  *ep;
-    struct dpdk_srx *srx;
-    int              ret;
+    struct dpdk_ep *ep;
+    struct dpdk_cq *cq = container_of(bfid, struct dpdk_cq, util_cq.cq_fid.fid);
+    int             ret;
 
-    ep = container_of(fid, struct dpdk_ep, util_ep.ep_fid.fid);
+    ep  = container_of(fid, struct dpdk_ep, util_ep.ep_fid.fid);
+    ret = ofi_ep_bind_valid(&dpdk_prov, bfid, flags);
+    if (ret)
+        return ret;
 
-    ret = ofi_ep_bind(&ep->util_ep, bfid, flags);
-    return ret;
+    switch (bfid->fclass) {
+    case FI_CLASS_CQ:
+        ret = ofi_ep_bind_cq(&ep->util_ep, &cq->util_cq, flags);
+        if (flags & FI_RECV) {
+            ep->recv_cq = cq;
+        } else if (flags & FI_SEND) {
+            ep->send_cq = cq;
+        } else {
+            FI_WARN(&dpdk_prov, FI_LOG_EP_CTRL, "invalid flags for CQ binding");
+            return -FI_EINVAL;
+        }
+        break;
+
+    // TODO: for the moment, just associate the CQ.
+    // The rest of the function is unimplemented
+
+    // case FI_CLASS_EQ:
+    //     if (ep->util_ep.type != FI_EP_MSG)
+    //         return -FI_EINVAL;
+
+    //     ep->eq = container_of(bfid, struct dpdk_eq, eq_fid.fid);
+
+    //     /* Make sure EQ channel is not polled during migrate */
+    //     ofi_mutex_lock(&ep->eq->lock);
+    //     if (vrb_is_xrc_ep(ep))
+    //         ret = vrb_ep_xrc_set_tgt_chan(ep);
+    //     else
+    //         ret = rdma_migrate_id(ep->id, ep->eq->channel);
+    //     ofi_mutex_unlock(&ep->eq->lock);
+    //     if (ret) {
+    //         VRB_WARN_ERRNO(FI_LOG_EP_CTRL, "rdma_migrate_id");
+    //         return -errno;
+    //     }
+    //     break;
+    // case FI_CLASS_SRX_CTX:
+    //     if (ep->util_ep.type != FI_EP_MSG)
+    //         return -FI_EINVAL;
+
+    //     ep->srq_ep = container_of(bfid, struct vrb_srq_ep, ep_fid.fid);
+    //     break;
+    // case FI_CLASS_AV:
+    //     if (ep->util_ep.type != FI_EP_DGRAM)
+    //         return -FI_EINVAL;
+
+    //     av = container_of(bfid, struct vrb_dgram_av, util_av.av_fid.fid);
+    //     return ofi_ep_bind_av(&ep->util_ep, &av->util_av);
+    default:
+        return -FI_EINVAL;
+    }
+
+    return 0;
 }
 
 static int dpdk_ep_close(struct fid *fid) {
@@ -75,21 +127,16 @@ static int dpdk_ep_ctrl(struct fid *fid, int command, void *arg) {
 }
 
 static int dpdk_ep_getname(fid_t fid, void *addr, size_t *addrlen) {
-    struct dpdk_ep *ep;
-    size_t          addrlen_in = *addrlen;
-    int             ret;
+    struct dpdk_ep     *ep;
+    struct dpdk_domain *domain;
 
-    ep = container_of(fid, struct dpdk_ep, util_ep.ep_fid);
+    ep     = container_of(fid, struct dpdk_ep, util_ep.ep_fid);
+    domain = container_of(ep->util_ep.domain, struct dpdk_domain, util_domain);
 
-    // TODO: Complete the implementation in a DPDK-specific way
-    printf("[dpdk_ep_getname] UNIMPLEMENTED\n");
-    // ret = ofi_getsockname(ep->bsock.sock, addr, (socklen_t *)addrlen);
-    ret = 0;
-    strncpy(addr, "dummy_address", 14);
-
-    if (ret)
-        return -ofi_sockerr();
-
+    size_t addrlen_in = domain->addrlen;
+    if (addrlen_in < *addrlen) {
+        memcpy(addr, domain->address, addrlen_in);
+    }
     return (addrlen_in < *addrlen) ? -FI_ETOOSMALL : FI_SUCCESS;
 }
 
@@ -151,12 +198,9 @@ int dpdk_endpoint(struct fid_domain *domain, struct fi_info *info, struct fid_ep
         goto err1;
     }
 
-    slist_init(&ep->rx_queue);
-    slist_init(&ep->tx_queue);
+    printf("[dpdk_endpoint] EP creation only partially implemented\n");
 
-    ofi_genlock_init(&ep->tx_mutex, OFI_LOCK_MUTEX);
-    ofi_genlock_init(&ep->rx_mutex, OFI_LOCK_MUTEX);
-
+    // TODO: Initialize the structures
     ep->hdr_pool_name = malloc(64);
     sprintf(ep->hdr_pool_name, "hdr_pool_%s", ep->util_ep.domain->name);
     ep->hdr_pool = rte_pktmbuf_pool_create(ep->hdr_pool_name, 10240, 64, 0,
@@ -169,6 +213,18 @@ int dpdk_endpoint(struct fid_domain *domain, struct fi_info *info, struct fid_ep
     (*ep_fid)->msg = &dpdk_msg_ops;
     //     (*ep_fid)->rma     = &dpdk_rma_ops;
     //     (*ep_fid)->tagged  = &dpdk_tagged_ops;
+
+    // Add this EP to EP list of the domain, and increase the associated values
+    // MUST be done while holding the lock on the list.
+    struct dpdk_domain *dpdk_domain =
+        container_of(ep->util_ep.domain, struct dpdk_domain, util_domain);
+    ofi_genlock_lock(&dpdk_domain->ep_mutex);
+    slist_insert_tail(&ep->entry, &dpdk_domain->endpoint_list);
+    dpdk_domain->num_endpoints++;
+    u_int16_t base_udp_port                   = *((u_int16_t *)dpdk_domain->address);
+    ep->udp_port                              = base_udp_port + (dpdk_domain->num_endpoints - 1);
+    dpdk_domain->udp_port_to_ep[ep->udp_port] = ep;
+    ofi_genlock_unlock(&dpdk_domain->ep_mutex);
 
     return 0;
 
@@ -201,10 +257,17 @@ static int dpdk_pep_setname(fid_t fid, void *addr, size_t addrlen) {
 }
 
 static int dpdk_pep_getname(fid_t fid, void *addr, size_t *addrlen) {
+    struct dpdk_ep     *ep;
+    struct dpdk_domain *domain;
 
-    printf("[dpdk_pep_getname] UNIMPLEMENTED\n");
-    strncpy(addr, "dummy_address", 14);
-    return 0;
+    ep     = container_of(fid, struct dpdk_ep, util_ep.ep_fid);
+    domain = container_of(ep->util_ep.domain, struct dpdk_domain, util_domain);
+
+    size_t addrlen_in = domain->addrlen;
+    if (addrlen_in < *addrlen) {
+        memcpy(addr, domain->address, addrlen_in);
+    }
+    return (addrlen_in < *addrlen) ? -FI_ETOOSMALL : FI_SUCCESS;
 }
 
 static int dpdk_pep_listen(struct fid_pep *pep_fid) {

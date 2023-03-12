@@ -359,6 +359,8 @@ void do_server() {
             exit(2);
         }
 
+        // TODO: Poll the CQ for the completion of the recvmsg
+
         printf("Received a new message: %s\n", (char *)msg.msg_iov[0].iov_base);
     }
 }
