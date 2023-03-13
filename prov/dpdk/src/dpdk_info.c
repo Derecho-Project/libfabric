@@ -21,11 +21,10 @@
 // UDP ports to different EPs. This might become a parameter of the provider.
 #define LF_PORT_DEFAULT 2509
 
-#define DPDK_DOMAIN_CAPS (FI_LOCAL_COMM | FI_REMOTE_COMM)
-#define DPDK_EP_CAPS     (FI_MSG)       // For the moment we only support MSG endpoints
-#define DPDK_EP_SRX_CAPS (DPDK_EP_CAPS) // For the moment, no FI_TAGGED secondary capability
-#define DPDK_TX_CAPS     (FI_SEND | FI_WRITE | FI_READ)
-#define DPDK_RX_CAPS     (FI_RECV | FI_REMOTE_READ | FI_REMOTE_WRITE | FI_RMA_EVENT)
+#define DPDK_DOMAIN_CAPS (FI_REMOTE_COMM)
+#define DPDK_EP_CAPS     (FI_MSG | FI_RMA)
+#define DPDK_TX_CAPS     (FI_SEND | FI_WRITE | FI_READ | FI_ATOMIC)
+#define DPDK_RX_CAPS     (FI_RECV | FI_REMOTE_READ | FI_REMOTE_WRITE | FI_RMA_EVENT | FI_ATOMIC)
 
 #define DPDK_MSG_ORDER                                                                             \
     (OFI_ORDER_RAR_SET | OFI_ORDER_RAW_SET | FI_ORDER_RAS | OFI_ORDER_WAW_SET | FI_ORDER_WAS |     \
@@ -69,37 +68,6 @@ static struct fi_ep_attr dpdk_ep_attr = {
     .max_order_waw_size = SIZE_MAX,
 };
 
-static struct fi_tx_attr dpdk_tx_srx_attr = {
-    .caps          = DPDK_EP_SRX_CAPS | DPDK_TX_CAPS,
-    .op_flags      = DPDK_TX_OP_FLAGS,
-    .comp_order    = FI_ORDER_STRICT,
-    .msg_order     = DPDK_MSG_ORDER,
-    .inject_size   = DPDK_MAX_INJECT,
-    .size          = 1024,
-    .iov_limit     = DPDK_IOV_LIMIT,
-    .rma_iov_limit = DPDK_IOV_LIMIT,
-};
-
-static struct fi_rx_attr dpdk_rx_srx_attr = {.caps                = DPDK_EP_SRX_CAPS | DPDK_RX_CAPS,
-                                             .op_flags            = DPDK_RX_OP_FLAGS,
-                                             .comp_order          = FI_ORDER_STRICT,
-                                             .msg_order           = DPDK_MSG_ORDER,
-                                             .total_buffered_recv = 0,
-                                             .size                = 65536,
-                                             .iov_limit           = DPDK_IOV_LIMIT};
-
-static struct fi_ep_attr dpdk_ep_srx_attr = {
-    .type               = FI_EP_MSG,
-    .protocol           = FI_PROTO_SOCK_TCP,
-    .protocol_version   = 0,
-    .max_msg_size       = SIZE_MAX,
-    .tx_ctx_cnt         = 1,
-    .rx_ctx_cnt         = FI_SHARED_CONTEXT,
-    .max_order_raw_size = SIZE_MAX,
-    .max_order_waw_size = SIZE_MAX,
-    .mem_tag_format     = FI_TAG_GENERIC,
-};
-
 // TODO: What are these values? What is the name here? Why not an interface/PCI address?
 static struct fi_domain_attr dpdk_domain_attr = {
     .name             = "dpdk",
@@ -128,16 +96,7 @@ static struct fi_fabric_attr dpdk_fabric_attr = {
     .api_version  = OFI_VERSION_LATEST,
 };
 
-struct fi_info dpdk_srx_info = {.caps = DPDK_DOMAIN_CAPS | DPDK_EP_SRX_CAPS | DPDK_TX_CAPS |
-                                        DPDK_RX_CAPS,
-                                .addr_format = FI_SOCKADDR,
-                                .tx_attr     = &dpdk_tx_srx_attr,
-                                .rx_attr     = &dpdk_rx_srx_attr,
-                                .ep_attr     = &dpdk_ep_srx_attr,
-                                .domain_attr = &dpdk_domain_attr,
-                                .fabric_attr = &dpdk_fabric_attr};
-
-struct fi_info dpdk_info = {.next = &dpdk_srx_info,
+struct fi_info dpdk_info = {.next = NULL,
                             .caps = DPDK_DOMAIN_CAPS | DPDK_EP_CAPS | DPDK_TX_CAPS | DPDK_RX_CAPS,
                             .tx_attr     = &dpdk_tx_attr,
                             .rx_attr     = &dpdk_rx_attr,
@@ -178,6 +137,8 @@ int dpdk_getinfo(uint32_t version, const char *node, const char *service, uint64
     // TODO:: For the moment, I have inserted here some default values, but we should really just
     // take them from those listed in dpdk_info.c, which we shoud also check for correctness! E.g.,
     // we should find the correct correspondence between the DPDK device and the OFI device.
+
+    // TODO: The Node parameter is the IP address the application is passing to the provider
 
     // Iterate over the avilable DPDK devices. For each device, create a new fi_info struct and add
     // it to the info list. => We should filter this list based on the hints, but for now we just

@@ -115,7 +115,7 @@ static int dpdk_ep_ctrl(struct fid *fid, int command, void *arg) {
         // Now we must associate the EP with the progress thread
         domain = container_of(ep->util_ep.domain, struct dpdk_domain, util_domain);
         ofi_genlock_lock(&domain->ep_mutex);
-        slist_insert_tail(&ep->endpoint_list, &domain->endpoint_list);
+        slist_insert_tail(&ep->entry, &domain->endpoint_list);
         ofi_genlock_unlock(&domain->ep_mutex);
 
         break;
@@ -127,17 +127,9 @@ static int dpdk_ep_ctrl(struct fid *fid, int command, void *arg) {
 }
 
 static int dpdk_ep_getname(fid_t fid, void *addr, size_t *addrlen) {
-    struct dpdk_ep     *ep;
-    struct dpdk_domain *domain;
-
-    ep     = container_of(fid, struct dpdk_ep, util_ep.ep_fid);
-    domain = container_of(ep->util_ep.domain, struct dpdk_domain, util_domain);
-
-    size_t addrlen_in = domain->addrlen;
-    if (addrlen_in < *addrlen) {
-        memcpy(addr, domain->address, addrlen_in);
-    }
-    return (addrlen_in < *addrlen) ? -FI_ETOOSMALL : FI_SUCCESS;
+    // TODO: return useful per-EP info
+    printf("[dpdk_ep_connect] UNIMPLEMENTED\n");
+    return 0;
 }
 
 static int dpdk_ep_connect(struct fid_ep *ep_fid, const void *addr, const void *param,
