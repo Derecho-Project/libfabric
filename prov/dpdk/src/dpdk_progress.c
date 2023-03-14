@@ -2,7 +2,36 @@
 #include "protocols.h"
 
 // ================ Helper functions =================
+bool serial_less_32(uint32_t s1, uint32_t s2) {
+    return (s1 < s2 && s2 - s1 < (UINT32_C(1) << 31)) || (s1 > s2 && s1 - s2 > (UINT32_C(1) << 31));
+} /* serial_less_32 */
+
+bool serial_greater_32(uint32_t s1, uint32_t s2) {
+    return (s1 < s2 && s2 - s1 > (UINT32_C(1) << 31)) || (s1 > s2 && s1 - s2 < (UINT32_C(1) << 31));
+} /* serial_greater_32 */
+
+static void memcpy_to_iov(struct iovec *restrict dest, size_t iov_count, const char *restrict src,
+                          size_t src_size, size_t offset) {
+    unsigned y;
+    size_t   prev, pos, cur;
+    char    *dest_iov_base;
+
+    pos = 0;
+    for (y = 0, prev = 0; pos < src_size && y < iov_count; ++y) {
+        if (prev <= offset && offset < prev + dest[y].iov_len) {
+            cur           = RTE_MIN(prev + dest[y].iov_len - offset, src_size - pos);
+            dest_iov_base = dest[y].iov_base;
+            rte_memcpy(dest_iov_base + offset - prev, src + pos, cur);
+            pos += cur;
+            offset += cur;
+        }
+        prev += dest[y].iov_len;
+    }
+} /* memcpy_to_iov */
+
 // TODO: is this needed? Is it called more than once? Why can't be just an instruction?
+// There was also the "del" version but it was really just one line used once, so I integrated it in
+// the caller code
 static void xfer_queue_add_active(struct dpdk_xfer_queue *q, struct dpdk_xfer_entry *xfer_entry) {
     dlist_insert_tail(&xfer_entry->entry, &q->active_head);
 } /* xfer_queue_add_active */
@@ -15,7 +44,7 @@ static int xfer_queue_lookup(struct dpdk_xfer_queue *q, uint32_t msn,
 
     struct dpdk_xfer_entry *lptr;
     struct dlist_entry     *entry, *tmp;
-    RTE_LOG(DEBUG, USER1, "LOOKUP active recv WQE msn=%" PRIu32 "\n", msn);
+    RTE_LOG(DEBUG, USER1, "LOOKUP active recv XFE msn=%" PRIu32 "\n", msn);
     dlist_foreach_safe(&q->active_head, entry, tmp) {
         lptr = container_of(entry, struct dpdk_xfer_entry, entry);
         if (lptr->msn == msn) {
@@ -40,37 +69,138 @@ static void dequeue_recv_entries(struct dpdk_ep *ep) {
     }
 } /* dequeue_recv_wqes */
 
+/** Retrieves a free CQE from the completion queue. */
+static int get_next_cqe(struct dpdk_cq *cq, struct fi_dpdk_wc **cqe) {
+    void *p;
+    int   ret;
+
+    ret = rte_ring_dequeue(cq->free_ring, &p);
+    if (ret < 0) {
+        *cqe = NULL;
+        return ret;
+    }
+    *cqe = p;
+    return 0;
+} /* get_next_cqe */
+
+/** Returns the given send WQE back to the free pool.  It is removed from the
+ * active set if still_active is true.  The sq lock MUST be locked when
+ * calling this function. */
+void ep_free_send_wqe(struct dpdk_ep *ep, struct dpdk_xfer_entry *wqe, bool still_active) {
+    if (still_active) {
+        dlist_remove(&wqe->entry);
+    }
+    rte_ring_enqueue(ep->sq.free_ring, wqe);
+} /* ep_free_send_wqe */
+
 /** post_recv_cqe posts a CQE corresponding to a receive WQE, and frees the
  * completed WQE.  Locking on the CQ ensures that any operation done prior to
  * this will be seen by other threads prior to the completion being delivered.
  * This ensures that new operations can be posted immediately. */
 static int post_recv_cqe(struct dpdk_ep *ep, struct dpdk_xfer_entry *xfe,
-                         enum fi_cq_status status) {
-    // struct usiw_wc *cqe;
-    // struct usiw_cq *cq;
-    // int             ret;
+                         enum fi_wc_status status) {
+    struct fi_dpdk_wc *cqe;
+    struct dpdk_cq    *cq;
+    int                ret;
 
-    /* TODO: Here!! Implement */
-    printf("[post_recv_cqe] POST COMPLETION TO COMPLETION QUEUE: UNIMPLEMENTED!\n");
+    cq  = ep->recv_cq;
+    ret = get_next_cqe(cq, &cqe);
+    if (ret < 0) {
+        RTE_LOG(NOTICE, USER1, "Failed to post recv CQE: %s\n", strerror(-ret));
+        return ret;
+    }
+    cqe->wr_context = xfe->context;
+    cqe->status     = status;
+    cqe->opcode     = FI_WC_RECV;
+    cqe->byte_len   = xfe->input_size;
+    cqe->ep_id      = ep->udp_port;
+    cqe->imm_data   = xfe->imm_data;
+    cqe->wc_flags   = FI_WC_WITH_IMM;
 
-    // cq  = qp->recv_cq;
-    // ret = get_next_cqe(cq, &cqe);
-    // if (ret < 0) {
-    //     RTE_LOG(NOTICE, USER1, "Failed to post recv CQE: %s\n", strerror(-ret));
-    //     return ret;
-    // }
-    // cqe->wr_context = wqe->wr_context;
-    // cqe->status     = status;
-    // cqe->opcode     = IBV_WC_RECV;
-    // cqe->byte_len   = wqe->input_size;
-    // cqe->qp_num     = qp->ib_qp.qp_num;
-    // cqe->imm_data   = wqe->imm_data;
-    // cqe->wc_flags   = IBV_WC_WITH_IMM;
+    /** Returns the given receive WQE back to the free pool.  It is removed from
+     * the active set if still_in_hash is true.  The rq lock MUST be locked when
+     * calling this function. */
+    dlist_remove(&xfe->entry);
+    rte_ring_enqueue(ep->rq.free_ring, xfe);
 
-    // qp_free_recv_wqe(qp, wqe);
-    // finish_post_cqe(cq, cqe);
+    /* Actually post the CQE to the CQ */
+    rte_ring_enqueue(cq->cqe_ring, cqe);
+
     return 0;
 } /* post_recv_cqe */
+
+static enum fi_wc_opcode get_send_wc_opcode(struct dpdk_xfer_entry *wqe) {
+    switch (wqe->opcode) {
+    case xfer_send:
+    case xfer_send_with_imm:
+        return FI_WC_SEND;
+    case xfer_write:
+    case xfer_write_with_imm:
+        return FI_WC_RDMA_WRITE;
+    case xfer_read:
+        return FI_WC_RDMA_READ;
+    case xfer_atomic:
+        switch (wqe->atomic_opcode) {
+        case rdmap_atomic_fetchadd:
+            return FI_WC_FETCH_ADD;
+            break;
+        case rdmap_atomic_cmpswap:
+            return FI_WC_COMP_SWAP;
+            break;
+        }
+        break;
+    default:
+        assert(0);
+        return -1;
+    }
+} /* get_send_wc_opcode */
+
+/** post_send_cqe posts a CQE corresponding to a send WQE, and frees the
+ * completed WQE.  Locking on the CQ ensures that any operation done prior to
+ * this will be seen by other threads prior to the completion being delivered.
+ * This ensures that new operations can be posted immediately. */
+static int post_send_cqe(struct dpdk_ep *ep, struct dpdk_xfer_entry *wqe,
+                         enum fi_wc_status status) {
+    struct fi_dpdk_wc *cqe;
+    struct dpdk_cq    *cq;
+    int                ret;
+
+    cq  = ep->send_cq;
+    ret = get_next_cqe(cq, &cqe);
+    if (ret < 0) {
+        RTE_LOG(NOTICE, USER1, "Failed to post send CQE: %s\n", strerror(-ret));
+        return ret;
+    }
+    cqe->wr_context = wqe->context;
+    cqe->status     = status;
+    cqe->opcode     = get_send_wc_opcode(wqe);
+    cqe->ep_id      = ep->udp_port;
+
+    ep_free_send_wqe(ep, wqe, true);
+    rte_ring_enqueue(cq->cqe_ring, cqe);
+
+    return 0;
+} /* post_send_cqe */
+
+/** Complete the requested WQE if and only if all completion ordering rules
+ * have been met. */
+static void try_complete_wqe(struct dpdk_ep *ep, struct dpdk_xfer_entry *wqe) {
+    /* We cannot post the completion until all previous WQEs have
+     * completed. */
+    if (wqe == container_of(&ep->sq.active_head, struct dpdk_xfer_entry, entry)) {
+        rte_spinlock_lock(&ep->sq.lock);
+        if (wqe->flags & xfer_send_signaled) {
+            post_send_cqe(ep, wqe, FI_WC_SUCCESS);
+        } else {
+            ep_free_send_wqe(ep, wqe, true);
+        }
+        rte_spinlock_unlock(&ep->sq.lock);
+        if (wqe->opcode == xfer_read || wqe->opcode == xfer_atomic) {
+            assert(ep->ord_active > 0);
+            ep->ord_active--;
+        }
+    }
+} /* try_complete_wqe */
 
 /* Process RDMAP Send OPcode */
 static void process_rdma_send(struct dpdk_ep *ep, struct packet_context *orig) {
@@ -154,12 +284,12 @@ static void process_rdma_send(struct dpdk_ep *ep, struct packet_context *orig) {
      * completions that we had previously deferred. */
 
     // TODO: This implementation does not actually walk the queue!
-    // Is this an error?
+    // Is this an error? I'm keeping it as-is for this experiment
     if (serial_less_32(orig->psn, xfer_e->remote_ep->recv_ack_psn)) {
         xfer_e = container_of(&ep->rq.active_head, struct dpdk_xfer_entry, entry);
         while (xfer_e && xfer_e->complete) {
             rte_spinlock_lock(&ep->rq.lock);
-            post_recv_cqe(ep, xfer_e, FI_CQ_SUCCESS);
+            post_recv_cqe(ep, xfer_e, FI_WC_SUCCESS);
             rte_spinlock_unlock(&ep->rq.lock);
             xfer_e = container_of(&ep->rq.active_head, struct dpdk_xfer_entry, entry);
         }
@@ -204,6 +334,7 @@ static void progress_send_xfer(struct dpdk_ep *ep, struct dpdk_xfer_entry *entry
     case xfer_send_with_imm:
         do_rdmap_send(ep, entry);
         break;
+        // TODO: Finish implementation for the fi_rma and fi_atomic
         // case xfer_write:
         // case xfer_write_with_imm:
         //     do_rdmap_write((struct usiw_qp *)qp, wqe);
@@ -216,6 +347,21 @@ static void progress_send_xfer(struct dpdk_ep *ep, struct dpdk_xfer_entry *entry
         //     break;
     }
 } /* progress_send_xfer */
+
+static void do_process_ack(struct dpdk_ep *ep, struct dpdk_xfer_entry *wqe,
+                           struct pending_datagram_info *pending) {
+    wqe->bytes_acked += pending->ddp_length;
+    assert(wqe->bytes_sent >= wqe->bytes_acked);
+
+    if ((wqe->opcode == xfer_send || wqe->opcode == xfer_write ||
+         wqe->opcode == xfer_send_with_imm) &&
+        wqe->bytes_acked == wqe->total_length)
+    {
+        assert(wqe->state == SEND_XFER_WAIT);
+        wqe->state = SEND_XFER_COMPLETE;
+        try_complete_wqe(ep, wqe);
+    }
+} /* do_process_ack */
 
 static void sweep_unacked_packets(struct dpdk_ep *ep) {
     struct pending_datagram_info *pending;
@@ -233,8 +379,8 @@ static void sweep_unacked_packets(struct dpdk_ep *ep) {
 
         if (serial_less_32(pending->psn, ee->send_last_acked_psn)) {
             /* Packet was acked */
-            if (pending->xfer_entry) {
-                do_process_ack(ep, pending->xfer_entry, pending);
+            if (pending->wqe) {
+                do_process_ack(ep, pending->wqe, pending);
             }
             pending->psn = UINT32_MAX;
             rte_pktmbuf_free(sendmsg);
@@ -247,31 +393,34 @@ static void sweep_unacked_packets(struct dpdk_ep *ep) {
         }
     }
 
+    // Get current time
+    uint64_t now = rte_get_timer_cycles();
+
     p = ee->tx_head;
     while (count++ < ee->tx_pending_size && (sendmsg = *p) != NULL) {
         int ret, cstatus;
         pending = (struct pending_datagram_info *)(sendmsg + 1);
-        if (ep->now > pending->next_retransmit && (ret = resend_ddp_segment(ep, sendmsg, ee)) < 0) {
-            // cstatus = IBV_WC_FATAL_ERR; //TODO: Do we have an equivalent?
+        if (now > pending->next_retransmit && (ret = resend_ddp_segment(ep, sendmsg, ee)) < 0) {
+            cstatus = FI_WC_FATAL_ERR;
             switch (ret) {
             case -EIO:
-                // cstatus = IBV_WC_RETRY_EXC_ERR; //TODO: Do we have an equivalent?
-                RTE_LOG(NOTICE, USER1,
-                        "<qp=%" PRIx16 "> retransmit limit (%d) exceeded psn=%" PRIu32 "\n",
+                cstatus = FI_WC_RETRY_EXC_ERR;
+                RTE_LOG(ERR, USER1,
+                        "<ep=%" PRIx16 "> retransmit limit (%d) exceeded psn=%" PRIu32 "\n",
                         ep->udp_port, RETRANSMIT_MAX, pending->psn);
                 break;
             case -ENOMEM:
-                RTE_LOG(NOTICE, USER1, "<qp=%" PRIx16 "> OOM on retransmit psn=%" PRIu32 "\n",
+                RTE_LOG(ERR, USER1, "<ep=%" PRIx16 "> OOM on retransmit psn=%" PRIu32 "\n",
                         ep->udp_port, pending->psn);
                 break;
             default:
-                RTE_LOG(NOTICE, USER1,
+                RTE_LOG(ERR, USER1,
                         "<ep=%" PRIx16 "> unknown error on retransmit psn=%" PRIu32 ": %s\n",
                         ep->udp_port, pending->psn, rte_strerror(-ret));
             }
-            if (pending->xfer_entry) {
+            if (pending->wqe) {
                 rte_spinlock_lock(&ep->sq.lock);
-                post_send_cqe(ep, pending->xfer_entry, cstatus);
+                post_send_cqe(ep, pending->wqe, cstatus);
                 rte_spinlock_unlock(&ep->sq.lock);
             } else if (pending->readresp) {
                 struct rdmap_tagged_packet *rdmap;
@@ -300,7 +449,7 @@ static void sweep_unacked_packets(struct dpdk_ep *ep) {
 } /* sweep_unacked_packets */
 
 // This function is to be enabled only if NIC filtering is active
-static int process_receive_queue(struct dpdk_ep *ep, void *prefetch_addr, uint64_t *now) {
+static int process_receive_queue(struct dpdk_ep *ep, void *prefetch_addr) {
     // struct rte_mbuf *rxmbuf[dpdk_default_tx_burst_size];
     // uint16_t         rx_count, pkt;
 
@@ -374,23 +523,23 @@ static void process_rx_packet(struct dpdk_domain *domain, struct rte_mbuf *mbuf)
             RTE_LOG(DEBUG, USER1, "udp expected cksum %#" PRIx16 " got %#" PRIx16 "\n",
                     rte_ipv4_udptcp_cksum(ipv4_hdr, udp_hdr), actual_udp_checksum);
         }
-        RTE_LOG(DEBUG, USER1, "<dev=%s> Drop packet with bad UDP/IP checksum\n", domain->address);
+        RTE_LOG(DEBUG, USER1, "<dev=%lu> Drop packet with bad UDP/IP checksum\n", domain->address);
 
         return;
     }
 
-    eth_hdr  = rte_pktmbuf_mtod(mbuf, struct ether_hdr *);
-    ipv4_hdr = (struct ipv4_hdr *)rte_pktmbuf_adj(mbuf, sizeof(*eth_hdr));
+    eth_hdr  = rte_pktmbuf_mtod(mbuf, struct rte_ether_hdr *);
+    ipv4_hdr = (struct rte_ipv4_hdr *)rte_pktmbuf_adj(mbuf, sizeof(*eth_hdr));
 
     // Check if the packet is UDP and is for us (IP address)
     if (ipv4_hdr->next_proto_id != IP_UDP) {
-        RTE_LOG(NOTICE, USER1, "<dev=%s> Drop packet with IPv4 next header %" PRIu8 " not UDP\n",
+        RTE_LOG(NOTICE, USER1, "<dev=%lu> Drop packet with IPv4 next header %" PRIu8 " not UDP\n",
                 domain->address, ipv4_hdr->next_proto_id);
         rte_pktmbuf_free(mbuf);
     }
     if (ipv4_hdr->dst_addr != rte_cpu_to_be_32(ip_addr)) {
         RTE_LOG(NOTICE, USER1,
-                "<dev=%s> Drop packet with IPv4 dst addr %" PRIx32 "; expected %" PRIx32 "\n",
+                "<dev=%lu> Drop packet with IPv4 dst addr %" PRIx32 "; expected %" PRIx32 "\n",
                 domain->address, rte_be_to_cpu_32(ipv4_hdr->dst_addr), ip_addr);
     }
 
@@ -398,7 +547,7 @@ static void process_rx_packet(struct dpdk_domain *domain, struct rte_mbuf *mbuf)
     // 1. The packet is for the base_port => This is a connection request
     // 2. The packet is for the base_port + n => This is a data packet for the n'th EP, if it exists
     // 3. The packet is for another port => Not for us, drop it
-    udp_hdr          = (struct udp_hdr *)rte_pktmbuf_adj(mbuf, sizeof(*ipv4_hdr));
+    udp_hdr          = (struct rte_udp_hdr *)rte_pktmbuf_adj(mbuf, sizeof(*ipv4_hdr));
     uint16_t rx_port = rte_be_to_cpu_16(udp_hdr->dst_port);
     if (rx_port == base_port) {
         // TODO: Handle connection request.
@@ -407,12 +556,12 @@ static void process_rx_packet(struct dpdk_domain *domain, struct rte_mbuf *mbuf)
         // Find the EP for this port
         dst_ep = domain->udp_port_to_ep[rx_port - (base_port + 1)];
         if (!dst_ep) {
-            RTE_LOG(NOTICE, USER1, "<dev=%s> Drop packet with UDP dst port %" PRIu16 ";\n",
+            RTE_LOG(NOTICE, USER1, "<dev=%lu> Drop packet with UDP dst port %" PRIu16 ";\n",
                     domain->address, rx_port);
             rte_pktmbuf_free(mbuf);
         }
     } else {
-        RTE_LOG(NOTICE, USER1, "<dev=%s> Drop packet with UDP dst port %" PRIu16 ";\n",
+        RTE_LOG(NOTICE, USER1, "<dev=%lu> Drop packet with UDP dst port %" PRIu16 ";\n",
                 domain->address, rx_port);
         rte_pktmbuf_free(mbuf);
     }
@@ -436,7 +585,7 @@ static void process_rx_packet(struct dpdk_domain *domain, struct rte_mbuf *mbuf)
     case trp_sack:
         /* This is a selective acknowledgement */
         RTE_LOG(DEBUG, USER1,
-                "<dev=%s qp=%" PRIx16 "> receive SACK [%" PRIu32 ", %" PRIu32
+                "<dev=%lu ep=%" PRIx16 "> receive SACK [%" PRIu32 ", %" PRIu32
                 "); send_ack_psn %" PRIu32 "\n",
                 domain->address, dst_ep->udp_port, rte_be_to_cpu_32(trp_hdr->psn),
                 rte_be_to_cpu_32(trp_hdr->ack_psn), ctx.src_ep->send_last_acked_psn);
@@ -446,11 +595,12 @@ static void process_rx_packet(struct dpdk_domain *domain, struct rte_mbuf *mbuf)
         return;
     case trp_fin:
         /* This is a finalize packet */
-        ep_shutdown(dst_ep);
+        // TODO: Handle communication shutdown
+        dst_ep->util_ep.ep_fid.fid.ops->close(&dst_ep->util_ep.ep_fid.fid);
         return;
     default:
         RTE_LOG(NOTICE, USER1,
-                "<dev=%s qp=%" PRIx16 "> receive unexpected opcode %" PRIu16 "; dropping\n",
+                "<dev=%lu ep=%" PRIx16 "> receive unexpected opcode %" PRIu16 "; dropping\n",
                 domain->address, dst_ep->udp_port, trp_opcode >> trp_opcode_shift);
         return;
     }
@@ -462,7 +612,7 @@ static void process_rx_packet(struct dpdk_domain *domain, struct rte_mbuf *mbuf)
     /* If no DDP segment attached; ignore PSN */
     if (rte_be_to_cpu_16(udp_hdr->dgram_len) <= sizeof(*udp_hdr) + sizeof(*trp_hdr)) {
         RTE_LOG(DEBUG, USER1,
-                "<dev=%s qp=%" PRIx16 "> got ACK psn %" PRIu32 "; now last_acked_psn %" PRIu32
+                "<dev=%lu ep=%" PRIx16 "> got ACK psn %" PRIu32 "; now last_acked_psn %" PRIu32
                 " send_next_psn %" PRIu32 " send_max_psn %" PRIu32 "\n",
                 domain->address, dst_ep->udp_port, ctx.psn, ctx.src_ep->send_last_acked_psn,
                 ctx.src_ep->send_next_psn, ctx.src_ep->send_max_psn);
@@ -485,7 +635,7 @@ static void process_rx_packet(struct dpdk_domain *domain, struct rte_mbuf *mbuf)
          * contiguous range so we can send a SACK to lower the number
          * of retransmissions. */
         RTE_LOG(DEBUG, USER1,
-                "<dev=%s qp=%" PRIx16 "> receive psn %" PRIu32 "; next expected psn %" PRIu32 "\n",
+                "<dev=%lu ep=%" PRIx16 "> receive psn %" PRIu32 "; next expected psn %" PRIu32 "\n",
                 domain->address, dst_ep->udp_port, ctx.psn, ctx.src_ep->recv_ack_psn);
         // dst_ep->stats.recv_psn_gap_count++; //TODO: stats not implemented yet
         if (ctx.src_ep->trp_flags & trp_recv_missing) {
@@ -507,7 +657,7 @@ static void process_rx_packet(struct dpdk_domain *domain, struct rte_mbuf *mbuf)
                  * retransmitted along with the surrounding
                  * datagrams. */
                 RTE_LOG(NOTICE, USER1,
-                        "<dev=%s qp=%" PRIx16 "> got out of range psn %" PRIu32
+                        "<dev=%lu ep=%" PRIx16 "> got out of range psn %" PRIu32
                         "; next expected %" PRIu32 " sack range: [%" PRIu32 ",%" PRIu32 "]\n",
                         domain->address, dst_ep->udp_port, ctx.psn, ctx.src_ep->recv_ack_psn,
                         ctx.src_ep->recv_sack_psn.min, ctx.src_ep->recv_sack_psn.max);
@@ -526,7 +676,7 @@ static void process_rx_packet(struct dpdk_domain *domain, struct rte_mbuf *mbuf)
         /* This is a retransmission of a packet which we have already
          * acknowledged; throw it away. */
         RTE_LOG(DEBUG, USER1,
-                "<dev=%s qp=%" PRIx16 "> got retransmission psn %" PRIu32 "; expected psn %" PRIu32
+                "<dev=%lu ep=%" PRIx16 "> got retransmission psn %" PRIu32 "; expected psn %" PRIu32
                 "\n",
                 domain->address, dst_ep->udp_port, ctx.psn, ctx.src_ep->recv_ack_psn);
         // dst_ep->stats.recv_retransmit_count++; //TODO: stats not implemented yet
@@ -549,40 +699,40 @@ static void process_rx_packet(struct dpdk_domain *domain, struct rte_mbuf *mbuf)
         return;
     }
 
-    if (DDP_GET_T(ctx.rdmap->ddp_flags)) {
-        return ddp_place_tagged_data(dst_ep, &ctx);
-    } else {
-        switch (RDMAP_GET_OPCODE(ctx.rdmap->rdmap_info)) {
-        case rdmap_opcode_send_with_imm:
-        case rdmap_opcode_send:
-        case rdmap_opcode_send_inv:
-        case rdmap_opcode_send_se:
-        case rdmap_opcode_send_se_inv:
-            process_rdma_send(dst_ep, &ctx);
-            break;
-        // TODO: The following will need to be implemented to support fi_rma
-        // case rdmap_opcode_rdma_read_request:
-        //     process_rdma_read_request(dst_ep, &ctx);
-        //     break;
-        // case rdmap_opcode_terminate:
-        //     process_terminate(dst_ep, &ctx);
-        //     break;
-        // case rdmap_opcode_atomic_request:
-        //     process_atomic_request(dst_ep, &ctx);
-        //     break;
-        // case rdmap_opcode_atomic_response:
-        //     process_atomic_response(dst_ep, &ctx);
-        //     break;
-        default:
-            do_rdmap_terminate(dst_ep, &ctx, rdmap_error_opcode_unexpected);
-            return;
-        }
+    // TODO: Is "tagged data" supported? I guess not!! => See capabilities
+    // if (DDP_GET_T(ctx.rdmap->ddp_flags)) {
+    // return ddp_place_tagged_data(dst_ep, &ctx);
+    // } else {
+    switch (RDMAP_GET_OPCODE(ctx.rdmap->rdmap_info)) {
+    case rdmap_opcode_send_with_imm:
+    case rdmap_opcode_send:
+    case rdmap_opcode_send_inv:
+    case rdmap_opcode_send_se:
+    case rdmap_opcode_send_se_inv:
+        process_rdma_send(dst_ep, &ctx);
+        break;
+    // TODO: The following will need to be implemented to support fi_rma
+    // case rdmap_opcode_rdma_read_request:
+    //     process_rdma_read_request(dst_ep, &ctx);
+    //     break;
+    // case rdmap_opcode_terminate:
+    //     process_terminate(dst_ep, &ctx);
+    //     break;
+    // case rdmap_opcode_atomic_request:
+    //     process_atomic_request(dst_ep, &ctx);
+    //     break;
+    // case rdmap_opcode_atomic_response:
+    //     process_atomic_response(dst_ep, &ctx);
+    //     break;
+    default:
+        do_rdmap_terminate(dst_ep, &ctx, rdmap_error_opcode_unexpected);
+        return;
     }
 } /* process_rx_packet */
 
 static void do_receive(struct dpdk_domain *domain) {
     struct rte_mbuf *rxmbuf[dpdk_default_tx_burst_size];
-    uint16_t         rx_count, pkt;
+    uint16_t         rx_count;
 
     /* RX packets */
     rx_count =
@@ -591,23 +741,20 @@ static void do_receive(struct dpdk_domain *domain) {
     for (int i = 0; i < rx_count; i++) {
         process_rx_packet(domain, rxmbuf[i]);
     }
-
-    // ep->now = .... in case no received packets in this loop for this packets => where do we place
-    // this?
 }
 
 /* Make forward progress on the queue pair. */
 static void progress_ep(struct dpdk_ep *ep) {
     struct dlist_entry     *cur, *tmp;
     struct dpdk_xfer_entry *send_xfer, *next;
-    uint32_t                psn;
-    int                     scount, ret;
+    // uint32_t                psn;
+    int scount, ret;
 
-    /* This is a per-EP receive we can enable only if we support NIC filtering */
+    /* The following is a per-EP receive we can enable only if we support NIC filtering */
     // TODO: Consider checking if the NIC supports NIC filtering, and enabling this
     // in alternative to the process_receive_queue() call in the main loop.
     // send_xfer = container_of(&ep->sq.active_head, struct dpdk_xfer_entry, entry);
-    // process_receive_queue(ep, send_xfer, &now);
+    // process_receive_queue(ep, send_xfer);
 
     /* Call any timers only once per millisecond */
     sweep_unacked_packets(ep);
@@ -688,11 +835,6 @@ static void progress_ep(struct dpdk_ep *ep) {
 
 } /* progress_ep */
 
-static void ep_shutdown(struct dpdk_ep *ep) {
-    printf("[ep_shutdown] UNIMPLEMENTED\n");
-    return;
-} /* qp_shutdown */
-
 // ================ Main Progress Functions =================
 struct progress_arg {
     struct dpdk_progress *progress;
@@ -700,11 +842,11 @@ struct progress_arg {
 };
 
 /* This function initializes the progress */
-int dpdk_init_progress(struct dpdk_progress *progress, struct fi_info *info) {
+int dpdk_init_progress(struct dpdk_progress *progress, struct fi_info *info, int lcore_id) {
     int ret;
 
     // TODO: this should become a parameter in some way
-    progress->lcore_id = 1;
+    progress->lcore_id = lcore_id;
     atomic_store(&progress->stop_progress, false);
     progress->fid.fclass = DPDK_CLASS_PROGRESS;
     slist_init(&progress->event_list);
@@ -739,9 +881,8 @@ int dpdk_start_progress(struct dpdk_progress *progress) {
 int dpdk_run_progress(void *arg) {
 
     // Arguments
-    struct progress_arg  *arguments    = (struct progress_arg *)arg;
-    struct dpdk_progress *progress     = arguments->progress;
-    bool                  clear_signal = arguments->clear_signal;
+    struct progress_arg  *arguments = (struct progress_arg *)arg;
+    struct dpdk_progress *progress  = arguments->progress;
 
     struct slist_entry *prev, *cur;
     struct dpdk_domain *domain = container_of(progress, struct dpdk_domain, progress);

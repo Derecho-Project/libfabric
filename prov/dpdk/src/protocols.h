@@ -41,6 +41,9 @@ struct packet_context {
 // Converts a string representing an eth address into a byte representation of the address itself
 int eth_parse(char *string, unsigned char *eth_addr);
 
+void enqueue_ether_frame(struct rte_mbuf *sendmsg, unsigned int ether_type, struct dpdk_ep *ep,
+                         struct rte_ether_addr *dst_addr);
+
 /* IPv4 */
 
 #define ICMPV4        1
@@ -53,10 +56,17 @@ int eth_parse(char *string, unsigned char *eth_addr);
 uint16_t ip_checksum(struct rte_ipv4_hdr *ih, size_t len);
 int32_t  ip_parse(char *addr, uint32_t *dst);
 
+struct rte_ipv4_hdr *prepend_ipv4_header(struct rte_mbuf *sendmsg, int next_proto_id,
+                                         uint32_t src_addr, uint32_t dst_addr);
 /* UDP */
 #define UDP_HEADER_LEN       8
 #define UDP_PORT             2310
 #define MAX_UDP_PAYLOAD_SIZE 11808
+
+void send_udp_dgram(struct dpdk_ep *ep, struct rte_mbuf *sendmsg, uint32_t raw_cksum);
+
+struct rte_udp_hdr *prepend_udp_header(struct rte_mbuf *sendmsg, unsigned int src_port,
+                                       unsigned int dst_port);
 
 /* TRP */
 #define RETRANSMIT_MAX 5
@@ -113,11 +123,31 @@ struct trp_rr {
     struct trp_rr_params params;
 } __attribute__((__packed__));
 
+#define PENDING_DATAGRAM_INFO_SIZE 64
+struct pending_datagram_info {
+    uint64_t                           next_retransmit;
+    struct dpdk_xfer_entry            *wqe;
+    struct read_atomic_response_state *readresp;
+    uint16_t                           transmit_count;
+    uint16_t                           ddp_length;
+    uint32_t                           ddp_raw_cksum;
+    uint32_t                           psn;
+};
+
+void send_trp_ack(struct dpdk_ep *ep);
 void send_trp_sack(struct dpdk_ep *ep);
 void process_trp_sack(struct ee_state *ep, uint32_t psn_min, uint32_t psn_max);
 void maybe_sack_pending(struct pending_datagram_info *pending, uint32_t psn_min, uint32_t psn_max);
 
 /* DDP */
+#define DDP_V1_UNTAGGED_DF      0x01
+#define DDP_V1_TAGGED_DF        0x81
+#define DDP_V1_UNTAGGED_LAST_DF 0x41
+#define DDP_V1_TAGGED_LAST_DF   0xc1
+#define DDP_GET_T(flags)        ((flags >> 7) & 0x1)
+#define DDP_GET_L(flags)        ((flags >> 6) & 0x1)
+#define DDP_GET_DV(flags)       ((flags)&0x3)
+
 struct read_atomic_response_state {
     char    *vaddr;
     uint32_t sink_stag; /* network byte order */
@@ -146,19 +176,104 @@ struct read_atomic_response_state {
     };
 };
 
-struct pending_datagram_info {
-    uint64_t                           next_retransmit;
-    struct dpdk_xfer_entry            *xfer_entry;
-    struct read_atomic_response_state *readresp;
-    uint16_t                           transmit_count;
-    uint16_t                           ddp_length;
-    uint32_t                           ddp_raw_cksum;
-    uint32_t                           psn;
+enum ddp_queue_number {
+    ddp_queue_send            = 0,
+    ddp_queue_read_request    = 1,
+    ddp_queue_terminate       = 2,
+    ddp_queue_atomic_response = 3,
+    ddp_queue_ack             = 4,
 };
 
-void ddp_place_tagged_data(struct dpdk_ep *ep, struct packet_context *orig);
+int send_ddp_segment(struct dpdk_ep *ep, struct rte_mbuf *sendmsg,
+                     struct read_atomic_response_state *readresp, struct dpdk_xfer_entry *wqe,
+                     size_t payload_length);
+int resend_ddp_segment(struct dpdk_ep *ep, struct rte_mbuf *sendmsg, struct ee_state *ee);
 
 /* RDMAP */
+#define RDMAP_V1                0x40
+#define RDMAP_GET_RV(flags)     ((flags >> 6) & 0x3)
+#define RDMAP_GET_OPCODE(flags) ((flags)&0xf)
+
+/** Given a pointer to a structure representing a packet header, returns a
+ * pointer to the payload (one byte immediately after the header) */
+#define PAYLOAD_OF(x) ((char *)((x) + 1))
+
+struct rdmap_packet {
+    uint8_t  ddp_flags;  /* 0=Tagged 1=Last 7-6=DDP_Version */
+    uint8_t  rdmap_info; /* 1-0=RDMAP_Version 7-4=Opcode */
+    uint32_t sink_stag;
+    uint32_t immediate; /* The immediate data */
+} __attribute__((__packed__));
+static_assert(sizeof(struct rdmap_packet) == 10, "unexpected sizeof(rdmap_packet)");
+
+enum rdmap_atomic_opcodes {
+    rdmap_atomic_fetchadd = 0,
+    rdmap_atomic_cmpswap  = 1,
+};
+
+struct rdmap_tagged_packet {
+    struct rdmap_packet head;
+    uint64_t            offset;
+} __attribute__((__packed__));
+static_assert(sizeof(struct rdmap_tagged_packet) == 18, "unexpected sizeof(rdmap_tagged_packet)");
+
+struct rdmap_untagged_packet {
+    struct rdmap_packet head;
+    uint32_t            qn;  /* Queue Number */
+    uint32_t            msn; /* Message Sequence Number */
+    uint32_t            mo;  /* Message Offset */
+} __attribute__((__packed__));
+static_assert(sizeof(struct rdmap_untagged_packet) == 22,
+              "unexpected sizeof(rdmap_untagged_packet)");
+
+#define RDMAP_TAGGED_ALLOC_SIZE(len)   (sizeof(struct rdmap_tagged_packet) + (len))
+#define RDMAP_UNTAGGED_ALLOC_SIZE(len) (sizeof(struct rdmap_untagged_packet) + (len))
+
+struct rdmap_readreq_packet {
+    struct rdmap_untagged_packet untagged;
+    uint64_t                     sink_offset;
+    uint32_t                     read_msg_size;
+    uint32_t                     source_stag;
+    uint64_t                     source_offset;
+} __attribute__((__packed__));
+static_assert(sizeof(struct rdmap_readreq_packet) == 46, "unexpected sizeof(rdmap_readreq_packet)");
+
+struct rdmap_terminate_packet {
+    struct rdmap_untagged_packet untagged;
+    uint16_t                     error_code; /* 0-3 layer 4-7 etype 8-16 code */
+    uint8_t                      hdrct;      /* bits: 0-M 1-D 2-R */
+    uint8_t                      reserved;
+} __attribute__((__packed__));
+static_assert(sizeof(struct rdmap_terminate_packet) == 26,
+              "unexpected sizeof(rdmap_terminate_packet)");
+
+struct rdmap_terminate_payload {
+    uint16_t            ddp_seg_len;
+    struct rdmap_packet payload;
+} __attribute__((__packed__));
+
+struct rdmap_atomicreq_packet {
+    struct rdmap_untagged_packet untagged;
+    uint32_t                     opcode;
+    uint32_t                     req_id;
+    uint32_t                     remote_stag;
+    uint64_t                     remote_offset;
+    uint64_t                     add_swap_data;
+    uint64_t                     add_swap_mask;
+    uint64_t                     compare_data;
+    uint64_t                     compare_mask;
+} __attribute__((__packed__));
+static_assert(sizeof(struct rdmap_atomicreq_packet) == 74,
+              "unexpected sizeof(rdmap_atomicreq_packet)");
+
+struct rdmap_atomicresp_packet {
+    struct rdmap_untagged_packet untagged;
+    uint32_t                     req_id;
+    uint64_t                     orig_value;
+} __attribute__((__packed__));
+static_assert(sizeof(struct rdmap_atomicresp_packet) == 34,
+              "unexpected sizeof(rdmap_atomicresp_packet)");
+
 enum rdmap_packet_type {
     rdmap_opcode_rdma_write          = 0,
     rdmap_opcode_rdma_read_request   = 1,
@@ -210,29 +325,9 @@ enum rdmap_errno {
     ddp_error_untagged_message_too_long         = 0x1205,
     ddp_error_untagged_version_invalid          = 0x1206,
 };
-struct rdmap_packet {
-    uint8_t  ddp_flags;  /* 0=Tagged 1=Last 7-6=DDP_Version */
-    uint8_t  rdmap_info; /* 1-0=RDMAP_Version 7-4=Opcode */
-    uint32_t sink_stag;
-    uint32_t immediate; /* The immediate data */
-} __attribute__((__packed__));
-static_assert(sizeof(struct rdmap_packet) == 10, "unexpected sizeof(rdmap_packet)");
 
-struct rdmap_tagged_packet {
-    struct rdmap_packet head;
-    uint64_t            offset;
-} __attribute__((__packed__));
-static_assert(sizeof(struct rdmap_tagged_packet) == 18, "unexpected sizeof(rdmap_tagged_packet)");
-
-struct rdmap_untagged_packet {
-    struct rdmap_packet head;
-    uint32_t            qn;  /* Queue Number */
-    uint32_t            msn; /* Message Sequence Number */
-    uint32_t            mo;  /* Message Offset */
-} __attribute__((__packed__));
-static_assert(sizeof(struct rdmap_untagged_packet) == 22,
-              "unexpected sizeof(rdmap_untagged_packet)");
-
+void memcpy_from_iov(char *restrict dest, size_t dest_size, const struct iovec *restrict src,
+                     size_t iov_count, size_t offset);
 void do_rdmap_send(struct dpdk_ep *ep, struct dpdk_xfer_entry *entry);
 void do_rdmap_terminate(struct dpdk_ep *ep, struct packet_context *orig, enum rdmap_errno errcode);
 #endif // DPDK_PROTOCOLS_H

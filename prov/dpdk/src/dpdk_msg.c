@@ -5,12 +5,6 @@ static void free_extbuf_cb(void *addr, void *opaque) {
     return;
 }
 
-static void recv_xfer_queue_del_active(struct dpdk_xfer_queue *q,
-                                       struct dpdk_xfer_entry *xfer_entry) {
-    // Removes this entry from the queue active list
-    dlist_remove(&xfer_entry->entry);
-} /* recv_xfer_queue_del_active */
-
 static int ep_get_next_recv_entry(struct dpdk_ep *ep, struct dpdk_xfer_entry **xfer_entry) {
     int ret;
 
@@ -24,9 +18,10 @@ static int ep_get_next_recv_entry(struct dpdk_ep *ep, struct dpdk_xfer_entry **x
 
 // Returns the given receive XFER back to the free pool.  It is removed from the active set if
 // still_in_hash is true. The rq lock MUST be locked when calling this function.
-static void ep_free_recv_xfer(struct dpdk_ep *ep, struct dpdk_xfer_entry **xfer_entry) {
-    recv_xfer_queue_del_active(&ep->rq, xfer_entry);
-    rte_ring_enqueue(ep->rq.free_ring, xfer_entry);
+// TODO; This isn't called by anyone? really? Why?
+void ep_free_recv_xfer(struct dpdk_ep *ep, struct dpdk_xfer_entry *wqe) {
+    dlist_remove(&wqe->entry);
+    rte_ring_enqueue(ep->rq.free_ring, wqe);
 } /* ep_free_recv_xfer */
 
 static int ep_get_next_send_entry(struct dpdk_ep *ep, struct dpdk_xfer_entry **xfer_entry) {

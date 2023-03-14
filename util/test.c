@@ -167,20 +167,6 @@ int lf_initialize() {
         return ret;
     }
 
-    /* Initialize CQ
-     * libfabric 1.12 does not pick an adequate default value for completion queue size.
-     * We simply set it to a large enough one */
-    g_ctxt.cq_attr.size = 2097152;
-    ret                 = fi_cq_open(g_ctxt.domain, &(g_ctxt.cq_attr), &(g_ctxt.cq), NULL);
-    if (ret) {
-        printf("fi_cq_open() failed: %s\n", fi_strerror(-ret));
-        return ret;
-    }
-    if (!g_ctxt.cq) {
-        printf("Pointer to completion queue is null\n");
-        return -1;
-    }
-
     return 0;
 }
 
@@ -201,17 +187,29 @@ int init_active_ep(struct fi_info *fi, struct fid_ep **ep, struct fid_eq **eq) {
         return ret;
     }
 
+    /* Create a completion queue */
+    g_ctxt.cq_attr.size = 2097152;
+    ret                 = fi_cq_open(g_ctxt.domain, &(g_ctxt.cq_attr), &(g_ctxt.cq), NULL);
+    if (ret) {
+        printf("fi_cq_open() failed: %s\n", fi_strerror(-ret));
+        return ret;
+    }
+    if (!g_ctxt.cq) {
+        printf("Pointer to completion queue is null\n");
+        return -1;
+    }
+
     /* Bind endpoint to event queue and completion queue */
     ret = fi_ep_bind(*ep, &(*eq)->fid, 0);
     if (ret) {
-        printf("fi_ep_bind() failed: %s\n", fi_strerror(-ret));
+        printf("fi_ep_bind() failed to bind event queue: %s\n", fi_strerror(-ret));
         return ret;
     }
 
     const uint64_t ep_flags = FI_RECV | FI_TRANSMIT | FI_SELECTIVE_COMPLETION;
     ret                     = fi_ep_bind(*ep, &(g_ctxt.cq)->fid, ep_flags);
     if (ret) {
-        printf("fi_ep_bind() failed: %s\n", fi_strerror(-ret));
+        printf("fi_ep_bind() failed to bind completion queue: %s\n", fi_strerror(-ret));
         return ret;
     }
 
@@ -350,6 +348,7 @@ void do_server() {
         msg.addr      = 0;
         msg.context   = NULL;
 
+        // Post a receive request
         ret = fi_recvmsg(ep, &msg, 0);
         if (ret == -FI_EAGAIN) {
             usleep(100);
@@ -359,7 +358,15 @@ void do_server() {
             exit(2);
         }
 
-        // TODO: Poll the CQ for the completion of the recvmsg
+        // Get the associated completion
+        struct fi_cq_err_entry comp;
+        do {
+            ret = fi_cq_read(g_ctxt.cq, &comp, 1);
+            if (ret < 0 && ret != -FI_EAGAIN) {
+                printf("CQ read failed: %s", fi_strerror(-ret));
+                break;
+            }
+        } while (ret == -FI_EAGAIN);
 
         printf("Received a new message: %s\n", (char *)msg.msg_iov[0].iov_base);
     }
@@ -426,14 +433,14 @@ void do_client() {
         // Fill the buffer with random content
         memset(g_mr.buffer, 'a', msg_iov.iov_len);
 
-        // Send
+        // Post a send request
         ret = fi_sendmsg(ep, &msg, FI_COMPLETION);
         if (ret) {
             printf("fi_sendmsg() failed: %s\n", fi_strerror(-ret));
             continue;
         }
 
-        // TODO: Wait for completion. For the moment, just sleep
+        // TODO: Get completion. For the moment, just sleep
         usleep(1000);
 
         printf("Insert a message size: ");

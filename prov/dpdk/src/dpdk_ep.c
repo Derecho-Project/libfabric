@@ -1,4 +1,5 @@
 #include "fi_dpdk.h"
+#include "protocols.h"
 
 #include <ifaddrs.h>
 #include <net/if.h>
@@ -7,8 +8,51 @@
 
 #include <ofi_util.h>
 
+// ================== HELPER FUNCTIONS ========
+static int ep_queue_init(struct dpdk_ep *ep, struct dpdk_xfer_queue *q, uint32_t q_size,
+                         uint32_t max_recv_sge, char *q_name) {
+    size_t wqe_size;
+    char   name[RTE_RING_NAMESIZE];
+    int    i, ret;
+
+    snprintf(name, RTE_RING_NAMESIZE, "ep%" PRIu16 "_ring", ep->udp_port);
+    q->ring = rte_malloc(NULL, rte_ring_get_memsize(q_size + 1), RTE_CACHE_LINE_SIZE, q_name);
+    if (!q->ring) {
+        return -rte_errno;
+    }
+    ret = rte_ring_init(q->ring, name, q_size + 1, RING_F_SP_ENQ | RING_F_SC_DEQ);
+    if (ret) {
+        return ret;
+    }
+
+    snprintf(name, RTE_RING_NAMESIZE, "ep%" PRIu16 "_free", ep->udp_port);
+    q->free_ring = rte_malloc(NULL, rte_ring_get_memsize(q_size + 1), RTE_CACHE_LINE_SIZE, q_name);
+    if (!q->free_ring) {
+        return -rte_errno;
+    }
+    ret = rte_ring_init(q->free_ring, name, q_size + 1, RING_F_SP_ENQ | RING_F_SC_DEQ);
+    if (ret) {
+        return ret;
+    }
+    wqe_size   = sizeof(struct dpdk_xfer_entry) + max_recv_sge * sizeof(struct iovec);
+    q->storage = calloc(q_size + 1, wqe_size);
+    if (!q->storage)
+        return -errno;
+
+    for (i = 0; i < q_size; ++i) {
+        rte_ring_enqueue(q->free_ring, q->storage + i * wqe_size);
+    }
+
+    dlist_init(&q->active_head);
+    rte_spinlock_init(&q->lock);
+    q->max_wr   = q_size;
+    q->max_sge  = max_recv_sge;
+    q->next_msn = 1;
+    return 0;
+} /* usiw_recv_wqe_queue_init */
+
 // ============== ACTIVE ENDPOINT ==============
-// === Helper functions ===
+// === EP FI_OPS ===
 
 static int dpdk_ep_bind(struct fid *fid, struct fid *bfid, uint64_t flags) {
     struct dpdk_ep *ep;
@@ -17,8 +61,9 @@ static int dpdk_ep_bind(struct fid *fid, struct fid *bfid, uint64_t flags) {
 
     ep  = container_of(fid, struct dpdk_ep, util_ep.ep_fid.fid);
     ret = ofi_ep_bind_valid(&dpdk_prov, bfid, flags);
-    if (ret)
+    if (ret) {
         return ret;
+    }
 
     switch (bfid->fclass) {
     case FI_CLASS_CQ:
@@ -31,6 +76,8 @@ static int dpdk_ep_bind(struct fid *fid, struct fid *bfid, uint64_t flags) {
             FI_WARN(&dpdk_prov, FI_LOG_EP_CTRL, "invalid flags for CQ binding");
             return -FI_EINVAL;
         }
+        // TODO: Not ideal... see cq readfrom
+        cq->ep = ep;
         break;
 
     // TODO: for the moment, just associate the CQ.
@@ -135,6 +182,15 @@ static int dpdk_ep_getname(fid_t fid, void *addr, size_t *addrlen) {
 static int dpdk_ep_connect(struct fid_ep *ep_fid, const void *addr, const void *param,
                            size_t paramlen) {
 
+    // TODO: This is a placeholder to have the EP work
+    // This is for Weijia to provide the actual implementation
+    struct dpdk_ep *ep = container_of(ep_fid, struct dpdk_ep, util_ep.ep_fid);
+    eth_parse("ff:ff:ff:ff:ff:ff", &ep->remote_eth_addr);
+    ip_parse("192.168.56.212", &ep->remote_ipv4_addr);
+    ep->remote_udp_port = 2510;
+
+    atomic_store(&ep->conn_state, ep_conn_state_connected);
+
     // TODO: IMPLEMENT THIS FUNCTION
     printf("[dpdk_ep_connect] UNIMPLEMENTED\n");
 
@@ -147,7 +203,7 @@ static int dpdk_ep_accept(struct fid_ep *ep, const void *param, size_t paramlen)
     return 0;
 }
 
-// === EP functions ===
+// === EP MSG functions ===
 // Defined in a separate file for clarity
 extern struct fi_ops_msg dpdk_msg_ops;
 
@@ -185,19 +241,12 @@ int dpdk_endpoint(struct fid_domain *domain, struct fi_info *info, struct fid_ep
         return -FI_ENOMEM;
     }
 
+    /* 1. libfabric-specific initialization */
     ret = ofi_endpoint_init(domain, &dpdk_util_prov, info, &ep->util_ep, context, NULL);
     if (ret) {
         goto err1;
     }
-
-    printf("[dpdk_endpoint] EP creation only partially implemented\n");
-
-    // TODO: Initialize the structures
-    ep->hdr_pool_name = malloc(64);
-    sprintf(ep->hdr_pool_name, "hdr_pool_%s", ep->util_ep.domain->name);
-    ep->hdr_pool = rte_pktmbuf_pool_create(ep->hdr_pool_name, 10240, 64, 0,
-                                           RTE_MBUF_DEFAULT_BUF_SIZE, rte_socket_id());
-
+    // TODO: Complete the OPS definition
     *ep_fid            = &ep->util_ep.ep_fid;
     (*ep_fid)->fid.ops = &dpdk_ep_fi_ops;
     // (*ep_fid)->ops     = &dpdk_ep_ops;
@@ -206,10 +255,89 @@ int dpdk_endpoint(struct fid_domain *domain, struct fi_info *info, struct fid_ep
     //     (*ep_fid)->rma     = &dpdk_rma_ops;
     //     (*ep_fid)->tagged  = &dpdk_tagged_ops;
 
-    // Add this EP to EP list of the domain, and increase the associated values
-    // MUST be done while holding the lock on the list.
+    /* 2. DPDK-specific initialization */
     struct dpdk_domain *dpdk_domain =
         container_of(ep->util_ep.domain, struct dpdk_domain, util_domain);
+
+    // Initialize TX and RX queues //TODO: Cleanup and memory free in case of failure
+    ep_queue_init(ep, &ep->sq, dpdk_default_tx_size, DPDK_IOV_LIMIT, "send");
+    ep_queue_init(ep, &ep->rq, dpdk_default_rx_size, DPDK_IOV_LIMIT, "recv");
+
+    // TODO: Cleanup and memory free in case of failure
+    RTE_LOG(DEBUG, USER1, "Initializing the QP TXQ to contain %u structs of size %u\n",
+            dpdk_default_tx_size, sizeof(*ep->txq));
+    ep->txq     = calloc(dpdk_default_tx_size, sizeof(*ep->txq));
+    ep->txq_end = ep->txq;
+
+    // Completion Queues are not initialized here, but in the fi_ep_bind function, as they are
+    // created independently by the end user
+
+    // Initialize the remote endpoint state
+    // TODO: [uRDMA comment] Get this from the remote peer
+    ep->remote_ep.send_max_psn    = dpdk_default_tx_size / 2;
+    ep->remote_ep.tx_pending_size = dpdk_default_tx_size / 2;
+    ep->remote_ep.tx_pending =
+        calloc(ep->remote_ep.tx_pending_size, sizeof(*ep->remote_ep.tx_pending));
+    if (!ep->remote_ep.tx_pending) {
+        RTE_LOG(DEBUG, USER1, "<ep=%" PRIx16 "> Set up tx_pending failed: %s\n", ep->udp_port,
+                strerror(errno));
+        goto err4;
+    }
+    ep->remote_ep.tx_head             = ep->remote_ep.tx_pending;
+    ep->remote_ep.recv_rresp_last_psn = binheap_new(dpdk_max_ord);
+    if (!ep->remote_ep.recv_rresp_last_psn) {
+        goto err4;
+    }
+
+    // Set the state of the endpoint to unbound
+    atomic_store(&ep->conn_state, ep_conn_state_unbound);
+
+    // Initialize the acknowledgement management system
+    ep->readresp_store = calloc(dpdk_max_ird, sizeof(*ep->readresp_store));
+    if (!ep->readresp_store) {
+        RTE_LOG(DEBUG, USER1, "<ep=%" PRIx16 "> Set up readresp_store failed: %s\n", ep->udp_port,
+                strerror(errno));
+        goto err5;
+    }
+    ep->readresp_head_msn = 1;
+    ep->ord_active        = 0;
+
+    // Initialize header memory pool. TODO: handle memory cleanup
+    /* We must allocate an mbuf large enough to hold the maximum possible
+     * received packet. Note that the 64-byte headroom does *not* count for
+     * incoming packets. Note that the MTU as set by urdma and DPDK does
+     * *not* include the Ethernet header, CRC, or VLAN tag, but the drivers
+     * require space for these in the receive buffer.
+     * The other headers (IP and upper) are taken into account by the priv_size
+     * of the mempool, which is PENDING_DATAGRAM_INFO_SIZE.
+     */
+    size_t mbuf_size = RTE_PKTMBUF_HEADROOM + MTU + RTE_ETHER_VXLAN_HLEN + RTE_ETHER_CRC_LEN;
+
+    ep->tx_hdr_mempool_name = malloc(64);
+    sprintf(ep->tx_hdr_mempool_name, "hdr_pool_%s", ep->util_ep.domain->name);
+    ep->tx_hdr_mempool = rte_pktmbuf_pool_create(
+        ep->tx_hdr_mempool_name, 2 * MAX_ENDPOINTS_PER_APP * dpdk_default_tx_size, 0,
+        PENDING_DATAGRAM_INFO_SIZE, mbuf_size, rte_socket_id());
+    if (!ep->tx_hdr_mempool) {
+        rte_exit(EXIT_FAILURE, "Cannot create hdr tx mempool for domain %s: %s\n",
+                 ep->util_ep.domain->name, rte_strerror(rte_errno));
+    }
+
+    // Same for the DDP mempool. uRDMA did not allocate the DDP header mempool, leaving it as a TODO
+    // and re-using the hdr mempool. Let's try to actually separate them.
+    // TODO: cleanup!!
+    ep->tx_ddp_mempool_name = malloc(64);
+    sprintf(ep->tx_ddp_mempool_name, "hdr_pool_%s", ep->util_ep.domain->name);
+    ep->tx_ddp_mempool = rte_pktmbuf_pool_create(
+        ep->tx_ddp_mempool_name, 2 * MAX_ENDPOINTS_PER_APP * dpdk_default_tx_size, 0,
+        PENDING_DATAGRAM_INFO_SIZE, mbuf_size, rte_socket_id());
+    if (!ep->tx_ddp_mempool) {
+        rte_exit(EXIT_FAILURE, "Cannot create hdr tx mempool for domain %s: %s\n",
+                 ep->util_ep.domain->name, rte_strerror(rte_errno));
+    }
+
+    // Add this EP to EP list of the domain, and increase the associated values
+    // MUST be done while holding the EP MUTEX.
     ofi_genlock_lock(&dpdk_domain->ep_mutex);
     slist_insert_tail(&ep->entry, &dpdk_domain->endpoint_list);
     dpdk_domain->num_endpoints++;
@@ -220,6 +348,10 @@ int dpdk_endpoint(struct fid_domain *domain, struct fi_info *info, struct fid_ep
 
     return 0;
 
+// TODO: complete error handling
+err5:
+err4:
+err3:
 err2:
     ofi_endpoint_close(&ep->util_ep);
 err1:

@@ -18,7 +18,7 @@ AC_DEFUN([FI_DPDK_CONFIGURE],[
 
     # Set the DPDK environments
     AS_IF([test $dpdk_happy -eq 1],
-          [FI_PKG_CHECK_MODULES([dpdk], [libdpdk >= 22.11.1], [], [AC_MSG_ERROR([Cannot find libdpdk>=22.11.1])])],
+          [FI_PKG_CHECK_MODULES([dpdk], [libdpdk >= 22.11.0], [], [AC_MSG_ERROR([Cannot find libdpdk>=22.11.0])])],
           [])
 
     # Set the flags for DPDK

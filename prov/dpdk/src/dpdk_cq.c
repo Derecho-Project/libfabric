@@ -17,8 +17,31 @@ static int next_pow2(int in) {
 //====================== OPS ======================
 static ssize_t dpdk_cq_readfrom(struct fid_cq *cq_fid, void *buf, size_t count,
                                 fi_addr_t *src_addr) {
-    printf("[dpdk_cq_readfrom] UNIMPLEMENTED\n");
-    return 0;
+    int ret;
+
+    // Get a dpdk_ep from the cq
+    // TODO: There must be a better (i.e., more "libfabric-oriented") way to do this...
+    struct dpdk_cq *cq = container_of(cq_fid, struct dpdk_cq, util_cq.cq_fid);
+    struct dpdk_ep *ep = cq->ep;
+
+    // Array of WQEs that I read from the CQE.
+    // TODO: What should I do with those?
+    // I am expected to return only those successfult?
+    // See the libfabric spec for more details.
+    struct dpdk_xfer_entry *wqe;
+
+    // TODO: Why the lock???
+    rte_spinlock_lock(&ep->rq.lock);
+    ret = rte_ring_dequeue_burst(ep->rq.free_ring, (void **)wqe, count, NULL);
+    rte_spinlock_unlock(&ep->rq.lock);
+    if (ret == -ENOENT) {
+        ret = -EAGAIN;
+    }
+
+    // TODO: implement according to the spec
+    src_addr = FI_ADDR_NOTAVAIL;
+
+    return ret;
 }
 
 static ssize_t dpdk_cq_readerr(struct fid_cq *cq_fid, struct fi_cq_err_entry *buf, uint64_t flags) {
@@ -73,7 +96,7 @@ static struct fi_ops dpdk_cq_fi_ops = {
 
 static struct fi_ops_cq dpdk_cq_ops = {
     .size      = sizeof(struct fi_ops_cq),
-    .read      = ofi_cq_read,
+    .read      = ofi_cq_read, // FW to readfrom
     .readfrom  = dpdk_cq_readfrom,
     .readerr   = dpdk_cq_readerr,
     .sread     = ofi_cq_sread,
@@ -83,13 +106,8 @@ static struct fi_ops_cq dpdk_cq_ops = {
 };
 
 static void dpdk_cq_progress(struct util_cq *util_cq) {
-    struct dpdk_cq *cq;
-    cq = container_of(util_cq, struct dpdk_cq, util_cq);
-
+    // TODO: Unimplemented?
     printf("[dpdk_cq_progress] UNIMPLEMENTED\n");
-
-    // TODO: What am I supposed to put here?
-    // dpdk_run_progress(dpdk_cq2_progress(cq), false);
 }
 
 static int dpdk_cq_wait_try_func(void *arg) {

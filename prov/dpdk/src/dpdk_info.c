@@ -106,11 +106,18 @@ struct fi_info dpdk_info = {.next = NULL,
                             .addr_format = FI_FORMAT_UNSPEC,
                             .src_addrlen = sizeof(uint64_t)};
 
+// All these parameters should be a per-device configuration, with default values but potentially
+// overridable from users, that should be resident in the dpdk_domain structure (maybe
+// dpdk_domain->dev).
 size_t dpdk_default_tx_size       = 256; // TODO: What is this?
 size_t dpdk_default_rx_size       = 256; // TODO: What is this?
 size_t dpdk_max_inject            = 128; // TODO: What is this?
 size_t dpdk_default_tx_burst_size = 32;  // TODO: Why here? Should be a configurable parameter...
 size_t dpdk_default_rx_burst_size = 32;  // TODO: Why here? Should be a configurable parameter...
+// Max simultaneous RDMA READ and Atomic Requests
+size_t dpdk_max_ord = 128; // TODO: Why here? Should be a configurable parameter...
+// Max simultaneous pending operations? Not sure...
+size_t dpdk_max_ird = 128; // TODO: Why here? Should be a configurable parameter...
 
 /* User hints will still override the modified dest_info attributes
  * through ofi_alter_info
@@ -184,7 +191,8 @@ int dpdk_getinfo(uint32_t version, const char *node, const char *service, uint64
         // Now copy ip_addr in the most significant 32 bits of the src_addr
         memcpy(new_info->src_addr, &ip_addr, sizeof(uint32_t));
         // Now copy the port_id in the least significant 16 bits of the src_addr
-        memcpy(new_info->src_addr + sizeof(uint32_t), LF_PORT_DEFAULT, sizeof(uint16_t));
+        uint16_t udp_port = LF_PORT_DEFAULT;
+        memcpy(new_info->src_addr + sizeof(uint32_t), &udp_port, sizeof(uint16_t));
 
         // Endpoint type can be:
         // FI_EP_MSG Reliable-connected => Assuming our impl!

@@ -1,4 +1,5 @@
 #include "fi_dpdk.h"
+#include "protocols.h"
 
 #include <ifaddrs.h>
 #include <net/if.h>
@@ -9,7 +10,7 @@
 
 /* Many configuration parameters required to startup DPDK */
 static inline int port_init(struct rte_mempool *mempool, uint16_t port_id, uint16_t queue_id,
-                            uint16_t mtu) {
+                            uint16_t mtu, uint64_t *dev_flags) {
     int valid_port = rte_eth_dev_is_valid_port(0);
     if (!valid_port)
         return -1;
@@ -38,8 +39,10 @@ static inline int port_init(struct rte_mempool *mempool, uint16_t port_id, uint1
     if (retval != 0)
         return retval;
 
-    // TODO: Here I should retrieve a set of device flages for each function and make it available
+    // TODO: Here I should retrieve a set of device flags for each function and make it available
     // in the dpdk_domain struct in order to retrieve it when needed (in the progress thread).
+    // In particular the current code would need to know: port_checksum_offload, port_fdir
+    *dev_flags = 0;
 
     // Set the MTU explicitly
     retval = rte_eth_dev_set_mtu(port_id, actual_mtu);
@@ -124,33 +127,73 @@ static struct fi_ops dpdk_domain_fi_ops = {
 // MR API defined in dpdk_mr.c
 extern struct fi_ops_mr dpdk_domain_fi_ops_mr;
 
+// Create a new dpdk domain. The creation follows three steps:
+// 1. libfabric-specific initialization
+// 2. dpdk-specific initialization
+// 3. start the DPDK progress thread (as a DPDK lcore)
 int dpdk_domain_open(struct fid_fabric *fabric_fid, struct fi_info *info,
                      struct fid_domain **domain_fid, void *context) {
     struct dpdk_fabric *fabric;
     struct dpdk_domain *domain;
     int                 ret;
 
+    /* 1. libfabric-specific initialization */
     fabric = container_of(fabric_fid, struct dpdk_fabric, util_fabric.fabric_fid);
     ret    = ofi_prov_check_info(&dpdk_util_prov, fabric_fid->api_version, info);
-    if (ret)
+    if (ret) {
         return ret;
+    }
 
     domain = calloc(1, sizeof(*domain));
-    if (!domain)
+    if (!domain) {
         return -FI_ENOMEM;
+    }
 
     ret = ofi_domain_init(fabric_fid, info, &domain->util_domain, context, OFI_LOCK_NONE);
-    if (ret)
+    if (ret) {
         goto free;
+    }
+    domain->util_domain.domain_fid.fid.ops = &dpdk_domain_fi_ops;
+    domain->util_domain.domain_fid.ops     = &dpdk_domain_ops;
+    domain->util_domain.domain_fid.mr      = &dpdk_domain_fi_ops_mr;
+    *domain_fid                            = &domain->util_domain.domain_fid;
 
-    slist_init(&domain->endpoint_list);
-    ofi_genlock_init(&domain->ep_mutex, OFI_LOCK_MUTEX);
+    /* 2. DPDK-specific initialization */
+
+    // Initialize the DPDK device
+    // TODO: port_id, queue_id, lcore_id, dev_flags, and mtu MUST be configurable parameters!
+    // More generally, I think many of the parameter passed to and retrieved from
+    // the port_init function must be kept in a struct device_info that is part of
+    // the dpdk_domain struct.
+    domain->port_id  = 0;
+    domain->queue_id = 0;
+    domain->lcore_id = 0;
+    domain->mtu      = MTU;
+    if (port_init(domain->rx_pool, domain->port_id, domain->queue_id, domain->mtu,
+                  &domain->dev_flags) < 0)
+    {
+        FI_WARN(&dpdk_prov, FI_LOG_CORE, "Port Init DPDK: error\n");
+        goto free;
+    };
 
     // Get the IP and UDP port info from the configuration
     // The most significant 32 bytes of the 64-bit integer are the IP address
     // The least significant 16 bytes of the 64-bit integer are the UDP port
     domain->address = *(uint64_t *)(info->src_addr);
     domain->addrlen = info->src_addrlen;
+    rte_eth_macaddr_get(domain->port_id, &domain->eth_addr);
+
+    // Initialize the list of endpoints
+    slist_init(&domain->endpoint_list);
+    domain->num_endpoints = 0;
+    // Initialize the mutex to access EP list and info
+    ofi_genlock_init(&domain->ep_mutex, OFI_LOCK_MUTEX);
+
+    // Initialize the progress thread structure for this domain
+    ret = dpdk_init_progress(&domain->progress, info, domain->lcore_id);
+    if (ret) {
+        goto close;
+    }
 
     // Allocate the mempool for RX mbufs
     domain->rx_pool_name = malloc(32);
@@ -160,7 +203,7 @@ int dpdk_domain_open(struct fid_fabric *fabric_fid, struct fi_info *info,
     if (domain->rx_pool == NULL) {
         FI_WARN(&dpdk_prov, FI_LOG_CORE, "Cannot create RX mbuf pool for domain %s: %s",
                 domain->util_domain.name, rte_strerror(rte_errno));
-        goto free;
+        goto close;
     }
     printf("RX mempool creation OK\n");
 
@@ -172,35 +215,15 @@ int dpdk_domain_open(struct fid_fabric *fabric_fid, struct fi_info *info,
     if (domain->ext_pool == NULL) {
         FI_WARN(&dpdk_prov, FI_LOG_CORE, "Cannot create external mbuf pool for domain %s: %s",
                 domain->util_domain.name, rte_strerror(rte_errno));
-        goto free;
+        goto close;
     }
     printf("External mempool creation OK\n");
 
-    // Initialize the DPDK device
-    // TODO: port_id and mtu should be configurable parameters!
-    domain->port_id  = 0;
-    domain->queue_id = 0;
-    if (port_init(domain->rx_pool, domain->port_id, domain->queue_id, 1500) < 0) {
-        FI_WARN(&dpdk_prov, FI_LOG_CORE, "Port Init DPDK: error\n");
-        goto free;
-    };
-
-    // Initialize the progress thread structure for this domain
-    ret = dpdk_init_progress(&domain->progress, info);
-    if (ret) {
-        goto close;
-    }
-
-    // Start the progress thread for this domain
+    /* 3. Start the progress thread for this domain */
     ret = dpdk_start_progress(&domain->progress);
     if (ret) {
-        goto close;
+        goto close_prog;
     }
-
-    domain->util_domain.domain_fid.fid.ops = &dpdk_domain_fi_ops;
-    domain->util_domain.domain_fid.ops     = &dpdk_domain_ops;
-    domain->util_domain.domain_fid.mr      = &dpdk_domain_fi_ops_mr;
-    *domain_fid                            = &domain->util_domain.domain_fid;
 
     return FI_SUCCESS;
 

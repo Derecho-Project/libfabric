@@ -76,6 +76,16 @@ extern size_t dpdk_default_tx_size;
 extern size_t dpdk_default_rx_size;
 extern size_t dpdk_default_tx_burst_size;
 extern size_t dpdk_default_rx_burst_size;
+extern size_t dpdk_max_ord;
+extern size_t dpdk_max_ird;
+
+// ==================== General utilities ====================
+/** Compares two 32-bit unsigned integers using the rules in RFC 1982 with
+ * SERIAL_BITS=32.  Returns true if and only if s1 < s2. */
+bool serial_less_32(uint32_t s1, uint32_t s2);
+/** Compares two 32-bit unsigned integers using the rules in RFC 1982 with
+ * SERIAL_BITS=32.  Returns true if and only if s1 > s2. */
+bool serial_greater_32(uint32_t s1, uint32_t s2);
 
 // ==================== Memory Management ====================
 struct dpdk_mr {
@@ -142,8 +152,17 @@ enum xfer_send_state {
 };
 
 enum xfer_send_opcode {
-    xfer_send          = 0,
-    xfer_send_with_imm = 1,
+    xfer_send           = 0,
+    xfer_write          = 1,
+    xfer_read           = 2,
+    xfer_atomic         = 3,
+    xfer_send_with_imm  = 4,
+    xfer_write_with_imm = 5,
+};
+
+enum {
+    xfer_send_signaled = 1,
+    xfer_send_inline   = 2,
 };
 
 // Datapath message descriptor to be exchanged across rings/queues/lists
@@ -163,6 +182,9 @@ struct dpdk_xfer_entry {
     size_t                total_length;
     size_t                bytes_sent;
     size_t                bytes_acked;
+    uint64_t              atomic_add_swap;
+    uint64_t              atomic_compare;
+    uint8_t               atomic_opcode;
 
     // For receive
     bool   complete;
@@ -205,6 +227,20 @@ enum dpdk_device_flags {
 struct dpdk_domain {
     // Utility domain
     struct util_domain util_domain;
+
+    // Port ID of the DPDK device
+    uint16_t port_id;
+    // Queue ID of the DPDK device
+    uint16_t queue_id;
+    // Device flags
+    uint64_t dev_flags;
+    // MTU
+    uint32_t mtu;
+    // DPDK core id
+    uint16_t lcore_id;
+
+    // MAC address of the device
+    struct rte_ether_addr eth_addr;
     // IP address (most significant 32 bit) and UDP port (least 16) of the device
     uint64_t address;
     // Address length
@@ -216,20 +252,16 @@ struct dpdk_domain {
     size_t num_endpoints;
     // Array of EP accessed by UDP port
     struct dpdk_ep *udp_port_to_ep[MAX_ENDPOINTS_PER_APP];
-
     // Mutex to access the list of EP
     struct ofi_genlock ep_mutex;
+
     // Progress thread data
     struct dpdk_progress progress;
-    // Port ID of the DPDK device
-    uint16_t port_id;
-    // Queue ID of the DPDK device
-    uint16_t queue_id;
-    // Device flags
-    uint64_t dev_flags;
+
     // Mempool for incoming packets
     struct rte_mempool *rx_pool;
     char               *rx_pool_name;
+
     // Memory pool to allocate packet descriptors for external buffers
     struct rte_mempool *ext_pool;
     char               *ext_pool_name;
@@ -249,6 +281,13 @@ struct dpdk_ep {
     struct util_ep util_ep;
     // UDP port => Used as unique identifier for the endpoint
     uint16_t udp_port;
+
+    // Remote connection endpoint information
+    // All are in host byte order
+    struct rte_ether_addr remote_eth_addr;
+    uint32_t              remote_ipv4_addr;
+    uint16_t              remote_udp_port;
+
     // Receive and Transmit queues (= indeed, a "queue pair")
     struct dpdk_xfer_queue sq;
     struct dpdk_xfer_queue rq;
@@ -264,7 +303,6 @@ struct dpdk_ep {
     // Connection information
     struct ee_state remote_ep;
     atomic_uint     conn_state;
-    uint64_t        now;
 
     // Acknowledgement management
     struct read_atomic_response_state *readresp_store;
@@ -274,7 +312,12 @@ struct dpdk_ep {
     // Memory pool for headers
     struct rte_mempool *tx_hdr_mempool;
     char               *tx_hdr_mempool_name;
-    // This is necessary because we keep ep in a list
+
+    // Memory pool for the DDP protocol
+    struct rte_mempool *tx_ddp_mempool;
+    char               *tx_ddp_mempool_name;
+
+    // This is necessary because we keep EPs in a list
     struct slist_entry entry;
 };
 
@@ -287,7 +330,7 @@ int  dpdk_endpoint(struct fid_domain *domain, struct fi_info *info, struct fid_e
 void dpdk_ep_disable(struct dpdk_ep *ep, int cm_err, void *err_data, size_t err_data_size);
 
 // Functions for progress thread
-int  dpdk_init_progress(struct dpdk_progress *progress, struct fi_info *info);
+int  dpdk_init_progress(struct dpdk_progress *progress, struct fi_info *info, int lcore_id);
 int  dpdk_start_progress(struct dpdk_progress *progress);
 void dpdk_close_progress(struct dpdk_progress *progress);
 int  dpdk_run_progress(void *args);
@@ -318,8 +361,6 @@ struct dpdk_cm_msg {
     char                data[DPDK_MAX_CM_DATA_SIZE];
 };
 
-union dpdk_hdrs {};
-
 struct dpdk_cm_context {
     struct fid         fid;
     struct fid        *hfid;
@@ -339,33 +380,6 @@ int dpdk_passive_ep(struct fid_fabric *fabric, struct fi_info *info, struct fid_
                     void *context);
 
 // ==================== Completion Queue ====================
-enum fi_cq_status {
-    FI_CQ_SUCCESS,
-    FI_CQ_LOC_LEN_ERR,
-    FI_CQ_LOC_QP_OP_ERR,
-    FI_CQ_LOC_EEC_OP_ERR,
-    FI_CQ_LOC_PROT_ERR,
-    FI_CQ_WR_FLUSH_ERR,
-    FI_CQ_MW_BIND_ERR,
-    FI_CQ_BAD_RESP_ERR,
-    FI_CQ_LOC_ACCESS_ERR,
-    FI_CQ_REM_INV_REQ_ERR,
-    FI_CQ_REM_ACCESS_ERR,
-    FI_CQ_REM_OP_ERR,
-    FI_CQ_RETRY_EXC_ERR,
-    FI_CQ_RNR_RETRY_EXC_ERR,
-    FI_CQ_LOC_RDD_VIOL_ERR,
-    FI_CQ_REM_INV_RD_REQ_ERR,
-    FI_CQ_REM_ABORT_ERR,
-    FI_CQ_INV_EECN_ERR,
-    FI_CQ_INV_EEC_STATE_ERR,
-    FI_CQ_FATAL_ERR,
-    FI_CQ_RESP_TIMEOUT_ERR,
-    FI_CQ_GENERAL_ERR,
-    FI_CQ_TM_ERR,
-    FI_CQ_TM_RNDV_INCOMPLETE,
-};
-
 enum fi_wc_status {
     FI_WC_SUCCESS,
     FI_WC_LOC_LEN_ERR,
@@ -420,15 +434,32 @@ enum fi_wc_opcode {
     FI_WC_DRIVER3,
 };
 
+enum { FI_WC_IP_CSUM_OK_SHIFT = 2 };
+
+enum fi_wc_flags {
+    FI_WC_GRH           = 1 << 0,
+    FI_WC_WITH_IMM      = 1 << 1,
+    FI_WC_IP_CSUM_OK    = 1 << FI_WC_IP_CSUM_OK_SHIFT,
+    FI_WC_WITH_INV      = 1 << 3,
+    FI_WC_TM_SYNC_REQ   = 1 << 4,
+    FI_WC_TM_MATCH      = 1 << 5,
+    FI_WC_TM_DATA_VALID = 1 << 6,
+};
+
 struct fi_dpdk_wc {
     void             *wr_context;
     enum fi_wc_status status;
     enum fi_wc_opcode opcode;
     uint32_t          byte_len;
-    uint32_t          qp_num;
+    uint32_t          ep_id;
 
     uint32_t wc_flags; // it can be 0 or FI_WC_WITH_IMM
     uint32_t imm_data; // valid when FI_WC_WITH_IMM is set.
+};
+
+struct fi_dpdk_cq_event {
+    uint32_t event_type;
+    uint32_t cq_id;
 };
 
 struct dpdk_cq {
@@ -444,7 +475,10 @@ struct dpdk_cq {
     atomic_bool      notify_flag;
     // Vector of dpdk_wc
     struct fi_dpdk_wc *storage;
+    // Associated EP // TODO: Not ideal...
+    struct dpdk_ep *ep;
 };
+
 int dpdk_cq_open(struct fid_domain *domain, struct fi_cq_attr *attr, struct fid_cq **cq_fid,
                  void *context);
 

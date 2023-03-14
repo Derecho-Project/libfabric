@@ -48,8 +48,8 @@ int dpdk_create_fabric(struct fi_fabric_attr *attr, struct fid_fabric **fabric_f
 
     return 0;
 
-close:
-    (void)ofi_fabric_close(&fabric->util_fabric);
+// close:
+//     (void)ofi_fabric_close(&fabric->util_fabric);
 free:
     free(fabric);
     return ret;
