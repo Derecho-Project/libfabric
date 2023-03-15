@@ -14,11 +14,10 @@
 // the format of the domain name which should be the PCI address instead of the kernel interface
 // name.
 
-#define DPDK_DOMAIN_CAPS (FI_LOCAL_COMM | FI_REMOTE_COMM)
+#define DPDK_DOMAIN_CAPS (FI_REMOTE_COMM)
 #define DPDK_EP_CAPS     (FI_MSG)       // For the moment we only support MSG endpoints
-#define DPDK_EP_SRX_CAPS (DPDK_EP_CAPS) // For the moment, no FI_TAGGED secondary capability
-#define DPDK_TX_CAPS     (FI_SEND | FI_WRITE | FI_READ)
-#define DPDK_RX_CAPS     (FI_RECV | FI_REMOTE_READ | FI_REMOTE_WRITE | FI_RMA_EVENT)
+#define DPDK_TX_CAPS     (DPDK_EP_CAPS | OFI_TX_RMA_CAPS | OFI_RX_RMA_CAPS | FI_ATOMICS)
+#define DPDK_RX_CAPS     (DPDK_EP_CAPS | OFI_RX_MSG_CAPS | OFI_RX_RMA_CAPS | FI_ATOMICS)
 
 #define DPDK_MSG_ORDER                                                                             \
     (OFI_ORDER_RAR_SET | OFI_ORDER_RAW_SET | FI_ORDER_RAS | OFI_ORDER_WAW_SET | FI_ORDER_WAS |     \
@@ -32,6 +31,8 @@
 
 #define DPDK_MAX_INJECT 128
 
+#define DPDK_BASE_PORT 2509
+
 static struct fi_tx_attr dpdk_tx_attr = {
     .caps          = DPDK_EP_CAPS | DPDK_TX_CAPS,
     .op_flags      = DPDK_TX_OP_FLAGS,
@@ -40,16 +41,18 @@ static struct fi_tx_attr dpdk_tx_attr = {
     .inject_size   = DPDK_MAX_INJECT,
     .size          = 1024,
     .iov_limit     = DPDK_IOV_LIMIT,
-    .rma_iov_limit = DPDK_IOV_LIMIT,
+    .rma_iov_limit = DPDK_IOV_LIMIT
 };
 
-static struct fi_rx_attr dpdk_rx_attr = {.caps                = DPDK_EP_CAPS | DPDK_RX_CAPS,
-                                         .op_flags            = DPDK_RX_OP_FLAGS,
-                                         .comp_order          = FI_ORDER_STRICT,
-                                         .msg_order           = DPDK_MSG_ORDER,
-                                         .total_buffered_recv = 0,
-                                         .size                = 65536,
-                                         .iov_limit           = DPDK_IOV_LIMIT};
+static struct fi_rx_attr dpdk_rx_attr = {
+    .caps                = DPDK_EP_CAPS | DPDK_RX_CAPS,
+    .op_flags            = DPDK_RX_OP_FLAGS,
+    .comp_order          = FI_ORDER_STRICT,
+    .msg_order           = DPDK_MSG_ORDER,
+    .total_buffered_recv = 0,
+    .size                = 65536,
+    .iov_limit           = DPDK_IOV_LIMIT
+};
 
 static struct fi_ep_attr dpdk_ep_attr = {
     .type               = FI_EP_MSG,
@@ -62,40 +65,9 @@ static struct fi_ep_attr dpdk_ep_attr = {
     .max_order_waw_size = SIZE_MAX,
 };
 
-static struct fi_tx_attr dpdk_tx_srx_attr = {
-    .caps          = DPDK_EP_SRX_CAPS | DPDK_TX_CAPS,
-    .op_flags      = DPDK_TX_OP_FLAGS,
-    .comp_order    = FI_ORDER_STRICT,
-    .msg_order     = DPDK_MSG_ORDER,
-    .inject_size   = DPDK_MAX_INJECT,
-    .size          = 1024,
-    .iov_limit     = DPDK_IOV_LIMIT,
-    .rma_iov_limit = DPDK_IOV_LIMIT,
-};
-
-static struct fi_rx_attr dpdk_rx_srx_attr = {.caps                = DPDK_EP_SRX_CAPS | DPDK_RX_CAPS,
-                                             .op_flags            = DPDK_RX_OP_FLAGS,
-                                             .comp_order          = FI_ORDER_STRICT,
-                                             .msg_order           = DPDK_MSG_ORDER,
-                                             .total_buffered_recv = 0,
-                                             .size                = 65536,
-                                             .iov_limit           = DPDK_IOV_LIMIT};
-
-static struct fi_ep_attr dpdk_ep_srx_attr = {
-    .type               = FI_EP_MSG,
-    .protocol           = FI_PROTO_SOCK_TCP,
-    .protocol_version   = 0,
-    .max_msg_size       = SIZE_MAX,
-    .tx_ctx_cnt         = 1,
-    .rx_ctx_cnt         = FI_SHARED_CONTEXT,
-    .max_order_raw_size = SIZE_MAX,
-    .max_order_waw_size = SIZE_MAX,
-    .mem_tag_format     = FI_TAG_GENERIC,
-};
-
 // TODO: What are these values? What is the name here? Why not an interface/PCI address?
 static struct fi_domain_attr dpdk_domain_attr = {
-    .name             = "dpdk",
+    // .name             = "PCI address",
     .caps             = DPDK_DOMAIN_CAPS,
     .threading        = FI_THREAD_SAFE,
     .control_progress = FI_PROGRESS_AUTO,
@@ -121,24 +93,6 @@ static struct fi_fabric_attr dpdk_fabric_attr = {
     .api_version  = OFI_VERSION_LATEST,
 };
 
-struct fi_info dpdk_srx_info = {.caps = DPDK_DOMAIN_CAPS | DPDK_EP_SRX_CAPS | DPDK_TX_CAPS |
-                                        DPDK_RX_CAPS,
-                                .addr_format = FI_SOCKADDR,
-                                .tx_attr     = &dpdk_tx_srx_attr,
-                                .rx_attr     = &dpdk_rx_srx_attr,
-                                .ep_attr     = &dpdk_ep_srx_attr,
-                                .domain_attr = &dpdk_domain_attr,
-                                .fabric_attr = &dpdk_fabric_attr};
-
-struct fi_info dpdk_info = {.next = &dpdk_srx_info,
-                            .caps = DPDK_DOMAIN_CAPS | DPDK_EP_CAPS | DPDK_TX_CAPS | DPDK_RX_CAPS,
-                            .addr_format = FI_SOCKADDR,
-                            .tx_attr     = &dpdk_tx_attr,
-                            .rx_attr     = &dpdk_rx_attr,
-                            .ep_attr     = &dpdk_ep_attr,
-                            .domain_attr = &dpdk_domain_attr,
-                            .fabric_attr = &dpdk_fabric_attr};
-
 size_t dpdk_default_tx_size = 256; // TODO: What is this?
 size_t dpdk_default_rx_size = 256; // TODO: What is this?
 size_t dpdk_max_inject      = 128; // TODO: What is this?
@@ -156,64 +110,65 @@ static void dpdk_alter_defaults(uint32_t version, const struct fi_info *hints,
 
 struct util_prov dpdk_util_prov = {
     .prov           = &dpdk_prov,
-    .info           = &dpdk_info,
+    .info           = NULL,
     .alter_defaults = &dpdk_alter_defaults,
     .flags          = 0,
 };
 
-int dpdk_getinfo(uint32_t version, const char *node, const char *service, uint64_t flags,
-                 const struct fi_info *hints, struct fi_info **info) {
+int dpdk_init_info(const struct fi_info **all_infos) {
+    *all_infos = NULL;
 
-    // TODO: Consider the hints and flags, as well as the version, node, and service parameters
-    // TODO:: For the moment, I have inserted here some default values, but we should really just
-    // take them from those listed in dpdk_info.c, which we shoud also check for correctness! E.g.,
-    // we should find the correct correspondence between the DPDK device and the OFI device.
-
-    // Iterate over the avilable DPDK devices. For each device, create a new fi_info struct and add
-    // it to the info list. => We should filter this list based on the hints, but for now we just
-    // ignore that
     uint16_t port_id;
+    struct fi_info* tail = NULL;
     RTE_ETH_FOREACH_DEV(port_id) {
-
         // get DPDK device info
         struct rte_eth_dev_info dev_info;
         rte_eth_dev_info_get(port_id, &dev_info);
 
-        // Create a new fi_info struct. Who frees this memory?
         struct fi_info *new_info = ofi_allocinfo_internal();
         if (!new_info) {
             return -FI_ENOMEM;
         }
 
-        // Capabilities from dpdk_info.c => check if they are correct!
-        new_info->caps = dpdk_util_prov.info->caps;
-        new_info->mode = dpdk_util_prov.info->mode;
+        // 1 - initialize struct fi_info
+        new_info->caps = DPDK_DOMAIN_CAPS | DPDK_EP_CAPS | DPDK_TX_CAPS | DPDK_RX_CAPS;
+        // mode is unset.
+        new_info->addr_format = FI_SOCKADDR,
+        // src_addrlen is unset.
+        // dest_addrlen is unset.
+        // src_addr is unset.
+        // dest_addr is unset.
+        // handle is unset.
+        *new_info->tx_attr = dpdk_tx_attr;
+        *new_info->rx_attr = dpdk_rx_attr;
+        *new_info->ep_attr = dpdk_ep_attr;
+        *new_info->domain_attr = dpdk_domain_attr;
+        *new_info->fabric_attr = dpdk_fabric_attr;
+        new_info->fabric_attr->name = (char*)malloc(strlen(dpdk_fabric_attr.name)+1);
+        strcpy(new_info->fabric_attr->name,dpdk_fabric_attr.name);
+        // nic is unset.
 
-        // Fabric info from dpdk_info.c
-        new_info->fabric_attr->name =
-            (char *)malloc(strlen(dpdk_util_prov.info->fabric_attr->name) + 1);
-        bzero(new_info->fabric_attr->name, strlen(dpdk_util_prov.info->fabric_attr->name) + 1);
-        strcpy(new_info->fabric_attr->name, dpdk_util_prov.info->fabric_attr->name);
-        new_info->fabric_attr->api_version = dpdk_util_prov.info->fabric_attr->api_version;
-
-        // Domain info //TODO: check the correspondence with the values in dpdk_info.c
-        new_info->domain_attr->name = (char *)malloc(strlen(rte_dev_name(dev_info.device)) + 1);
-        bzero(new_info->domain_attr->name, strlen(rte_dev_name(dev_info.device)) + 1);
-        // if_indextoname(dev_info.if_index, new_info->domain_attr->name);
+        // 2 - fill the port name information
+        new_info->domain_attr->name = (char*)malloc(strlen(rte_dev_name(dev_info.device)) + 1);
         strcpy(new_info->domain_attr->name, rte_dev_name(dev_info.device));
-        new_info->domain_attr->av_type = dpdk_util_prov.info->domain_attr->av_type;
 
-        // Endpoint type can be:
-        // FI_EP_MSG Reliable-connected => Assuming our impl!
-        // FI_EP_DGRAM Unreliable datagram => Should we also enable this?
-        // FI_EP_RDM Reliable-unconnected
-        new_info->ep_attr->protocol = dpdk_util_prov.info->ep_attr->protocol;
-        new_info->ep_attr->type     = dpdk_util_prov.info->ep_attr->type;
-
-        // Add the new fi_info to the list
-        new_info->next = *info;
-        *info          = new_info;
+        // 3 - link it to the global info list
+        new_info->next = tail;
+        tail = new_info;
     }
 
+    *all_infos = tail;
+    return 0;
+}
+
+int dpdk_getinfo(uint32_t version, const char *node, const char *service, uint64_t flags,
+                 const struct fi_info *hints, struct fi_info **info) {
+    //TODO: generate the real info using version,node, service,flags, and hints.
+    printf("dpdk_getinfo() is called. info is set to %p.\n",dpdk_util_prov.info);
+    *info = fi_dupinfo(dpdk_util_prov.info);
+    struct fi_info* cur = *info;
+    while(cur->next) {
+        cur->next = fi_dupinfo(cur->next);
+    }
     return 0;
 }

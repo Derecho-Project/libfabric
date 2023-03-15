@@ -138,6 +138,7 @@ struct dpdk_ep {
 };
 
 // Functions for objects creation
+int  dpdk_init_info(const struct fi_info **all_infos);
 int  dpdk_create_fabric(struct fi_fabric_attr *attr, struct fid_fabric **fabric, void *context);
 int  dpdk_domain_open(struct fid_fabric *fabric, struct fi_info *info, struct fid_domain **domain,
                       void *context);

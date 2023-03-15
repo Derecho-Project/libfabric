@@ -32,5 +32,8 @@ DPDK_INI {
         return NULL;
     }
 
+    // initialize dpdk info
+    dpdk_init_info(&(dpdk_util_prov.info));
+
     return &dpdk_prov;
 }
