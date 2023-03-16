@@ -163,12 +163,36 @@ int dpdk_init_info(const struct fi_info **all_infos) {
 
 int dpdk_getinfo(uint32_t version, const char *node, const char *service, uint64_t flags,
                  const struct fi_info *hints, struct fi_info **info) {
+    struct fi_info* generated_info = NULL;
+    struct fi_info* check_info = dpdk_util_prov.info;
+
+    for (;check_info;check_info=check_info->next) {
+        // 1) match the hints, flags, info
+        if (hints) {
+            if (hints->ep_attr) {
+                if (ofi_check_ep_type(&dpdk_prov, check_info->ep_attr, hints->ep_attr)) {
+                    continue;
+                }
+            }
+
+            if (dpdk_check_hints(version, hints, check_info)) {
+                continue;
+            }
+        }
+
+        // 2) generate info
+        // TODO:
+    }
+
+    // 2) set up address
+
     //TODO: generate the real info using version,node, service,flags, and hints.
-    printf("dpdk_getinfo() is called. info is set to %p.\n",dpdk_util_prov.info);
     *info = fi_dupinfo(dpdk_util_prov.info);
     struct fi_info* cur = *info;
     while(cur->next) {
         cur->next = fi_dupinfo(cur->next);
     }
+
+
     return 0;
 }
