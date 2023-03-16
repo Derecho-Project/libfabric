@@ -226,4 +226,7 @@ int  dpdk_eq_open(struct fid_fabric *fabric_fid, struct fi_eq_attr *attr, struct
                   void *context);
 void dpdk_tx_queue_insert(struct dpdk_ep *ep, struct dpdk_xfer_entry *tx_entry);
 
+//===================== Log infrastructure ================
+#define DPDK_INFO(subsys, ...) FI_INFO(&dpdk_prov, subsys, __VA_ARGS__)
+
 #endif /* _DPDK_H_ */
