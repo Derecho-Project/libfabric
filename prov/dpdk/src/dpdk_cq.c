@@ -113,9 +113,9 @@ static struct fi_ops_cq dpdk_cq_ops = {
     .strerror  = ofi_cq_strerror,
 };
 
-static void dpdk_cq_progress(struct util_cq *util_cq) {
-    // TODO: Unimplemented?
-    printf("[dpdk_cq_progress] UNIMPLEMENTED\n");
+static void dpdk_cq_progress_noop(struct util_cq *util_cq) {
+    // Just like in the verbs provider, this should not be called.
+    assert(0);
 }
 
 static int dpdk_cq_wait_try_func(void *arg) {
@@ -144,7 +144,7 @@ int dpdk_cq_open(struct fid_domain *domain, struct fi_cq_attr *attr, struct fid_
         attr             = &cq_attr;
     }
 
-    ret = ofi_cq_init(&dpdk_prov, domain, attr, &cq->util_cq, &dpdk_cq_progress, context);
+    ret = ofi_cq_init(&dpdk_prov, domain, attr, &cq->util_cq, &dpdk_cq_progress_noop, context);
     if (ret) {
         goto free_cq;
     }
