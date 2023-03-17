@@ -1,35 +1,68 @@
 #include "fi_dpdk.h"
 
+//====================== Helper functions ======================
+enum { SIZE_POW2_MAX = (INT_MAX >> 1) + 1 };
+
+/** Returns the least power of 2 greater than in.  If in is greater than the
+ * highest power of 2 representable as a size_t, then the behavior is
+ * undefined. */
+static int next_pow2(int in) {
+    int out;
+    assert(in < SIZE_POW2_MAX);
+    for (out = 1; out < in; out <<= 1)
+        ;
+    return out;
+} /* next_pow2 */
+
+//====================== OPS ======================
 static ssize_t dpdk_cq_readfrom(struct fid_cq *cq_fid, void *buf, size_t count,
                                 fi_addr_t *src_addr) {
-    struct dpdk_cq     *cq;
-    ssize_t             ret;
-    struct dpdk_domain *domain;
-    domain = container_of(cq->util_cq.domain, struct dpdk_domain, util_domain);
+    int ret;
 
-    cq = container_of(cq_fid, struct dpdk_cq, util_cq.cq_fid);
-    ofi_genlock_lock(&domain->progress.lock);
-    ret = ofi_cq_readfrom(cq_fid, buf, count, src_addr);
-    ofi_genlock_unlock(&domain->progress.lock);
+    // Get a dpdk_ep from the cq
+    // TODO: There must be a better (i.e., more "libfabric-oriented") way to do this...
+    struct dpdk_cq *cq = container_of(cq_fid, struct dpdk_cq, util_cq.cq_fid);
+    struct dpdk_ep *ep = cq->ep;
+
+    // Array of WQEs that I read from the CQE.
+    // TODO: What should I do with those?
+    // I am expected to return only those successfult?
+    // See the libfabric spec for more details.
+    struct fi_dpdk_wc wqe[dpdk_default_rx_burst_size];
+
+    // TODO: Why the lock on the RQ???
+    rte_spinlock_lock(&ep->rq.lock);
+    ret = rte_ring_dequeue_burst(cq->cqe_ring, (void **)&wqe, count, NULL);
+    rte_spinlock_unlock(&ep->rq.lock);
+    if (ret == 0) {
+        return -EAGAIN;
+    }
+
+    // TODO: WHat if I have more than one CQE TO RETURN?
+    struct fi_cq_msg_entry *comp = (struct fi_cq_msg_entry *)buf;
+    comp->flags                  = wqe[0].wc_flags;
+    comp->len                    = wqe[0].byte_len;
+    comp->op_context             = wqe[0].wr_context;
+
+    printf("RETURNING A CQE with len: %u\n", comp->len);
+
+    // TODO: implement according to the spec
+    src_addr = FI_ADDR_NOTAVAIL;
+
     return ret;
 }
 
 static ssize_t dpdk_cq_readerr(struct fid_cq *cq_fid, struct fi_cq_err_entry *buf, uint64_t flags) {
-    struct dpdk_cq     *cq;
-    ssize_t             ret;
-    struct dpdk_domain *domain;
-    domain = container_of(cq->util_cq.domain, struct dpdk_domain, util_domain);
-
-    cq = container_of(cq_fid, struct dpdk_cq, util_cq.cq_fid);
-    ofi_genlock_lock(&domain->progress.lock);
-    ret = ofi_cq_readerr(cq_fid, buf, flags);
-    ofi_genlock_unlock(&domain->progress.lock);
-    return ret;
+    printf("[dpdk_cq_readerr] UNIMPLEMENTED\n");
+    return 0;
 }
 
 static int dpdk_cq_close(struct fid *fid) {
     int             ret;
     struct dpdk_cq *cq;
+
+    // TODO: finish this
+    printf("[dpdk_cq_close] UNIMPLEMENTED\n");
 
     cq  = container_of(fid, struct dpdk_cq, util_cq.cq_fid.fid);
     ret = ofi_cq_cleanup(&cq->util_cq);
@@ -71,7 +104,7 @@ static struct fi_ops dpdk_cq_fi_ops = {
 
 static struct fi_ops_cq dpdk_cq_ops = {
     .size      = sizeof(struct fi_ops_cq),
-    .read      = ofi_cq_read,
+    .read      = ofi_cq_read, // FW to readfrom
     .readfrom  = dpdk_cq_readfrom,
     .readerr   = dpdk_cq_readerr,
     .sread     = ofi_cq_sread,
@@ -81,12 +114,8 @@ static struct fi_ops_cq dpdk_cq_ops = {
 };
 
 static void dpdk_cq_progress(struct util_cq *util_cq) {
-    struct dpdk_cq *cq;
-    cq = container_of(util_cq, struct dpdk_cq, util_cq);
+    // TODO: Unimplemented?
     printf("[dpdk_cq_progress] UNIMPLEMENTED\n");
-
-    // TODO: What am I supposed to put here?
-    // dpdk_run_progress(dpdk_cq2_progress(cq), false);
 }
 
 static int dpdk_cq_wait_try_func(void *arg) {
@@ -94,13 +123,14 @@ static int dpdk_cq_wait_try_func(void *arg) {
     return FI_SUCCESS;
 }
 
+/* Create the CQ */
 int dpdk_cq_open(struct fid_domain *domain, struct fi_cq_attr *attr, struct fid_cq **cq_fid,
                  void *context) {
-    struct dpdk_fabric *fabric;
-    struct dpdk_cq     *cq;
-    struct fi_cq_attr   cq_attr;
-    int                 ret;
+    struct dpdk_cq   *cq;
+    struct fi_cq_attr cq_attr;
+    int               ret;
 
+    // 1. Libfabric-specific initialization
     cq = calloc(1, sizeof(*cq));
     if (!cq)
         return -FI_ENOMEM;
@@ -115,12 +145,58 @@ int dpdk_cq_open(struct fid_domain *domain, struct fi_cq_attr *attr, struct fid_
     }
 
     ret = ofi_cq_init(&dpdk_prov, domain, attr, &cq->util_cq, &dpdk_cq_progress, context);
-    if (ret)
+    if (ret) {
         goto free_cq;
+    }
 
     *cq_fid            = &cq->util_cq.cq_fid;
     (*cq_fid)->fid.ops = &dpdk_cq_fi_ops;
     (*cq_fid)->ops     = &dpdk_cq_ops;
+
+    // 2. DPDK-specific initialization
+    struct dpdk_domain *dpdk_domain =
+        container_of(domain, struct dpdk_domain, util_domain.domain_fid);
+    atomic_init(&cq->refcnt, 1);
+    cq->cq_id = 0; // TODO: Assign a unique ID to the CQ
+    // Number of entries (must be a power of 2 minus 1);
+    cq->capacity = next_pow2(attr->size + 1) - 1;
+    // Allocate the DPDK rings
+    char name[RTE_RING_NAMESIZE];
+    snprintf(name, RTE_RING_NAMESIZE, "cq%" PRIu32 "_ready_ring", cq->cq_id);
+    cq->cqe_ring = rte_malloc(NULL, rte_ring_get_memsize(cq->capacity + 1), rte_socket_id());
+    if (!cq->cqe_ring) {
+        ret = rte_errno;
+        goto cleanup;
+    }
+    ret = rte_ring_init(cq->cqe_ring, name, cq->capacity + 1, RING_F_SP_ENQ);
+    if (ret) {
+        ret = -ret;
+        rte_free(cq->cqe_ring);
+        goto cleanup;
+    }
+    snprintf(name, RTE_RING_NAMESIZE, "cq%" PRIu32 "_empty_ring", cq->cq_id);
+    cq->free_ring = rte_malloc(
+        NULL, rte_ring_get_memsize(cq->capacity + 1),
+        rte_socket_id()); // TODO: maybe we should retrieve it from the dpdk_domain struct
+    if (!cq->cqe_ring) {
+        ret = rte_errno;
+        rte_free(cq->cqe_ring);
+        goto cleanup;
+    }
+    ret = rte_ring_init(cq->free_ring, name, cq->capacity + 1, RING_F_SC_DEQ);
+    if (!cq->free_ring) {
+        errno = ret;
+        rte_free(cq->free_ring);
+        rte_free(cq->cqe_ring);
+        goto cleanup;
+    }
+    // Allocate the storage space
+    cq->storage = malloc(cq->capacity * sizeof(struct fi_dpdk_wc));
+    for (int x = 0; x < cq->capacity; ++x) {
+        rte_ring_enqueue(cq->free_ring, &cq->storage[x]);
+    }
+    cq->ep_count = 0;
+    atomic_init(&cq->notify_flag, false);
     return 0;
 
 cleanup:

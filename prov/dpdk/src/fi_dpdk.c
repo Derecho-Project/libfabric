@@ -21,8 +21,8 @@ struct fi_provider dpdk_prov = {
 // Entry point for the libfabric provider
 DPDK_INI {
     // TODO: These arguments should be received as parameters from the caller
-    int   argc   = 1;
-    char *argv[] = {"libfabric"};
+    int   argc   = 3;
+    char *argv[] = {"libfabric", "-b", "0000:17:00.0"};
 
     // TODO: Limit the number of cores to dedicate to DPDK!
 

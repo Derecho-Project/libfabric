@@ -1,5 +1,6 @@
 
 #include "fi_dpdk.h"
+#include "protocols.h"
 
 #include <ifaddrs.h>
 #include <net/if.h>
@@ -34,6 +35,7 @@
 
 #define DPDK_MAX_INJECT 128
 
+// UDP ports to different EPs. This might become a parameter of the provider.
 #define DPDK_BASE_PORT 2509
 
 static struct fi_tx_attr dpdk_tx_attr = {
@@ -96,9 +98,28 @@ static struct fi_fabric_attr dpdk_fabric_attr = {
     .api_version  = OFI_VERSION_LATEST,
 };
 
-size_t dpdk_default_tx_size = 256; // TODO: What is this?
-size_t dpdk_default_rx_size = 256; // TODO: What is this?
-size_t dpdk_max_inject      = 128; // TODO: What is this?
+struct fi_info dpdk_info = {.next = NULL,
+                            .caps = DPDK_DOMAIN_CAPS | DPDK_EP_CAPS | DPDK_TX_CAPS | DPDK_RX_CAPS,
+                            .tx_attr     = &dpdk_tx_attr,
+                            .rx_attr     = &dpdk_rx_attr,
+                            .ep_attr     = &dpdk_ep_attr,
+                            .domain_attr = &dpdk_domain_attr,
+                            .fabric_attr = &dpdk_fabric_attr,
+                            .addr_format = FI_FORMAT_UNSPEC,
+                            .src_addrlen = sizeof(uint64_t)};
+
+// All these parameters should be a per-device configuration, with default values but potentially
+// overridable from users, that should be resident in the dpdk_domain structure (maybe
+// dpdk_domain->dev).
+size_t dpdk_default_tx_size       = 256; // TODO: What is this?
+size_t dpdk_default_rx_size       = 256; // TODO: What is this?
+size_t dpdk_max_inject            = 128; // TODO: What is this?
+size_t dpdk_default_tx_burst_size = 32;  // TODO: Why here? Should be a configurable parameter...
+size_t dpdk_default_rx_burst_size = 32;  // TODO: Why here? Should be a configurable parameter...
+// Max simultaneous RDMA READ and Atomic Requests
+size_t dpdk_max_ord = 128; // TODO: Why here? Should be a configurable parameter...
+// Max simultaneous pending operations? Not sure...
+size_t dpdk_max_ird = 128; // TODO: Why here? Should be a configurable parameter...
 
 /* User hints will still override the modified dest_info attributes
  * through ofi_alter_info
@@ -121,6 +142,16 @@ struct util_prov dpdk_util_prov = {
 int dpdk_init_info(const struct fi_info **all_infos) {
     *all_infos = NULL;
 
+    // TODO: Consider the hints and flags, as well as the version, node, and service parameters
+    // TODO:: For the moment, I have inserted here some default values, but we should really just
+    // take them from those listed in dpdk_info.c, which we shoud also check for correctness! E.g.,
+    // we should find the correct correspondence between the DPDK device and the OFI device.
+
+    // TODO: The Node parameter is the IP address the application is passing to the provider
+
+    // Iterate over the avilable DPDK devices. For each device, create a new fi_info struct and add
+    // it to the info list. => We should filter this list based on the hints, but for now we just
+    // ignore that
     uint16_t port_id;
     struct fi_info* tail = NULL;
     RTE_ETH_FOREACH_DEV(port_id) {

@@ -18,9 +18,10 @@
 
 #include <ofi.h>
 
-#define PROVIDER_NAME "dpdk"           // This will become a parameter of the test
-#define DOMAIN_NAME   "0000:00:05.0"   // This will become a parameter of the test
-#define DEST_IP_ADDR  "192.168.10.212" // This will become a parameter of the test
+#define PROVIDER_NAME "dpdk"         // This will become a parameter of the test
+#define DOMAIN_NAME   "0000:00:05.0" // This will become a parameter of the test
+#define DEST_IP_ADDR  "10.0.0.212"   // This will become a parameter of the test
+#define MR_SIZE       1073741824     // This will become a parameter of the test
 
 #define LF_VERSION         OFI_VERSION_LATEST
 #define MAX_LF_ADDR_SIZE   128 - sizeof(uint32_t) - 2 * sizeof(uint64_t)
@@ -167,20 +168,6 @@ int lf_initialize() {
         return ret;
     }
 
-    /* Initialize CQ
-     * libfabric 1.12 does not pick an adequate default value for completion queue size.
-     * We simply set it to a large enough one */
-    g_ctxt.cq_attr.size = 2097152;
-    ret                 = fi_cq_open(g_ctxt.domain, &(g_ctxt.cq_attr), &(g_ctxt.cq), NULL);
-    if (ret) {
-        printf("fi_cq_open() failed: %s\n", fi_strerror(-ret));
-        return ret;
-    }
-    if (!g_ctxt.cq) {
-        printf("Pointer to completion queue is null\n");
-        return -1;
-    }
-
     return 0;
 }
 
@@ -201,17 +188,29 @@ int init_active_ep(struct fi_info *fi, struct fid_ep **ep, struct fid_eq **eq) {
         return ret;
     }
 
+    /* Create a completion queue */
+    g_ctxt.cq_attr.size = 2097152;
+    ret                 = fi_cq_open(g_ctxt.domain, &(g_ctxt.cq_attr), &(g_ctxt.cq), NULL);
+    if (ret) {
+        printf("fi_cq_open() failed: %s\n", fi_strerror(-ret));
+        return ret;
+    }
+    if (!g_ctxt.cq) {
+        printf("Pointer to completion queue is null\n");
+        return -1;
+    }
+
     /* Bind endpoint to event queue and completion queue */
     ret = fi_ep_bind(*ep, &(*eq)->fid, 0);
     if (ret) {
-        printf("fi_ep_bind() failed: %s\n", fi_strerror(-ret));
+        printf("fi_ep_bind() failed to bind event queue: %s\n", fi_strerror(-ret));
         return ret;
     }
 
     const uint64_t ep_flags = FI_RECV | FI_TRANSMIT | FI_SELECTIVE_COMPLETION;
     ret                     = fi_ep_bind(*ep, &(g_ctxt.cq)->fid, ep_flags);
     if (ret) {
-        printf("fi_ep_bind() failed: %s\n", fi_strerror(-ret));
+        printf("fi_ep_bind() failed to bind completion queue: %s\n", fi_strerror(-ret));
         return ret;
     }
 
@@ -229,11 +228,11 @@ int register_memory_region() {
 
     // Important: memory allocation should be page aligned to the page size used by the DPDK
     // provider. The length must be a multiple of the page size.
-    g_mr.size   = RTE_ALIGN(1514, sysconf(_SC_PAGESIZE));
+    g_mr.size   = RTE_ALIGN(MR_SIZE, sysconf(_SC_PAGESIZE));
     g_mr.buffer = alloc_mem(g_mr.size, sysconf(_SC_PAGESIZE), false);
 
     if (!g_mr.buffer || g_mr.size <= 0) {
-        printf("Failed to allocate memory for data reception\n");
+        printf("Failed to allocate a memory region of size %lu\n", g_mr.size);
         return -1;
     }
     const int mr_access = FI_WRITE | FI_REMOTE_READ | FI_REMOTE_WRITE;
@@ -350,6 +349,7 @@ void do_server() {
         msg.addr      = 0;
         msg.context   = NULL;
 
+        // Post a receive request
         ret = fi_recvmsg(ep, &msg, 0);
         if (ret == -FI_EAGAIN) {
             usleep(100);
@@ -359,7 +359,19 @@ void do_server() {
             exit(2);
         }
 
-        printf("Received a new message: %s\n", (char *)msg.msg_iov[0].iov_base);
+        // Get the associated completion
+        struct fi_cq_msg_entry comp;
+        fi_addr_t              src_addr;
+        do {
+            ret = fi_cq_readfrom(g_ctxt.cq, &comp, 1, &src_addr);
+            if (ret < 0 && ret != -FI_EAGAIN) {
+                printf("CQ read failed: %s", fi_strerror(-ret));
+                break;
+            }
+        } while (ret == -FI_EAGAIN);
+
+        bzero(g_mr.buffer, g_mr.size);
+        printf("Received a new message [size = %u]: %s\n", comp.len, (char *)g_mr.buffer);
     }
 }
 
@@ -415,23 +427,24 @@ void do_client() {
     printf("Insert a message size: ");
     while (fgets((char *restrict)&input, 8, stdin) != NULL) {
         msg_iov.iov_len = atol(input);
-        if (msg_iov.iov_len > MAX_PAYLOAD_SIZE || msg_iov.iov_len > g_mr.size) {
-            printf("Size too big. Max is %d, inserted size is %ld\n", MAX_PAYLOAD_SIZE,
-                   msg_iov.iov_len);
+        if (msg_iov.iov_len > g_mr.size) {
+            printf("Size too big. Max is %d, inserted size is %ld\n", g_mr.size, msg_iov.iov_len);
+            printf("Insert a message size: ");
             continue;
         }
 
         // Fill the buffer with random content
         memset(g_mr.buffer, 'a', msg_iov.iov_len);
 
-        // Send
+        // Post a send request
         ret = fi_sendmsg(ep, &msg, FI_COMPLETION);
         if (ret) {
             printf("fi_sendmsg() failed: %s\n", fi_strerror(-ret));
+            printf("Insert a message size: ");
             continue;
         }
 
-        // TODO: Wait for completion. For the moment, just sleep
+        // TODO: Get send completion. For the moment, just sleep
         usleep(1000);
 
         printf("Insert a message size: ");
