@@ -72,8 +72,9 @@ static int dpdk_mr_reg(struct fid *fid, const void *buf, size_t len, uint64_t ac
     }
 
     if (!rte_is_power_of_2(page_size) || !rte_is_aligned(data_buffer_orig, page_size)) {
-        printf("BUG\n");
-        exit(1);
+        FI_WARN(&dpdk_prov, FI_LOG_MR, "%s():%i: Invalid page size or unaligned buffer", __func__,
+                __LINE__);
+        return -FI_EINVAL;
     }
 
     // b) Register external memory with DPDK and the device

@@ -71,7 +71,7 @@ uint16_t ip_checksum(struct rte_ipv4_hdr *ih, size_t len);
 int32_t  ip_parse(char *addr, uint32_t *dst);
 
 struct rte_ipv4_hdr *prepend_ipv4_header(struct rte_mbuf *sendmsg, int next_proto_id,
-                                         uint32_t src_addr, uint32_t dst_addr);
+                                         uint32_t src_addr, uint32_t dst_addr, uint16_t ddp_length);
 struct rte_mbuf *reassemble(struct rte_mbuf *m, struct lcore_queue_conf *qconf, uint16_t vlan_id,
                             uint64_t tms);
 
@@ -86,10 +86,11 @@ struct rte_mbuf *reassemble(struct rte_mbuf *m, struct lcore_queue_conf *qconf, 
 // reinstall DPDK.
 #define MAX_UDP_PAYLOAD_SIZE 11808
 
-void send_udp_dgram(struct dpdk_ep *ep, struct rte_mbuf *sendmsg, uint32_t raw_cksum);
+void send_udp_dgram(struct dpdk_ep *ep, struct rte_mbuf *sendmsg, uint32_t raw_cksum,
+                    uint16_t ddp_length);
 
 struct rte_udp_hdr *prepend_udp_header(struct rte_mbuf *sendmsg, unsigned int src_port,
-                                       unsigned int dst_port);
+                                       unsigned int dst_port, uint16_t ddp_length);
 
 /* TRP */
 #define RETRANSMIT_MAX 5

@@ -100,8 +100,7 @@ static ssize_t dpdk_recvmsg(struct fid_ep *ep_fid, const struct fi_msg *msg, uin
     rx_entry->input_size = 0;
     rx_entry->complete   = false;
 
-    printf("ENQUEUE READ REQUEST with total length of %u\n", rx_entry->total_length);
-
+    FI_DBG(&dpdk_prov, FI_LOG_EP_CTRL, "Enqueue a read request", ep->udp_port);
     ret = rte_ring_enqueue(ep->rq.ring, rx_entry);
     if (ret < 0) {
         ret = -ret;

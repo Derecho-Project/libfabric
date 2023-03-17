@@ -47,9 +47,6 @@ static int xfer_queue_lookup(struct dpdk_xfer_queue *q, uint32_t msn,
     RTE_LOG(DEBUG, USER1, "LOOKUP active recv XFE msn=%" PRIu32 "\n", msn);
     dlist_foreach_safe(&q->active_head, entry, tmp) {
         lptr = container_of(entry, struct dpdk_xfer_entry, entry);
-
-        printf("lptr->msn=%u, msn=%u\n", lptr->msn, msn);
-
         if (lptr->msn == msn) {
             *xfer_entry = lptr;
             return 0;
@@ -251,9 +248,6 @@ static void process_rdma_send(struct dpdk_ep *ep, struct packet_context *orig) {
     }
 
     // Process the matching request
-
-    printf("Processing matching request\n");
-
     offset         = rte_be_to_cpu_32(rdmap->mo);
     payload_length = orig->ddp_seg_length - sizeof(struct rdmap_untagged_packet);
     if (offset + payload_length > xfer_e->total_length) {
@@ -273,16 +267,14 @@ static void process_rdma_send(struct dpdk_ep *ep, struct packet_context *orig) {
         xfer_e->input_size = offset + payload_length;
     }
 
-    printf("COPY DATA INTO BUFFER\n");
-    printf("payload_length=%zu, input_size=%u, recv_size=%u, total_length=%u\n", payload_length,
-           xfer_e->input_size, xfer_e->recv_size, xfer_e->total_length);
+    RTE_LOG(DEBUG, USER1, "recv_size=%u, iov_count=%u, data_buffer=%p\n", xfer_e->recv_size,
+            xfer_e->iov_count, xfer_e->iov[0].iov_base);
 
     // This is the "famous" receiver-side COPY that apparently we cannot avoid.
     memcpy_to_iov(xfer_e->iov, xfer_e->iov_count, PAYLOAD_OF(rdmap), payload_length, offset);
     xfer_e->recv_size += payload_length;
     assert(xfer_e->input_size == 0 || xfer_e->recv_size <= xfer_e->input_size);
     if (xfer_e->recv_size == xfer_e->input_size) {
-        printf("TOTAL SIZE IS %u\n", xfer_e->input_size);
         xfer_e->complete = true;
     }
 
@@ -599,7 +591,7 @@ static void process_rx_packet(struct dpdk_domain *domain, struct rte_mbuf *mbuf)
 
     // If we got here, we have a valid packet for a valid EP
     assert(dst_ep);
-    printf("Got packet for EP %u\n", dst_ep->udp_port);
+    RTE_LOG(DEBUG, USER1, "<ep=%u> received packet\n", dst_ep->udp_port);
 
     ctx.src_ep = &dst_ep->remote_ep;
     if (!ctx.src_ep) {

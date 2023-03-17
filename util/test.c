@@ -370,7 +370,6 @@ void do_server() {
             }
         } while (ret == -FI_EAGAIN);
 
-        bzero(g_mr.buffer, g_mr.size);
         printf("Received a new message [size = %u]: %s\n", comp.len, (char *)g_mr.buffer);
     }
 }

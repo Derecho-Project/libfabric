@@ -139,13 +139,12 @@ int32_t ip_parse(char *addr, uint32_t *dst) {
 /* Appends a skeleton IPv4 header to the packet. Assume that src_addr and dst_addr are in
  * host byte order. */
 struct rte_ipv4_hdr *prepend_ipv4_header(struct rte_mbuf *sendmsg, int next_proto_id,
-                                         uint32_t src_addr, uint32_t dst_addr) {
+                                         uint32_t src_addr, uint32_t dst_addr,
+                                         uint16_t ddp_length) {
     struct rte_ipv4_hdr *ip;
 
     // Get payload length
-    struct pending_datagram_info *pending = (struct pending_datagram_info *)(sendmsg + 1);
-    size_t                        total_length =
-        pending->ddp_length + IP_HDR_LEN + UDP_HDR_LEN + TRP_HDR_LEN + RDMAP_HDR_LEN;
+    size_t total_length = ddp_length + INNER_HDR_LEN;
 
     ip = rte_pktmbuf_mtod_offset(sendmsg, struct rte_ipv4_hdr *, IP_HDR_OFFSET);
     sendmsg->data_len += IP_HDR_LEN;
@@ -288,12 +287,11 @@ int setup_queue_tbl(struct rx_queue *rxq, uint32_t lcore, uint32_t queue, uint16
  * case the IP psuedo-header checksum must be pre-computed by the caller).
  */
 struct rte_udp_hdr *prepend_udp_header(struct rte_mbuf *sendmsg, unsigned int src_port,
-                                       unsigned int dst_port) {
+                                       unsigned int dst_port, uint16_t ddp_length) {
     struct rte_udp_hdr *udp;
 
     // Get payload length
-    struct pending_datagram_info *pending = (struct pending_datagram_info *)(sendmsg + 1);
-    size_t total_length = pending->ddp_length + UDP_HDR_LEN + TRP_HDR_LEN + RDMAP_HDR_LEN;
+    size_t total_length = UDP_HDR_LEN + TRP_HDR_LEN + RDMAP_HDR_LEN + ddp_length;
 
     // Get and fill the UDP header
     udp = rte_pktmbuf_mtod_offset(sendmsg, struct rte_udp_hdr *, UDP_HDR_OFFSET);
@@ -322,7 +320,8 @@ struct rte_udp_hdr *prepend_udp_header(struct rte_mbuf *sendmsg, unsigned int sr
  *   The non-complemented checksum of the packet payload.  Ignored if
  *   checksum_offload is enabled.
  */
-void send_udp_dgram(struct dpdk_ep *ep, struct rte_mbuf *sendmsg, uint32_t raw_cksum) {
+void send_udp_dgram(struct dpdk_ep *ep, struct rte_mbuf *sendmsg, uint32_t raw_cksum,
+                    uint16_t ddp_length) {
     struct rte_udp_hdr  *udp;
     struct rte_ipv4_hdr *ip;
     struct dpdk_domain  *domain = container_of(ep->util_ep.domain, struct dpdk_domain, util_domain);
@@ -331,8 +330,8 @@ void send_udp_dgram(struct dpdk_ep *ep, struct rte_mbuf *sendmsg, uint32_t raw_c
         sendmsg->ol_flags |= RTE_MBUF_F_TX_UDP_CKSUM | RTE_MBUF_F_TX_IPV4 | RTE_MBUF_F_TX_IP_CKSUM;
     }
 
-    udp = prepend_udp_header(sendmsg, ep->udp_port, ep->remote_udp_port);
-    ip  = prepend_ipv4_header(sendmsg, IP_UDP, domain->ipv4_addr, ep->remote_ipv4_addr);
+    udp = prepend_udp_header(sendmsg, ep->udp_port, ep->remote_udp_port, ddp_length);
+    ip  = prepend_ipv4_header(sendmsg, IP_UDP, domain->ipv4_addr, ep->remote_ipv4_addr, ddp_length);
     udp->dgram_cksum = rte_ipv4_phdr_cksum(ip, sendmsg->ol_flags);
 
     if (!(sendmsg->ol_flags & RTE_MBUF_F_TX_UDP_CKSUM)) {
@@ -362,9 +361,11 @@ void send_trp_ack(struct dpdk_ep *ep) {
     trp->opcode  = rte_cpu_to_be_16(0);
     ee->trp_flags &= ~trp_ack_update;
 
+    // TODO: Is the size correct?
     send_udp_dgram(ep, sendmsg,
                    (domain->dev_flags & port_checksum_offload) ? 0
-                                                               : rte_raw_cksum(trp, sizeof(*trp)));
+                                                               : rte_raw_cksum(trp, sizeof(*trp)),
+                   rte_pktmbuf_pkt_len(sendmsg));
 } /* send_trp_ack */
 
 void send_trp_sack(struct dpdk_ep *ep) {
@@ -384,7 +385,8 @@ void send_trp_sack(struct dpdk_ep *ep) {
 
     send_udp_dgram(ep, sendmsg,
                    (domain->dev_flags & port_checksum_offload) ? 0
-                                                               : rte_raw_cksum(trp, sizeof(*trp)));
+                                                               : rte_raw_cksum(trp, sizeof(*trp)),
+                   rte_pktmbuf_pkt_len(sendmsg));
 } /* send_trp_sack */
 
 void process_trp_sack(struct ee_state *ep, uint32_t psn_min, uint32_t psn_max) {
@@ -451,6 +453,9 @@ int resend_ddp_segment(struct dpdk_ep *ep, struct rte_mbuf *sendmsg, struct ee_s
     }
 
     // TODO: Is this necessary?
+    // WARNING: this clones the mbuf data (=> our headers) but not the prepended
+    // private pending_datagram_info structure! From here on, do not use it, or
+    // copy it here!
     sendmsg = rte_pktmbuf_clone(sendmsg, sendmsg->pool);
     if (sendmsg == NULL) {
         RTE_LOG(ERR, USER1, "Failed to clone mbuf\n");
@@ -458,6 +463,7 @@ int resend_ddp_segment(struct dpdk_ep *ep, struct rte_mbuf *sendmsg, struct ee_s
     }
 
     // Prepare the TRP header
+    // TODO: Should this be a sort of "prepend TRP header" as well? Why in a function called DDP?
     trp = rte_pktmbuf_mtod_offset(sendmsg, struct trp_hdr *, TRP_HDR_OFFSET);
     sendmsg->data_len += TRP_HDR_LEN;
     sendmsg->pkt_len += TRP_HDR_LEN;
@@ -472,7 +478,8 @@ int resend_ddp_segment(struct dpdk_ep *ep, struct rte_mbuf *sendmsg, struct ee_s
     if (!domain->dev_flags & port_checksum_offload) {
         payload_raw_cksum = info->ddp_raw_cksum + rte_raw_cksum(trp, sizeof(*trp));
     }
-    send_udp_dgram(ep, sendmsg, payload_raw_cksum);
+
+    send_udp_dgram(ep, sendmsg, payload_raw_cksum, info->ddp_length);
 
     return 0;
 } /* resend_ddp_segment */

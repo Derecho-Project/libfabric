@@ -160,11 +160,23 @@ int dpdk_domain_open(struct fid_fabric *fabric_fid, struct fi_info *info,
 
     /* 2. DPDK-specific initialization */
 
+    // Ethernet MTU. This excludes the Ethernet header and the CRC.
+    // TODO: Support for VLAN or VXLAN is not yet implemented
+    domain->mtu = MTU;
+
     // Allocate the mempool for RX mbufs
-    domain->rx_pool_name = malloc(32);
-    sprintf(domain->rx_pool_name, "rx_pool_%s", domain->util_domain.name);
-    domain->rx_pool = rte_pktmbuf_pool_create(domain->rx_pool_name, 10240, 64, 0,
-                                              RTE_MBUF_DEFAULT_BUF_SIZE, rte_socket_id());
+    char rx_pool_name[32];
+    sprintf(rx_pool_name, "rx_pool_%s", domain->util_domain.name);
+    // Dimension of the TX mempools (must be power of 2)
+    size_t pool_size = rte_align32pow2(2 * MAX_ENDPOINTS_PER_APP * dpdk_default_rx_size);
+    // Dimension of the mbufs in the TX mempools. Must contain at least an Ethernet frame + private
+    // DPDK data (see documentation)
+    size_t mbuf_size = RTE_PKTMBUF_HEADROOM + RTE_ETHER_HDR_LEN + domain->mtu + RTE_ETHER_CRC_LEN;
+    // Other parameters
+    size_t cache_size   = 64;
+    size_t private_size = RTE_PKTMBUF_HEADROOM;
+    domain->rx_pool     = rte_pktmbuf_pool_create(rx_pool_name, pool_size, cache_size, private_size,
+                                                  mbuf_size, rte_socket_id());
     if (domain->rx_pool == NULL) {
         FI_WARN(&dpdk_prov, FI_LOG_CORE, "Cannot create RX mbuf pool for domain %s: %s",
                 domain->util_domain.name, rte_strerror(rte_errno));
@@ -180,7 +192,6 @@ int dpdk_domain_open(struct fid_fabric *fabric_fid, struct fi_info *info,
     domain->port_id  = 0;
     domain->queue_id = 0;
     domain->lcore_id = 1; // lcore 0 is the main thread, so this must be > 0
-    domain->mtu      = MTU;
     if (port_init(domain->rx_pool, domain->port_id, domain->queue_id, domain->mtu,
                   &domain->dev_flags) < 0)
     {
@@ -238,8 +249,6 @@ close_prog:
 close:
     (void)ofi_domain_close(&domain->util_domain);
 free:
-    free(domain->rx_pool_name);
-    // free(domain->ext_pool_name);
     free(domain);
     return ret;
 }
