@@ -28,11 +28,11 @@ static ssize_t dpdk_cq_readfrom(struct fid_cq *cq_fid, void *buf, size_t count,
     // TODO: What should I do with those?
     // I am expected to return only those successfult?
     // See the libfabric spec for more details.
-    struct fi_dpdk_wc wqe[dpdk_default_rx_burst_size];
+    struct fi_dpdk_wc *cqe[dpdk_default_rx_burst_size];
 
     // TODO: Why the lock on the RQ???
     rte_spinlock_lock(&ep->rq.lock);
-    ret = rte_ring_dequeue_burst(cq->cqe_ring, (void **)&wqe, count, NULL);
+    ret = rte_ring_dequeue_burst(cq->cqe_ring, (void **)cqe, count, NULL);
     rte_spinlock_unlock(&ep->rq.lock);
     if (ret == 0) {
         return -EAGAIN;
@@ -40,11 +40,9 @@ static ssize_t dpdk_cq_readfrom(struct fid_cq *cq_fid, void *buf, size_t count,
 
     // TODO: WHat if I have more than one CQE TO RETURN?
     struct fi_cq_msg_entry *comp = (struct fi_cq_msg_entry *)buf;
-    comp->flags                  = wqe[0].wc_flags;
-    comp->len                    = wqe[0].byte_len;
-    comp->op_context             = wqe[0].wr_context;
-
-    printf("RETURNING A CQE with len: %u\n", comp->len);
+    comp->flags                  = cqe[0]->wc_flags;
+    comp->len                    = cqe[0]->byte_len;
+    comp->op_context             = cqe[0]->wr_context;
 
     // TODO: implement according to the spec
     src_addr = FI_ADDR_NOTAVAIL;

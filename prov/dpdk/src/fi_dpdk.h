@@ -283,11 +283,6 @@ struct dpdk_domain {
 
     // Mempool for incoming packets
     struct rte_mempool *rx_pool;
-    char               *rx_pool_name;
-
-    // // Memory pool to allocate packet descriptors for external buffers
-    // struct rte_mempool *ext_pool;
-    // char               *ext_pool_name;
 
     // Receive TLB to track incoming fragmented packet
     // TODO: Potentially, this could span multiple hardware queues.

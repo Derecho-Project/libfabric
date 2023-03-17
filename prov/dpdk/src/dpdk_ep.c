@@ -368,8 +368,7 @@ int dpdk_endpoint(struct fid_domain *domain, struct fi_info *info, struct fid_ep
     ep->udp_port = dpdk_domain->udp_port + dpdk_domain->num_endpoints;
     ofi_genlock_unlock(&dpdk_domain->ep_mutex);
 
-    printf("Created EP %u\n", ep->udp_port);
-    FI_DBG(&dpdk_prov, FI_LOG_EP_CTRL, "Created EP %u", ep->udp_port);
+    FI_INFO(&dpdk_prov, FI_LOG_EP_CTRL, "Created EP %u", ep->udp_port);
 
     return 0;
 
