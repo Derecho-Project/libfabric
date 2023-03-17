@@ -1,5 +1,6 @@
 
 #include "fi_dpdk.h"
+#include "protocols.h"
 
 #include <ifaddrs.h>
 #include <net/if.h>
@@ -15,7 +16,7 @@
 // name.
 
 // TODO: This address must be passed by the application
-#define LF_IP_ADDR_DEFAULT "192.168.56.211"
+#define LF_IP_ADDR_DEFAULT "10.0.0.211"
 
 // TODO: This is the base UDP port of the Libfabric DPDK provider. It is used as a base to assign
 // UDP ports to different EPs. This might become a parameter of the provider.
@@ -186,13 +187,15 @@ int dpdk_getinfo(uint32_t version, const char *node, const char *service, uint64
 
         // TODO: Address info must become a parameter!!
         new_info->src_addr = (void *)malloc(dpdk_util_prov.info->src_addrlen);
+
         // The highest 32 bits of the src_addr are the IP address
-        uint32_t ip_addr = inet_addr(LF_IP_ADDR_DEFAULT);
-        // Now copy ip_addr in the most significant 32 bits of the src_addr
+        // The address MUST be in host byte order
+        uint32_t ip_addr;
+        ip_parse(LF_IP_ADDR_DEFAULT, &ip_addr);
         memcpy(new_info->src_addr, &ip_addr, sizeof(uint32_t));
         // Now copy the port_id in the least significant 16 bits of the src_addr
         uint16_t udp_port = LF_PORT_DEFAULT;
-        memcpy(new_info->src_addr + sizeof(uint32_t), &udp_port, sizeof(uint16_t));
+        memcpy(new_info->src_addr + 4, &udp_port, sizeof(uint16_t));
 
         // Endpoint type can be:
         // FI_EP_MSG Reliable-connected => Assuming our impl!

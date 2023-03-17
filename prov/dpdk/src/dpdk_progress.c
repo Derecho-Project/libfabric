@@ -47,6 +47,9 @@ static int xfer_queue_lookup(struct dpdk_xfer_queue *q, uint32_t msn,
     RTE_LOG(DEBUG, USER1, "LOOKUP active recv XFE msn=%" PRIu32 "\n", msn);
     dlist_foreach_safe(&q->active_head, entry, tmp) {
         lptr = container_of(entry, struct dpdk_xfer_entry, entry);
+
+        printf("lptr->msn=%u, msn=%u\n", lptr->msn, msn);
+
         if (lptr->msn == msn) {
             *xfer_entry = lptr;
             return 0;
@@ -248,10 +251,13 @@ static void process_rdma_send(struct dpdk_ep *ep, struct packet_context *orig) {
     }
 
     // Process the matching request
+
+    printf("Processing matching request\n");
+
     offset         = rte_be_to_cpu_32(rdmap->mo);
     payload_length = orig->ddp_seg_length - sizeof(struct rdmap_untagged_packet);
     if (offset + payload_length > xfer_e->total_length) {
-        RTE_LOG(DEBUG, USER1,
+        RTE_LOG(NOTICE, USER1,
                 "<ep=%" PRIx16 "> DROP: offset=%zu + payload_length=%zu > wr_len=%zu\n",
                 ep->udp_port, offset, payload_length, xfer_e->total_length);
         do_rdmap_terminate(ep, orig, ddp_error_untagged_message_too_long);
@@ -267,11 +273,16 @@ static void process_rdma_send(struct dpdk_ep *ep, struct packet_context *orig) {
         xfer_e->input_size = offset + payload_length;
     }
 
+    printf("COPY DATA INTO BUFFER\n");
+    printf("payload_length=%zu, input_size=%u, recv_size=%u, total_length=%u\n", payload_length,
+           xfer_e->input_size, xfer_e->recv_size, xfer_e->total_length);
+
     // This is the "famous" receiver-side COPY that apparently we cannot avoid.
     memcpy_to_iov(xfer_e->iov, xfer_e->iov_count, PAYLOAD_OF(rdmap), payload_length, offset);
     xfer_e->recv_size += payload_length;
     assert(xfer_e->input_size == 0 || xfer_e->recv_size <= xfer_e->input_size);
     if (xfer_e->recv_size == xfer_e->input_size) {
+        printf("TOTAL SIZE IS %u\n", xfer_e->input_size);
         xfer_e->complete = true;
     }
 
@@ -284,9 +295,11 @@ static void process_rdma_send(struct dpdk_ep *ep, struct packet_context *orig) {
      * completions that we had previously deferred. */
 
     // TODO: This implementation does not actually walk the queue!
-    // Is this an error? I'm keeping it as-is for this experiment
+    // Is this an error? I'm keeping it as-is for this moment...
+
+    // TODO: THE IF SHOULD BE THERE BUT ONLY WHEN THE CONNECTION ESTAB IS DONE
     if (serial_less_32(orig->psn, xfer_e->remote_ep->recv_ack_psn)) {
-        xfer_e = container_of(&ep->rq.active_head, struct dpdk_xfer_entry, entry);
+        xfer_e = container_of(ep->rq.active_head.next, struct dpdk_xfer_entry, entry);
         while (xfer_e && xfer_e->complete) {
             rte_spinlock_lock(&ep->rq.lock);
             post_recv_cqe(ep, xfer_e, FI_WC_SUCCESS);
@@ -297,11 +310,9 @@ static void process_rdma_send(struct dpdk_ep *ep, struct packet_context *orig) {
 } /* process_send */
 
 /* Transmits all packets currently in the transmit queue.  The queue will be
- * empty when this function returns.
- *
- * FIXME: It may be possible for this to never return if there is any error
- * that prevents packets from being transmitted. */
-static void flush_tx_queue(struct dpdk_ep *ep) {
+ * empty when this function returns. FIXME: It may be possible for this to never return
+ * if there is any error that prevents packets from being transmitted. */
+void flush_tx_queue(struct dpdk_ep *ep) {
     struct dpdk_domain *domain;
     struct rte_mbuf   **begin;
     int                 ret;
@@ -311,14 +322,24 @@ static void flush_tx_queue(struct dpdk_ep *ep) {
     begin = ep->txq;
     do {
         ret = rte_eth_tx_burst(domain->port_id, domain->queue_id, begin, ep->txq_end - begin);
-
         if (ret > 0) {
             RTE_LOG(DEBUG, USER1, "Transmitted %d packets\n", ret);
+            printf("Transmitted %d packets\n", ret);
         }
 
-        begin += ret;
+        // If we sent some fragment, immediately free the buffer
+        for (int i = 0; i < ret; i++) {
+            struct pending_datagram_info *info = (struct pending_datagram_info *)((*begin) + 1);
+            if (info->is_fragment) {
+                rte_pktmbuf_free(*begin);
+            }
+            begin++;
+        }
+
     } while (begin != ep->txq_end);
+
     ep->txq_end = ep->txq;
+
 } /* flush_tx_queue */
 
 static void progress_send_xfer(struct dpdk_ep *ep, struct dpdk_xfer_entry *entry) {
@@ -396,6 +417,9 @@ static void sweep_unacked_packets(struct dpdk_ep *ep) {
     // Get current time
     uint64_t now = rte_get_timer_cycles();
 
+    // TODO: There seems to be a problem with the resend_ddp_segment. Whenever the ACK timeout
+    // expires, the resend() is called and it appears it modifies the *p (=> sendmsg) pointer. After
+    // that, any access to the pointer (*p or sendmsg) causes a segfault.
     p = ee->tx_head;
     while (count++ < ee->tx_pending_size && (sendmsg = *p) != NULL) {
         int ret, cstatus;
@@ -453,13 +477,13 @@ static int process_receive_queue(struct dpdk_ep *ep, void *prefetch_addr) {
     // struct rte_mbuf *rxmbuf[dpdk_default_tx_burst_size];
     // uint16_t         rx_count, pkt;
 
-    // // This seems a nice way to have the hardware filter the packets directed to this specific QP
-    // // instead of having to receive them in a single point, use a rte_ring to dispatch them, and
-    // // here insert them in the right queue. Is this right? TODO: check flow director.
-    // // if (qp->dev->flags & port_fdir) {
-    // //     rx_count = rte_eth_rx_burst(qp->dev->portid, qp->shm_qp->rx_queue, rxmbuf,
-    // //                                 qp->shm_qp->rx_burst_size);
-    // // } else if...
+    // This seems a nice way to have the hardware filter the packets directed to this specific QP
+    // instead of having to receive them in a single point, use a rte_ring to dispatch them, and
+    // here insert them in the right queue. Is this right? TODO: check flow director.
+    // if (qp->dev->flags & port_fdir) {
+    //     rx_count = rte_eth_rx_burst(qp->dev->portid, qp->shm_qp->rx_queue, rxmbuf,
+    //                                 qp->shm_qp->rx_burst_size);
+    // } else if...
 
     // /* Get burst of RX packets */
     // if (ep->remote_ep.rx_queue) {
@@ -504,44 +528,51 @@ static void process_rx_packet(struct dpdk_domain *domain, struct rte_mbuf *mbuf)
     struct trp_hdr       *trp_hdr;
     uint16_t              trp_opcode;
 
-    uint32_t ip_addr   = domain->address >> 32;
-    uint16_t base_port = domain->address & 0xFFFF;
+    uint32_t ip_addr   = domain->ipv4_addr;
+    uint16_t base_port = domain->udp_port;
 
+    // TODO: We cannot discard packets absed on UDP checksum if we do not know how to compute it...
     // If some checksums are bad, we don't want to process the packet
-    if (mbuf->ol_flags & (RTE_MBUF_F_RX_L4_CKSUM_BAD | RTE_MBUF_F_RX_IP_CKSUM_BAD)) {
-        if (rte_log_get_global_level() >= RTE_LOG_DEBUG) {
-            uint16_t actual_udp_checksum, actual_ipv4_cksum;
-            ipv4_hdr = rte_pktmbuf_mtod_offset(mbuf, struct rte_ipv4_hdr *, sizeof(*eth_hdr));
-            udp_hdr  = rte_pktmbuf_mtod_offset(mbuf, struct rte_udp_hdr *,
-                                               sizeof(*eth_hdr) + sizeof(*ipv4_hdr));
-            actual_udp_checksum    = udp_hdr->dgram_cksum;
-            udp_hdr->dgram_cksum   = 0;
-            actual_ipv4_cksum      = ipv4_hdr->hdr_checksum;
-            ipv4_hdr->hdr_checksum = 0;
-            RTE_LOG(DEBUG, USER1, "ipv4 expected cksum %#" PRIx16 " got %#" PRIx16 "\n",
-                    rte_ipv4_cksum(ipv4_hdr), actual_ipv4_cksum);
-            RTE_LOG(DEBUG, USER1, "udp expected cksum %#" PRIx16 " got %#" PRIx16 "\n",
-                    rte_ipv4_udptcp_cksum(ipv4_hdr, udp_hdr), actual_udp_checksum);
-        }
-        RTE_LOG(DEBUG, USER1, "<dev=%lu> Drop packet with bad UDP/IP checksum\n", domain->address);
+    // if (mbuf->ol_flags & (RTE_MBUF_F_RX_L4_CKSUM_BAD | RTE_MBUF_F_RX_IP_CKSUM_BAD)) {
+    //     if (rte_log_get_global_level() >= RTE_LOG_DEBUG) {
+    //         uint16_t actual_udp_checksum, actual_ipv4_cksum;
+    //         ipv4_hdr = rte_pktmbuf_mtod_offset(mbuf, struct rte_ipv4_hdr *, sizeof(*eth_hdr));
+    //         udp_hdr  = rte_pktmbuf_mtod_offset(mbuf, struct rte_udp_hdr *,
+    //                                            sizeof(*eth_hdr) + sizeof(*ipv4_hdr));
+    //         actual_udp_checksum    = udp_hdr->dgram_cksum;
+    //         udp_hdr->dgram_cksum   = 0;
+    //         actual_ipv4_cksum      = ipv4_hdr->hdr_checksum;
+    //         ipv4_hdr->hdr_checksum = 0;
+    //         RTE_LOG(DEBUG, USER1, "ipv4 expected cksum %#" PRIx16 " got %#" PRIx16 "\n",
+    //                 rte_ipv4_cksum(ipv4_hdr), actual_ipv4_cksum);
+    //         RTE_LOG(DEBUG, USER1, "udp expected cksum %#" PRIx16 " got %#" PRIx16 "\n",
+    //                 rte_ipv4_udptcp_cksum(ipv4_hdr, udp_hdr), actual_udp_checksum);
+    //     }
+    //     RTE_LOG(NOTICE, USER1, "<dev=%s> Drop packet with bad UDP/IP checksum\n",
+    //             domain->util_domain.name);
 
-        return;
-    }
+    //     return;
+    // }
 
     eth_hdr  = rte_pktmbuf_mtod(mbuf, struct rte_ether_hdr *);
     ipv4_hdr = (struct rte_ipv4_hdr *)rte_pktmbuf_adj(mbuf, sizeof(*eth_hdr));
 
     // Check if the packet is UDP and is for us (IP address)
     if (ipv4_hdr->next_proto_id != IP_UDP) {
-        RTE_LOG(NOTICE, USER1, "<dev=%lu> Drop packet with IPv4 next header %" PRIu8 " not UDP\n",
-                domain->address, ipv4_hdr->next_proto_id);
+        RTE_LOG(DEBUG, USER1, "<dev=%s> Drop packet with IPv4 next header %" PRIu8 " not UDP\n",
+                domain->util_domain.name, ipv4_hdr->next_proto_id);
         rte_pktmbuf_free(mbuf);
+        return;
     }
-    if (ipv4_hdr->dst_addr != rte_cpu_to_be_32(ip_addr)) {
-        RTE_LOG(NOTICE, USER1,
-                "<dev=%lu> Drop packet with IPv4 dst addr %" PRIx32 "; expected %" PRIx32 "\n",
-                domain->address, rte_be_to_cpu_32(ipv4_hdr->dst_addr), ip_addr);
-    }
+
+    // TODO: DEBUG: We don't check the IP address for now...
+    // if (ipv4_hdr->dst_addr != rte_cpu_to_be_32(ip_addr)) {
+    //     RTE_LOG(DEBUG, USER1,
+    //             "<dev=%s> Drop packet with IPv4 dst addr %" PRIx32 "; expected %" PRIx32 "\n",
+    //             domain->util_domain.name, rte_be_to_cpu_32(ipv4_hdr->dst_addr), ip_addr);
+    //     rte_pktmbuf_free(mbuf);
+    //     return;
+    // }
 
     // Check the UDP port. We can have three cases:
     // 1. The packet is for the base_port => This is a connection request
@@ -556,18 +587,19 @@ static void process_rx_packet(struct dpdk_domain *domain, struct rte_mbuf *mbuf)
         // Find the EP for this port
         dst_ep = domain->udp_port_to_ep[rx_port - (base_port + 1)];
         if (!dst_ep) {
-            RTE_LOG(NOTICE, USER1, "<dev=%lu> Drop packet with UDP dst port %" PRIu16 ";\n",
-                    domain->address, rx_port);
+            RTE_LOG(NOTICE, USER1, "<dev=%s> Drop packet with UDP dst port %" PRIu16 ";\n",
+                    domain->util_domain.name, rx_port);
             rte_pktmbuf_free(mbuf);
         }
     } else {
-        RTE_LOG(NOTICE, USER1, "<dev=%lu> Drop packet with UDP dst port %" PRIu16 ";\n",
-                domain->address, rx_port);
+        RTE_LOG(NOTICE, USER1, "<dev=%s> Drop packet with UDP dst port %" PRIu16 ";\n",
+                domain->util_domain.name, rx_port);
         rte_pktmbuf_free(mbuf);
     }
 
     // If we got here, we have a valid packet for a valid EP
     assert(dst_ep);
+    printf("Got packet for EP %u\n", dst_ep->udp_port);
 
     ctx.src_ep = &dst_ep->remote_ep;
     if (!ctx.src_ep) {
@@ -585,9 +617,9 @@ static void process_rx_packet(struct dpdk_domain *domain, struct rte_mbuf *mbuf)
     case trp_sack:
         /* This is a selective acknowledgement */
         RTE_LOG(DEBUG, USER1,
-                "<dev=%lu ep=%" PRIx16 "> receive SACK [%" PRIu32 ", %" PRIu32
+                "<dev=%s ep=%" PRIx16 "> receive SACK [%" PRIu32 ", %" PRIu32
                 "); send_ack_psn %" PRIu32 "\n",
-                domain->address, dst_ep->udp_port, rte_be_to_cpu_32(trp_hdr->psn),
+                domain->util_domain.name, dst_ep->udp_port, rte_be_to_cpu_32(trp_hdr->psn),
                 rte_be_to_cpu_32(trp_hdr->ack_psn), ctx.src_ep->send_last_acked_psn);
         // dst_ep->stats.recv_sack_count++; //TODO: stats not implemented yet
         process_trp_sack(ctx.src_ep, rte_be_to_cpu_32(trp_hdr->psn),
@@ -600,8 +632,8 @@ static void process_rx_packet(struct dpdk_domain *domain, struct rte_mbuf *mbuf)
         return;
     default:
         RTE_LOG(NOTICE, USER1,
-                "<dev=%lu ep=%" PRIx16 "> receive unexpected opcode %" PRIu16 "; dropping\n",
-                domain->address, dst_ep->udp_port, trp_opcode >> trp_opcode_shift);
+                "<dev=%s ep=%" PRIx16 "> receive unexpected opcode %" PRIu16 "; dropping\n",
+                domain->util_domain.name, dst_ep->udp_port, trp_opcode >> trp_opcode_shift);
         return;
     }
 
@@ -612,10 +644,11 @@ static void process_rx_packet(struct dpdk_domain *domain, struct rte_mbuf *mbuf)
     /* If no DDP segment attached; ignore PSN */
     if (rte_be_to_cpu_16(udp_hdr->dgram_len) <= sizeof(*udp_hdr) + sizeof(*trp_hdr)) {
         RTE_LOG(DEBUG, USER1,
-                "<dev=%lu ep=%" PRIx16 "> got ACK psn %" PRIu32 "; now last_acked_psn %" PRIu32
+                "<dev=%s ep=%" PRIx16 "> got ACK psn %" PRIu32 "; now last_acked_psn %" PRIu32
                 " send_next_psn %" PRIu32 " send_max_psn %" PRIu32 "\n",
-                domain->address, dst_ep->udp_port, ctx.psn, ctx.src_ep->send_last_acked_psn,
-                ctx.src_ep->send_next_psn, ctx.src_ep->send_max_psn);
+                domain->util_domain.name, dst_ep->udp_port, ctx.psn,
+                ctx.src_ep->send_last_acked_psn, ctx.src_ep->send_next_psn,
+                ctx.src_ep->send_max_psn);
         return;
     }
 
@@ -635,8 +668,8 @@ static void process_rx_packet(struct dpdk_domain *domain, struct rte_mbuf *mbuf)
          * contiguous range so we can send a SACK to lower the number
          * of retransmissions. */
         RTE_LOG(DEBUG, USER1,
-                "<dev=%lu ep=%" PRIx16 "> receive psn %" PRIu32 "; next expected psn %" PRIu32 "\n",
-                domain->address, dst_ep->udp_port, ctx.psn, ctx.src_ep->recv_ack_psn);
+                "<dev=%s ep=%" PRIx16 "> receive psn %" PRIu32 "; next expected psn %" PRIu32 "\n",
+                domain->util_domain.name, dst_ep->udp_port, ctx.psn, ctx.src_ep->recv_ack_psn);
         // dst_ep->stats.recv_psn_gap_count++; //TODO: stats not implemented yet
         if (ctx.src_ep->trp_flags & trp_recv_missing) {
             if (ctx.psn == ctx.src_ep->recv_sack_psn.max) {
@@ -657,10 +690,11 @@ static void process_rx_packet(struct dpdk_domain *domain, struct rte_mbuf *mbuf)
                  * retransmitted along with the surrounding
                  * datagrams. */
                 RTE_LOG(NOTICE, USER1,
-                        "<dev=%lu ep=%" PRIx16 "> got out of range psn %" PRIu32
+                        "<dev=%s ep=%" PRIx16 "> got out of range psn %" PRIu32
                         "; next expected %" PRIu32 " sack range: [%" PRIu32 ",%" PRIu32 "]\n",
-                        domain->address, dst_ep->udp_port, ctx.psn, ctx.src_ep->recv_ack_psn,
-                        ctx.src_ep->recv_sack_psn.min, ctx.src_ep->recv_sack_psn.max);
+                        domain->util_domain.name, dst_ep->udp_port, ctx.psn,
+                        ctx.src_ep->recv_ack_psn, ctx.src_ep->recv_sack_psn.min,
+                        ctx.src_ep->recv_sack_psn.max);
                 return;
             } else {
                 /* This segment has been handled; drop the
@@ -676,9 +710,9 @@ static void process_rx_packet(struct dpdk_domain *domain, struct rte_mbuf *mbuf)
         /* This is a retransmission of a packet which we have already
          * acknowledged; throw it away. */
         RTE_LOG(DEBUG, USER1,
-                "<dev=%lu ep=%" PRIx16 "> got retransmission psn %" PRIu32 "; expected psn %" PRIu32
+                "<dev=%s ep=%" PRIx16 "> got retransmission psn %" PRIu32 "; expected psn %" PRIu32
                 "\n",
-                domain->address, dst_ep->udp_port, ctx.psn, ctx.src_ep->recv_ack_psn);
+                domain->util_domain.name, dst_ep->udp_port, ctx.psn, ctx.src_ep->recv_ack_psn);
         // dst_ep->stats.recv_retransmit_count++; //TODO: stats not implemented yet
         return;
     }
@@ -730,17 +764,43 @@ static void process_rx_packet(struct dpdk_domain *domain, struct rte_mbuf *mbuf)
     }
 } /* process_rx_packet */
 
+/* Receive action on the network. Takes care of IPv4 defragmentation, and foreach reassembled packet
+ * invokes the process_rx_packet function */
 static void do_receive(struct dpdk_domain *domain) {
-    struct rte_mbuf *rxmbuf[dpdk_default_tx_burst_size];
+    struct rte_mbuf *pkts_burst[dpdk_default_tx_burst_size];
+    struct rte_mbuf *reassembled;
     uint16_t         rx_count;
+    uint64_t         cur_tsc;
+    int              j;
 
     /* RX packets */
     rx_count =
-        rte_eth_rx_burst(domain->port_id, domain->queue_id, rxmbuf, dpdk_default_rx_burst_size);
+        rte_eth_rx_burst(domain->port_id, domain->queue_id, pkts_burst, dpdk_default_rx_burst_size);
 
-    for (int i = 0; i < rx_count; i++) {
-        process_rx_packet(domain, rxmbuf[i]);
+    /* Prefetch first packets */
+    for (j = 0; j < PREFETCH_OFFSET && j < rx_count; j++) {
+        rte_prefetch0(rte_pktmbuf_mtod(pkts_burst[j], void *));
     }
+
+    /* Process already prefetched packets */
+    for (j = 0; j < (rx_count - PREFETCH_OFFSET); j++) {
+        rte_prefetch0(rte_pktmbuf_mtod(pkts_burst[j + PREFETCH_OFFSET], void *));
+        reassembled = reassemble(pkts_burst[j], &domain->lcore_queue_conf, 0, cur_tsc);
+        if (reassembled) {
+            process_rx_packet(domain, reassembled);
+        }
+    }
+
+    /* Process remaining prefetched packets */
+    for (; j < rx_count; j++) {
+        reassembled = reassemble(pkts_burst[j], &domain->lcore_queue_conf, 0, cur_tsc);
+        if (reassembled) {
+            process_rx_packet(domain, reassembled);
+        }
+    }
+
+    // This causes segfault, but why?
+    rte_ip_frag_free_death_row(&domain->lcore_queue_conf.death_row, PREFETCH_OFFSET);
 }
 
 /* Make forward progress on the queue pair. */
@@ -757,7 +817,8 @@ static void progress_ep(struct dpdk_ep *ep) {
     // process_receive_queue(ep, send_xfer);
 
     /* Call any timers only once per millisecond */
-    sweep_unacked_packets(ep);
+    // TODO: TEMPORARY DISABLE THE ACK SUBSYSTEM
+    // sweep_unacked_packets(ep);
 
     /* Process READ OPCODE Response last segments. */
     // TODO: Enable when implementing fi_rma

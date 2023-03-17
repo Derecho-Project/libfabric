@@ -160,6 +160,18 @@ int dpdk_domain_open(struct fid_fabric *fabric_fid, struct fi_info *info,
 
     /* 2. DPDK-specific initialization */
 
+    // Allocate the mempool for RX mbufs
+    domain->rx_pool_name = malloc(32);
+    sprintf(domain->rx_pool_name, "rx_pool_%s", domain->util_domain.name);
+    domain->rx_pool = rte_pktmbuf_pool_create(domain->rx_pool_name, 10240, 64, 0,
+                                              RTE_MBUF_DEFAULT_BUF_SIZE, rte_socket_id());
+    if (domain->rx_pool == NULL) {
+        FI_WARN(&dpdk_prov, FI_LOG_CORE, "Cannot create RX mbuf pool for domain %s: %s",
+                domain->util_domain.name, rte_strerror(rte_errno));
+        goto close;
+    }
+    printf("RX mempool creation OK\n");
+
     // Initialize the DPDK device
     // TODO: port_id, queue_id, lcore_id, dev_flags, and mtu MUST be configurable parameters!
     // More generally, I think many of the parameter passed to and retrieved from
@@ -167,7 +179,7 @@ int dpdk_domain_open(struct fid_fabric *fabric_fid, struct fi_info *info,
     // the dpdk_domain struct.
     domain->port_id  = 0;
     domain->queue_id = 0;
-    domain->lcore_id = 0;
+    domain->lcore_id = 1; // lcore 0 is the main thread, so this must be > 0
     domain->mtu      = MTU;
     if (port_init(domain->rx_pool, domain->port_id, domain->queue_id, domain->mtu,
                   &domain->dev_flags) < 0)
@@ -179,8 +191,9 @@ int dpdk_domain_open(struct fid_fabric *fabric_fid, struct fi_info *info,
     // Get the IP and UDP port info from the configuration
     // The most significant 32 bytes of the 64-bit integer are the IP address
     // The least significant 16 bytes of the 64-bit integer are the UDP port
-    domain->address = *(uint64_t *)(info->src_addr);
-    domain->addrlen = info->src_addrlen;
+    domain->ipv4_addr = *((uint32_t *)info->src_addr);
+    domain->udp_port  = *((uint16_t *)(info->src_addr + 4));
+    domain->addrlen   = info->src_addrlen;
     rte_eth_macaddr_get(domain->port_id, &domain->eth_addr);
 
     // Initialize the list of endpoints
@@ -195,29 +208,22 @@ int dpdk_domain_open(struct fid_fabric *fabric_fid, struct fi_info *info,
         goto close;
     }
 
-    // Allocate the mempool for RX mbufs
-    domain->rx_pool_name = malloc(32);
-    sprintf(domain->rx_pool_name, "rx_pool_%s", domain->util_domain.name);
-    domain->rx_pool = rte_pktmbuf_pool_create(domain->rx_pool_name, 10240, 64, 0,
-                                              RTE_MBUF_DEFAULT_BUF_SIZE, rte_socket_id());
-    if (domain->rx_pool == NULL) {
-        FI_WARN(&dpdk_prov, FI_LOG_CORE, "Cannot create RX mbuf pool for domain %s: %s",
-                domain->util_domain.name, rte_strerror(rte_errno));
-        goto close;
-    }
-    printf("RX mempool creation OK\n");
-
     // Allocate the mempool for descriptors of externally allocated data
-    domain->ext_pool_name = malloc(13);
-    sprintf(domain->ext_pool_name, "ext_pool_%s", domain->util_domain.name);
-    domain->ext_pool =
-        rte_pktmbuf_pool_create(domain->ext_pool_name, 128, 64, 0, 0, rte_socket_id());
-    if (domain->ext_pool == NULL) {
-        FI_WARN(&dpdk_prov, FI_LOG_CORE, "Cannot create external mbuf pool for domain %s: %s",
-                domain->util_domain.name, rte_strerror(rte_errno));
-        goto close;
-    }
-    printf("External mempool creation OK\n");
+    // domain->ext_pool_name = malloc(13);
+    // sprintf(domain->ext_pool_name, "ext_pool_%s", domain->util_domain.name);
+    // domain->ext_pool =
+    //     rte_pktmbuf_pool_create(domain->ext_pool_name, 128, 64, 0, 0, rte_socket_id());
+    // if (domain->ext_pool == NULL) {
+    //     FI_WARN(&dpdk_prov, FI_LOG_CORE, "Cannot create external mbuf pool for domain %s: %s",
+    //             domain->util_domain.name, rte_strerror(rte_errno));
+    //     goto close;
+    // }
+    // printf("External mempool creation OK\n");
+
+    // Initialize the rx TLB table
+    domain->lcore_queue_conf.n_rx_queue = 1;
+    setup_queue_tbl(&domain->lcore_queue_conf.rx_queue_list[0], 0, 0, domain->mtu); // pool and tbl
+    domain->lcore_queue_conf.rx_queue_list[0].portid = domain->port_id;
 
     /* 3. Start the progress thread for this domain */
     ret = dpdk_start_progress(&domain->progress);
@@ -233,7 +239,7 @@ close:
     (void)ofi_domain_close(&domain->util_domain);
 free:
     free(domain->rx_pool_name);
-    free(domain->ext_pool_name);
+    // free(domain->ext_pool_name);
     free(domain);
     return ret;
 }

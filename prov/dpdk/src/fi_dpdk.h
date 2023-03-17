@@ -18,6 +18,7 @@
 
 #include <assert.h>
 #include <ifaddrs.h>
+#include <math.h>
 #include <net/if.h>
 #include <stdatomic.h>
 #include <stdlib.h>
@@ -37,8 +38,12 @@
 
 #include <rte_eal.h>
 #include <rte_ethdev.h>
+#include <rte_ether.h>
 #include <rte_ip.h>
+#include <rte_ip_frag.h>
 #include <rte_log.h>
+#include <rte_malloc.h>
+#include <rte_udp.h>
 
 #include "util.h"
 
@@ -223,11 +228,28 @@ enum dpdk_device_flags {
     port_fdir             = 2,
 };
 
+// Handle packet fragmentation
+struct rx_queue {
+    struct rte_ip_frag_tbl *frag_tbl;
+    struct rte_mempool     *pool;
+    uint16_t                portid;
+};
+
+/* Structure that handles per-lcore info.
+ TODO: We assume only 1 receiving queue */
+struct lcore_queue_conf {
+    uint16_t                     n_rx_queue;
+    struct rx_queue              rx_queue_list[1];
+    struct rte_ip_frag_death_row death_row;
+} __rte_cache_aligned;
+
 // Represents a DPDK domain (=> a DPDK device)
 struct dpdk_domain {
     // Utility domain
     struct util_domain util_domain;
 
+    // TODO: The following fields could be grouped in a "dev" struct,
+    // which could be passed also to the child EPs for faster access.
     // Port ID of the DPDK device
     uint16_t port_id;
     // Queue ID of the DPDK device
@@ -239,10 +261,15 @@ struct dpdk_domain {
     // DPDK core id
     uint16_t lcore_id;
 
+    // TODO: The following fields could be grouped in a "dev" struct,
+    // which could be passed also to the child EPs for faster access.
+    // IMPORTANT: IP ADDR and UDP PORTS MUST BE IN HOST BYTE ORDER
     // MAC address of the device
     struct rte_ether_addr eth_addr;
-    // IP address (most significant 32 bit) and UDP port (least 16) of the device
-    uint64_t address;
+    // IPv4 address
+    uint32_t ipv4_addr;
+    // UDP base port
+    uint16_t udp_port;
     // Address length
     size_t addrlen;
 
@@ -262,9 +289,13 @@ struct dpdk_domain {
     struct rte_mempool *rx_pool;
     char               *rx_pool_name;
 
-    // Memory pool to allocate packet descriptors for external buffers
-    struct rte_mempool *ext_pool;
-    char               *ext_pool_name;
+    // // Memory pool to allocate packet descriptors for external buffers
+    // struct rte_mempool *ext_pool;
+    // char               *ext_pool_name;
+
+    // Receive TLB to track incoming fragmented packet
+    // TODO: Potentially, this could span multiple hardware queues.
+    struct lcore_queue_conf lcore_queue_conf;
 };
 
 // DPDK endpoint connection state
@@ -309,13 +340,11 @@ struct dpdk_ep {
     uint32_t                           readresp_head_msn;
     uint8_t                            ord_active;
 
-    // Memory pool for headers
+    // Memory pools for data buffers
+    // 1. HDR pool:    contain the headers for the packets
+    // 2. DDP mempool: pointers to external memory (zero-copy)
     struct rte_mempool *tx_hdr_mempool;
-    char               *tx_hdr_mempool_name;
-
-    // Memory pool for the DDP protocol
     struct rte_mempool *tx_ddp_mempool;
-    char               *tx_ddp_mempool_name;
 
     // This is necessary because we keep EPs in a list
     struct slist_entry entry;
@@ -335,6 +364,7 @@ int  dpdk_start_progress(struct dpdk_progress *progress);
 void dpdk_close_progress(struct dpdk_progress *progress);
 int  dpdk_run_progress(void *args);
 void dpdk_progress_rx(struct dpdk_ep *ep);
+void flush_tx_queue(struct dpdk_ep *ep);
 
 void dpdk_handle_event_list(struct dpdk_progress *progress);
 

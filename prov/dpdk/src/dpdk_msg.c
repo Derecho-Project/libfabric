@@ -99,7 +99,10 @@ static ssize_t dpdk_recvmsg(struct fid_ep *ep_fid, const struct fi_msg *msg, uin
     rx_entry->recv_size  = 0;
     rx_entry->input_size = 0;
     rx_entry->complete   = false;
-    ret                  = rte_ring_enqueue(ep->rq.ring, rx_entry);
+
+    printf("ENQUEUE READ REQUEST with total length of %u\n", rx_entry->total_length);
+
+    ret = rte_ring_enqueue(ep->rq.ring, rx_entry);
     if (ret < 0) {
         ret = -ret;
         goto errout;

@@ -8,10 +8,6 @@
 
 #include "fi_dpdk.h"
 
-#include <rte_ether.h>
-#include <rte_ip.h>
-#include <rte_udp.h>
-
 /* This file contains definitions and function prototypes for the userspace protocol processing.*/
 
 struct packet_context {
@@ -21,11 +17,31 @@ struct packet_context {
     uint32_t             psn;
 };
 
-/* Ethernet */
-#define ETHERNET_ADDRESS_LEN 6
-#define ETHERNET_HEADER_LEN  14
-#define MTU                  1500
+/* Size of headers */
+#define IP_HDR_LEN    sizeof(struct rte_ipv4_hdr)
+#define UDP_HDR_LEN   sizeof(struct rte_udp_hdr)
+#define TRP_HDR_LEN   sizeof(struct trp_hdr)
+#define RDMAP_HDR_LEN sizeof(struct rdmap_untagged_packet)
 
+/* All the headers that are included in the MTU size */
+#define MTU           1500
+#define INNER_HDR_LEN (IP_HDR_LEN + UDP_HDR_LEN + TRP_HDR_LEN + RDMAP_HDR_LEN)
+
+/* Offsets of headers in the hdr mbufs */
+#define ETHERNET_HDR_OFFSET 0
+#define IP_HDR_OFFSET       (ETHERNET_HDR_OFFSET + RTE_ETHER_HDR_LEN)
+#define UDP_HDR_OFFSET      (IP_HDR_OFFSET + IP_HDR_LEN)
+#define TRP_HDR_OFFSET      (UDP_HDR_OFFSET + UDP_HDR_LEN)
+#define RDMAP_HDR_OFFSET    (TRP_HDR_OFFSET + TRP_HDR_LEN)
+
+/* IP-level fragmentation macros */
+#define IP_FRAG_TBL_BUCKET_ENTRIES 16 // Should be power of two.
+#define MAX_FRAG_NUM               RTE_LIBRTE_IP_FRAG_MAX_FRAG
+#define PREFETCH_OFFSET            3
+#define DEF_FLOW_TTL               MS_PER_S
+#define DEF_FLOW_NUM               0x1000
+
+/* Ethernet */
 #define ETHERNET_P_LOOP  0x0060 /* Ethernet Loopback packet	    */
 #define ETHERNET_P_TSN   0x22F0 /* TSN (IEEE 1722) packet	    */
 #define ETHERNET_P_IP    0x0800 /* Internet Protocol packet	    */
@@ -45,22 +61,29 @@ void enqueue_ether_frame(struct rte_mbuf *sendmsg, unsigned int ether_type, stru
                          struct rte_ether_addr *dst_addr);
 
 /* IPv4 */
-
-#define ICMPV4        1
-#define IPV4          4
-#define IP_TCP        6
-#define IP_UDP        17
-#define IP_HEADER_LEN 20
-#define ip_len(ip)    (ip->len - (ip->ihl * 4))
+#define ICMPV4     1
+#define IPV4       4
+#define IP_TCP     6
+#define IP_UDP     17
+#define ip_len(ip) (ip->len - (ip->ihl * 4))
 
 uint16_t ip_checksum(struct rte_ipv4_hdr *ih, size_t len);
 int32_t  ip_parse(char *addr, uint32_t *dst);
 
 struct rte_ipv4_hdr *prepend_ipv4_header(struct rte_mbuf *sendmsg, int next_proto_id,
                                          uint32_t src_addr, uint32_t dst_addr);
+struct rte_mbuf *reassemble(struct rte_mbuf *m, struct lcore_queue_conf *qconf, uint16_t vlan_id,
+                            uint64_t tms);
+
 /* UDP */
-#define UDP_HEADER_LEN       8
-#define UDP_PORT             2310
+
+// UDP max payload size
+// IMPORTANT: By default, DPDK limits the number of IP fragments per packet
+// to RTE_LIBRTE_IP_FRAG_MAX_FRAG. In v22.11, this is 8. This is because generally production-grade
+// networks do not allow loger IP fragment chains. So, either you increase that value in your DPDK
+// installation, or you reduce the max UDP payload size to stay below that threashold. In this
+// example, we adopt the latter approach as it does not require you to change, recompile, and
+// reinstall DPDK.
 #define MAX_UDP_PAYLOAD_SIZE 11808
 
 void send_udp_dgram(struct dpdk_ep *ep, struct rte_mbuf *sendmsg, uint32_t raw_cksum);
@@ -123,7 +146,6 @@ struct trp_rr {
     struct trp_rr_params params;
 } __attribute__((__packed__));
 
-#define PENDING_DATAGRAM_INFO_SIZE 64
 struct pending_datagram_info {
     uint64_t                           next_retransmit;
     struct dpdk_xfer_entry            *wqe;
@@ -132,7 +154,10 @@ struct pending_datagram_info {
     uint16_t                           ddp_length;
     uint32_t                           ddp_raw_cksum;
     uint32_t                           psn;
+    // This is used in TX to track fragmented packets and free them immediately after send
+    bool is_fragment;
 };
+#define PENDING_DATAGRAM_INFO_SIZE sizeof(struct pending_datagram_info)
 
 void send_trp_ack(struct dpdk_ep *ep);
 void send_trp_sack(struct dpdk_ep *ep);
@@ -190,6 +215,9 @@ int send_ddp_segment(struct dpdk_ep *ep, struct rte_mbuf *sendmsg,
 int resend_ddp_segment(struct dpdk_ep *ep, struct rte_mbuf *sendmsg, struct ee_state *ee);
 
 /* RDMAP */
+
+#define MAX_RDMAP_PAYLOAD_SIZE (MAX_UDP_PAYLOAD_SIZE - TRP_HDR_LEN - RDMAP_HDR_LEN)
+
 #define RDMAP_V1                0x40
 #define RDMAP_GET_RV(flags)     ((flags >> 6) & 0x3)
 #define RDMAP_GET_OPCODE(flags) ((flags)&0xf)
@@ -226,8 +254,7 @@ struct rdmap_untagged_packet {
 static_assert(sizeof(struct rdmap_untagged_packet) == 22,
               "unexpected sizeof(rdmap_untagged_packet)");
 
-#define RDMAP_TAGGED_ALLOC_SIZE(len)   (sizeof(struct rdmap_tagged_packet) + (len))
-#define RDMAP_UNTAGGED_ALLOC_SIZE(len) (sizeof(struct rdmap_untagged_packet) + (len))
+#define RDMAP_TAGGED_ALLOC_SIZE(len) (sizeof(struct rdmap_tagged_packet) + (len))
 
 struct rdmap_readreq_packet {
     struct rdmap_untagged_packet untagged;
