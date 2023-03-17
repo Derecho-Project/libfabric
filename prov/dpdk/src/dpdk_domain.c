@@ -9,12 +9,12 @@
 
 /* Many configuration parameters required to startup DPDK */
 static inline int port_init(struct rte_mempool *mempool, uint16_t port_id, uint16_t mtu) {
-    int valid_port = rte_eth_dev_is_valid_port(0);
+    int valid_port = rte_eth_dev_is_valid_port(port_id);
     if (!valid_port)
         return -1;
 
     struct rte_eth_dev_info dev_info;
-    int                     retval = rte_eth_dev_info_get(0, &dev_info);
+    int                     retval = rte_eth_dev_info_get(port_id, &dev_info);
     if (retval != 0) {
         fprintf(stderr, "[error] cannot get device (port %u) info: %s\n", 0, strerror(-retval));
         return retval;
