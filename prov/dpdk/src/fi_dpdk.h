@@ -292,6 +292,7 @@ struct dpdk_domain {
 // DPDK endpoint connection state
 enum ep_conn_state {
     ep_conn_state_unbound,
+    ep_conn_state_connecting,
     ep_conn_state_connected,
     ep_conn_state_shutdown,
     ep_conn_state_error,
@@ -535,7 +536,20 @@ int  dpdk_eq_open(struct fid_fabric *fabric_fid, struct fi_eq_attr *attr, struct
                   void *context);
 void dpdk_tx_queue_insert(struct dpdk_ep *ep, struct dpdk_xfer_entry *tx_entry);
 
+
+//===================== DPDK Parameters ================
+struct dpdk_params_t {
+    // dpdk base port
+    int base_port;
+};
+
+extern struct dpdk_params_t dpdk_params;
+
 //===================== Log infrastructure ================
-#define DPDK_INFO(subsys, ...) FI_INFO(&dpdk_prov, subsys, __VA_ARGS__)
+#define DPDK_TRACE(subsys, ...) FI_TRACE(&dpdk_prov, subsys, __VA_ARGS__)
+#define DPDK_DBG(subsys, ...)   FI_DBG  (&dpdk_prov, subsys, __VA_ARGS__)
+#define DPDK_INFO(subsys, ...)  FI_INFO (&dpdk_prov, subsys, __VA_ARGS__)
+#define DPDK_WARN(subsys, ...)  FI_WARN (&dpdk_prov, subsys, __VA_ARGS__)
+
 
 #endif /* _DPDK_H_ */

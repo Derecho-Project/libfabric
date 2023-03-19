@@ -204,17 +204,26 @@ static int dpdk_ep_connect(struct fid_ep *ep_fid, const void *addr, const void *
     }
     struct sockaddr_in* paddrin = (struct sockaddr_in*) addr;
 
+    // STEP 2 - local endpoint shifting to connecting state
     struct dpdk_ep *ep = container_of(ep_fid, struct dpdk_ep, util_ep.ep_fid);
     eth_parse("ff:ff:ff:ff:ff:ff", &ep->remote_eth_addr);
     ep->remote_ipv4_addr = rte_be_to_cpu32(paddrin->sin_addr.s_addr);
-    // TODO: [Weijia]get a port from the corresponding domain.
+    ep->remote_udp_port = 0;
+    atomic_store(&ep->conn_state, ep_conn_state_connecting);
+
+    // STEP 3 - send connection request
+/*
+    struct dpdk_ep *ep = container_of(ep_fid, struct dpdk_ep, util_ep.ep_fid);
+    eth_parse("ff:ff:ff:ff:ff:ff", &ep->remote_eth_addr);
+    ep->remote_ipv4_addr = rte_be_to_cpu32(paddrin->sin_addr.s_addr);
+    // Here, we don't set the remote udp port for communication, this is only done when we 
     ep->remote_udp_port = 2510;
 
     atomic_store(&ep->conn_state, ep_conn_state_connected);
 
     // TODO: IMPLEMENT THIS FUNCTION
     printf("[dpdk_ep_connect] UNIMPLEMENTED\n");
-
+*/
     return 0;
 }
 
@@ -385,6 +394,8 @@ int dpdk_endpoint(struct fid_domain *domain, struct fi_info *info, struct fid_ep
 
     // Add this EP to EP list of the domain, and increase the associated values
     // MUST be done while holding the EP MUTEX.
+    // [Weijia] Is it possible that num_endpoints being growing beyond MAX_ENDPOINTS_PER_APP,
+    //          leaving released udp ports unused?
     ofi_genlock_lock(&dpdk_domain->ep_mutex);
     slist_insert_tail(&ep->entry, &dpdk_domain->endpoint_list);
     dpdk_domain->udp_port_to_ep[dpdk_domain->num_endpoints] = ep;

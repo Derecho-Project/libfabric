@@ -1,5 +1,12 @@
 #include "fi_dpdk.h"
 
+// ================ The global variables ================
+#define DEFAULT_DPDK_BASE_PORT  (2509)
+
+struct dpdk_params_t dpdk_params  = {
+    .base_port      = DEFAULT_DPDK_BASE_PORT,               // FI_DPDK_BASE_PORT
+};
+
 // ================ Provider Initialization Functions =================
 static void fi_dpdk_fini(void) {
 
@@ -18,8 +25,25 @@ struct fi_provider dpdk_prov = {
     .cleanup    = fi_dpdk_fini,
 };
 
+static void dpdk_init_env(void) {
+
+    /* set the dpdk base port */
+    fi_param_define(&dpdk_prov, "base_port", FI_PARAM_INT,"define dpdk base port");
+    fi_param_get_int(&dpdk_prov, "base_port", &dpdk_params.base_port);
+    if (dpdk_params.base_port < 0 && dpdk_params.base_port > 65535) {
+        DPDK_WARN(FI_LOG_FABRIC, "User provided base_port %d is invalid."
+            " Falling back to default base_port:%d instead. \n",
+            dpdk_params.base_port, DEFAULT_DPDK_BASE_PORT);
+        dpdk_params.base_port = DEFAULT_DPDK_BASE_PORT;
+    }
+
+}
+
 // Entry point for the libfabric provider
 DPDK_INI {
+    // set up the environment
+    dpdk_init_env();
+
     // TODO: These arguments should be received as parameters from the caller
     int   argc   = 3;
     char *argv[] = {"libfabric", "-b", "0000:17:00.0"};
