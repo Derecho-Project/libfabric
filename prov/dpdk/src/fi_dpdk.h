@@ -401,8 +401,10 @@ struct dpdk_cm_context {
 
 // Passive Endpoint
 struct dpdk_pep {
-    struct util_pep        util_pep;
-    struct fi_info        *info;
+    struct util_pep         util_pep;
+    struct fi_info          *info;
+    enum dpdk_cm_state      state;
+    size_t                  cm_data_size;
     struct dpdk_cm_context cm_ctx;
 };
 
