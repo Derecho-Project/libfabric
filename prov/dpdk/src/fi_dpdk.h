@@ -287,6 +287,10 @@ struct dpdk_domain {
     // Receive TLB to track incoming fragmented packet
     // TODO: Potentially, this could span multiple hardware queues.
     struct lcore_queue_conf lcore_queue_conf;
+
+    // [Weijia] Connection management members
+    struct rte_mempool* cm_pool;
+    struct rte_ring*    cm_ring;
 };
 
 // DPDK endpoint connection state
@@ -387,11 +391,52 @@ struct dpdk_fabric {
 };
  
 // ======= Passive Endpoint and Connection Management (CM)  =======
-struct dpdk_cm_msg {
-    struct ofi_ctrl_hdr hdr;
-    char                data[DPDK_MAX_CM_DATA_SIZE];
+enum dpdk_cm_msg_type {
+    DPDK_CM_MSG_CONNECTION_REQUEST,
+    DPDK_CM_MSG_CONNECTION_ACKNOWLEDGEMENT,
+    DPDK_CM_MSG_CONNECTION_REJECTION,
+    DPDK_CM_MSG_DISCONNECTION_REQUEST,
+    DPDK_CM_MSG_DISCONNECTION_ACKNOWLEDGEMENT,
 };
 
+struct dpdk_cm_msg_hdr {
+    uint32_t type;          // dpdk_cm_msg_type
+    uint32_t session_id;    // a number picked by the connecting client to identify a session.
+} __attribute__ ((__packed__));
+
+struct dpdk_cm_msg {
+    struct dpdk_cm_msg_hdr              header;
+    union {
+        // connection request
+        struct {
+            uint16_t                    client_data_udp_port;
+        } __attribute__((__packed__))   connection_request;
+        // connection acknowledgement
+        struct {
+            uint16_t                    server_data_udp_port;
+        } __attribute__((__packed__))   connection_acknowledgement;
+        // connection rejection
+        struct {
+            uint32_t                    rejection_code;
+        } __attribute__((__packed__))   connection_rejection;
+        // disconnection request
+        struct {
+            uint16_t                    local_data_udp_port;
+            uint16_t                    remote_data_udp_port;
+        } __attribute__((__packed__))   disconnection_request;
+        // disconnection response
+        struct {
+            uint16_t                    local_data_udp_port;
+            uint16_t                    remote_data_udp_port;
+        } __attribute__((__packed__))   disconnection_response;
+        // space padding
+        struct {
+            uint8_t                     bytes[64 - sizeof(struct dpdk_cm_msg_hdr)];
+        } __attribute__((__packed__))   _padding;
+    } __attribute__((__packed__))   payload;
+};
+
+/* We don't need this.
 struct dpdk_cm_context {
     struct fid         fid;
     struct fid        *hfid;
@@ -399,14 +444,13 @@ struct dpdk_cm_context {
     size_t             cm_data_sz;
     struct dpdk_cm_msg msg;
 };
+*/
 
 // Passive Endpoint
 struct dpdk_pep {
     struct util_pep         util_pep;
     struct fi_info          *info;
     enum dpdk_cm_state      state;
-    size_t                  cm_data_size;
-    struct dpdk_cm_context cm_ctx;
 };
 
 int dpdk_passive_ep(struct fid_fabric *fabric, struct fi_info *info, struct fid_pep **pep,
@@ -540,7 +584,11 @@ void dpdk_tx_queue_insert(struct dpdk_ep *ep, struct dpdk_xfer_entry *tx_entry);
 //===================== DPDK Parameters ================
 struct dpdk_params_t {
     // dpdk base port
-    int base_port;
+    #define DEFAULT_DPDK_BASE_PORT          (2509)
+    int     base_port;
+    // connection manager ring size
+    #define DEFAULT_DPDK_CM_RING_SIZE       (16)
+    size_t  cm_ring_size;
 };
 
 extern struct dpdk_params_t dpdk_params;

@@ -93,6 +93,18 @@ static int dpdk_domain_close(fid_t fid) {
 
     domain = container_of(fid, struct dpdk_domain, util_domain.domain_fid.fid);
 
+    if (domain->rx_pool) {
+        rte_mempool_free(domain->rx_pool);
+    }
+
+    if (domain->cm_pool) {
+        rte_mempool_free(domain->cm_pool);
+    }
+
+    if (domain->cm_ring) {
+        rte_ring_free(domain->cm_ring);
+    }
+
     ret = ofi_domain_close(&domain->util_domain);
     if (ret)
         return ret;
@@ -178,11 +190,43 @@ int dpdk_domain_open(struct fid_fabric *fabric_fid, struct fi_info *info,
     domain->rx_pool     = rte_pktmbuf_pool_create(rx_pool_name, pool_size, cache_size, private_size,
                                                   mbuf_size, rte_socket_id());
     if (domain->rx_pool == NULL) {
-        FI_WARN(&dpdk_prov, FI_LOG_CORE, "Cannot create RX mbuf pool for domain %s: %s",
+        DPDK_WARN(FI_LOG_CORE, "Cannot create RX mbuf pool for domain %s: %s",
                 domain->util_domain.name, rte_strerror(rte_errno));
         goto close;
     }
-    printf("RX mempool creation OK\n");
+    DPDK_TRACE(FI_LOG_CORE, "RX mempool created.");
+
+    // Allocate the mempool for CM mbufs
+    char cm_pool_name[32];
+    sprintf(cm_pool_name, "rx_pool_%s", domain->util_domain.name);
+    size_t cm_pool_size = rte_align32pow2(MAX_ENDPOINTS_PER_APP);
+    domain->cm_pool = rte_pktmbuf_pool_create(cm_pool_name,                                   // name
+                                                 rte_align32pow2(MAX_ENDPOINTS_PER_APP),         // n
+                                                 cache_size,                                     // cache_size
+                                                 RTE_PKTMBUF_HEADROOM,                           // priv_size
+                                                 RTE_PKTMBUF_HEADROOM + RTE_ETHER_HDR_LEN +
+                                                 sizeof(struct dpdk_cm_msg) + RTE_ETHER_CRC_LEN, // data_room_size
+                                                 rte_socket_id());                               // socket_id
+    if (!domain->cm_pool) {
+        DPDK_WARN(FI_LOG_CORE, "Cannot create CM mbuf pool for domain %s: %s",
+                  domain->util_domain.name, rte_strerror(rte_errno));
+        goto close;
+    }
+    DPDK_TRACE(FI_LOG_CORE, "CM mempool created.");
+
+    // Allocate CM ring buffer
+    char cm_ring_name[32];
+    sprintf(cm_ring_name, "cm_ring_%s", domain->util_domain.name);
+    domain->cm_ring = rte_ring_create(cm_ring_name,
+                                      rte_align32pow2(dpdk_params.cm_ring_size),
+                                      rte_socket_id(),
+                                      RING_F_MP_RTS_ENQ|RING_F_SC_DEQ);
+    if (!domain->cm_ring) {
+        DPDK_WARN(FI_LOG_CORE, "Fail to create CM ring for domain %s: %s",
+                  domain->util_domain.name, rte_strerror(rte_errno));
+        goto close;
+    }
+    DPDK_TRACE(FI_LOG_CORE, "CM ring created.");
 
     // Initialize the DPDK device
     // TODO: port_id, queue_id, lcore_id, dev_flags, and mtu MUST be configurable parameters!
@@ -247,6 +291,15 @@ int dpdk_domain_open(struct fid_fabric *fabric_fid, struct fi_info *info,
 close_prog:
     dpdk_close_progress(&domain->progress);
 close:
+    if (domain->rx_pool) {
+        rte_mempool_free(domain->rx_pool);
+    }
+    if (domain->cm_pool) {
+        rte_mempool_free(domain->cm_pool);
+    }
+    if (domain->cm_ring) {
+        rte_ring_free(domain->cm_ring);
+    }
     (void)ofi_domain_close(&domain->util_domain);
 free:
     free(domain);

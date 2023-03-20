@@ -212,6 +212,7 @@ static int dpdk_ep_connect(struct fid_ep *ep_fid, const void *addr, const void *
     atomic_store(&ep->conn_state, ep_conn_state_connecting);
 
     // STEP 3 - send connection request
+
 /*
     struct dpdk_ep *ep = container_of(ep_fid, struct dpdk_ep, util_ep.ep_fid);
     eth_parse("ff:ff:ff:ff:ff:ff", &ep->remote_eth_addr);
