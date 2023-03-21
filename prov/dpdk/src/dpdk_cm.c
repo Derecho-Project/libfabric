@@ -235,3 +235,40 @@ struct fi_ops_cm dpdk_pep_cm_ops = {
     .shutdown = fi_no_shutdown,
     .join     = fi_no_join,
 };
+
+// ====== Internals ======
+/**
+ * This function must only be called from the dpdk_run_progress function from the domain PMD thread.
+ */
+int dpdk_cm_send(struct dpdk_domain* domain) {
+    int ret = FI_SUCCESS;
+
+    struct rte_mbuf* cm_mbuf;
+
+    while (rte_ring_sc_dequeue(domain->cm_ring,&cm_mbuf) == 0) {
+        while(rte_eth_tx_burst(domain->port_id,domain->queue_id,&cm_mbuf,1) < 1);
+        rte_pktmbuf_free(cm_mbuf);
+    }
+
+    return ret;
+}
+
+/**
+ Parse CM buf
+        struct rte_ether_hdr*   eth_hdr = rte_pktmbuf_mtod_offset(cm_mbuf,
+                                                                  struct rte_ether_hdr*,
+                                                                  0);
+        struct rte_ipv4_hdr*    ip_hdr  = rte_pktmbuf_mtod_offset(cm_mbuf,
+                                                                  struct rte_ipv4_hdr*,
+                                                                  RTE_ETHER_HDR_LEN);
+        struct rte_udp_hdr*     udp_hdr = rte_pktmbuf_mtod_offset(cm_mbuf,
+                                                                  struct rte_udp_hdr*,
+                                                                  RTE_ETHER_HDR_LEN + sizeof(struct rte_ipv4_hdr));
+        struct dpdk_cm_msg_hdr* cm_hdr  = rte_pktmbuf_mtod_offset(cm_mbuf,
+                                                                  struct dpdk_cm_msg_hdr*,
+                                                                  RTE_ETHER_HDR_LEN + sizeof(struct rte_ipv4_hdr) +
+                                                                  sizeof(struct rte_udp_hdr));
+        switch (cm_hdr->type) {
+        case DPDK_CM_MSG
+        }
+ **/

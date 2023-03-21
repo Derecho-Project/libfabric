@@ -436,15 +436,8 @@ struct dpdk_cm_msg_hdr {
     } __attribute__((__packed__))   payload;
 };
 
-/* We don't need this.
-struct dpdk_cm_context {
-    struct fid         fid;
-    struct fid        *hfid;
-    enum dpdk_cm_state state;
-    size_t             cm_data_sz;
-    struct dpdk_cm_msg msg;
-};
-*/
+/* sending the connection management messages */
+int dpdk_cm_send(struct dpdk_domain* domain);
 
 // Passive Endpoint
 struct dpdk_pep {

@@ -930,7 +930,7 @@ int dpdk_start_progress(struct dpdk_progress *progress) {
 
     ret = rte_eal_remote_launch(dpdk_run_progress, &arg, progress->lcore_id);
     if (ret) {
-        FI_WARN(&dpdk_prov, FI_LOG_DOMAIN, "unable to start progress lcore thread\n");
+        DPDK_WARN(FI_LOG_DOMAIN, "unable to start progress lcore thread\n");
         ret = -ret;
     }
 
@@ -950,7 +950,7 @@ int dpdk_run_progress(void *arg) {
 
     while (likely(!atomic_load(&progress->stop_progress))) {
         // outgoing control plane (connection manager)
-        do_cm_send(domain);
+        dpdk_cm_send(domain);
 
         // outgoing data plane
         ofi_genlock_lock(&domain->ep_mutex);
