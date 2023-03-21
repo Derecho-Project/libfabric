@@ -156,6 +156,15 @@ int dpdk_domain_open(struct fid_fabric *fabric_fid, struct fi_info *info,
         return ret;
     }
 
+    if (info->addr_format != FI_SOCKADDR &&
+        info->addr_format != FI_SOCKADDR_IN &&
+        info->addr_format != FI_SOCKADDR_IN6) {
+        DPDK_WARN(FI_LOG_DOMAIN, "Unsupported address format:(%d). "
+                                 "Only FI_SOCKADDR(%d), FI_SOCKADDR_IN(%d), FI_SOCK_ADDR_IN6(%d) are supported.",
+                  info->addr_format,FI_SOCKADDR,FI_SOCKADDR_IN,FI_SOCKADDR_IN6);
+        return -FI_EINVAL;
+    }
+
     domain = calloc(1, sizeof(*domain));
     if (!domain) {
         return -FI_ENOMEM;
@@ -200,13 +209,17 @@ int dpdk_domain_open(struct fid_fabric *fabric_fid, struct fi_info *info,
     char cm_pool_name[32];
     sprintf(cm_pool_name, "rx_pool_%s", domain->util_domain.name);
     size_t cm_pool_size = rte_align32pow2(MAX_ENDPOINTS_PER_APP);
-    domain->cm_pool = rte_pktmbuf_pool_create(cm_pool_name,                                   // name
-                                                 rte_align32pow2(MAX_ENDPOINTS_PER_APP),         // n
-                                                 cache_size,                                     // cache_size
-                                                 RTE_PKTMBUF_HEADROOM,                           // priv_size
-                                                 RTE_PKTMBUF_HEADROOM + RTE_ETHER_HDR_LEN +
-                                                 sizeof(struct dpdk_cm_msg) + RTE_ETHER_CRC_LEN, // data_room_size
-                                                 rte_socket_id());                               // socket_id
+    domain->cm_pool = rte_pktmbuf_pool_create(cm_pool_name,                             // name
+                                              rte_align32pow2(MAX_ENDPOINTS_PER_APP),   // n
+                                              cache_size,                               // cache_size
+                                              0,                                        // priv_size
+                                              RTE_ETHER_HDR_LEN +
+                                              sizeof(struct rte_ipv4_hdr) +
+                                              sizeof(struct rte_udp_hdr) +
+                                              sizeof(struct dpdk_cm_msg_hdr) + 
+                                              DPDK_MAX_CM_DATA_SIZE + 
+                                              RTE_ETHER_CRC_LEN,                        // data_room_size
+                                              rte_socket_id());                         // socket_id
     if (!domain->cm_pool) {
         DPDK_WARN(FI_LOG_CORE, "Cannot create CM mbuf pool for domain %s: %s",
                   domain->util_domain.name, rte_strerror(rte_errno));
@@ -227,6 +240,9 @@ int dpdk_domain_open(struct fid_fabric *fabric_fid, struct fi_info *info,
         goto close;
     }
     DPDK_TRACE(FI_LOG_CORE, "CM ring created.");
+    
+    // Initialize the CM session counter
+    atomic_init(&domain->cm_session_counter, 0);
 
     // Initialize the DPDK device
     // TODO: port_id, queue_id, lcore_id, dev_flags, and mtu MUST be configurable parameters!
@@ -244,11 +260,7 @@ int dpdk_domain_open(struct fid_fabric *fabric_fid, struct fi_info *info,
     };
 
     // Get the IP and UDP port info from the configuration
-    // The most significant 32 bytes of the 64-bit integer are the IP address
-    // The least significant 16 bytes of the 64-bit integer are the UDP port
-    domain->ipv4_addr = *((uint32_t *)info->src_addr);
-    domain->udp_port  = *((uint16_t *)(info->src_addr + 4));
-    domain->addrlen   = info->src_addrlen;
+    domain->local_addr = *(struct sockaddr_in*)info->src_addr; 
     rte_eth_macaddr_get(domain->port_id, &domain->eth_addr);
 
     // Initialize the list of endpoints

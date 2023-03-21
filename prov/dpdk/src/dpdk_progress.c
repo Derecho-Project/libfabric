@@ -520,8 +520,8 @@ static void process_rx_packet(struct dpdk_domain *domain, struct rte_mbuf *mbuf)
     struct trp_hdr       *trp_hdr;
     uint16_t              trp_opcode;
 
-    uint32_t ip_addr   = domain->ipv4_addr;
-    uint16_t base_port = domain->udp_port;
+    // uint32_t ip_addr   = domain->ipv4_addr;
+    uint16_t base_port = rte_be_to_cpu_16(domain->local_addr.sin_port);
 
     // TODO: We cannot discard packets absed on UDP checksum if we do not know how to compute it...
     // If some checksums are bad, we don't want to process the packet
@@ -793,7 +793,7 @@ static void do_receive(struct dpdk_domain *domain) {
 
     // This causes segfault, but why?
     rte_ip_frag_free_death_row(&domain->lcore_queue_conf.death_row, PREFETCH_OFFSET);
-}
+} /* do_receive */
 
 /* Make forward progress on the queue pair. */
 static void progress_ep(struct dpdk_ep *ep) {
@@ -888,6 +888,13 @@ static void progress_ep(struct dpdk_ep *ep) {
 
 } /* progress_ep */
 
+
+
+/* handling connection manager outgoing packets. */
+void do_cm_send(struct dpdk_domain* domain) {
+    // TODO:
+} /* do_cm_send */
+
 // ================ Main Progress Functions =================
 struct progress_arg {
     struct dpdk_progress *progress;
@@ -942,7 +949,10 @@ int dpdk_run_progress(void *arg) {
     struct dpdk_ep     *ep;
 
     while (likely(!atomic_load(&progress->stop_progress))) {
+        // outgoing control plane (connection manager)
+        do_cm_send(domain);
 
+        // outgoing data plane
         ofi_genlock_lock(&domain->ep_mutex);
         slist_foreach(&domain->endpoint_list, cur, prev) {
             ep = container_of(cur, struct dpdk_ep, entry);
@@ -966,7 +976,8 @@ int dpdk_run_progress(void *arg) {
         }
         ofi_genlock_unlock(&domain->ep_mutex);
 
-        // Receive action
+        // handling both data and control incoming packets.
+        // TODO: we should separate the data and control plane with hardware queues.
         do_receive(domain);
     }
 

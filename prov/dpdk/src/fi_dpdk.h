@@ -257,17 +257,10 @@ struct dpdk_domain {
     // DPDK core id
     uint16_t lcore_id;
 
-    // TODO: The following fields could be grouped in a "dev" struct,
-    // which could be passed also to the child EPs for faster access.
-    // IMPORTANT: IP ADDR and UDP PORTS MUST BE IN HOST BYTE ORDER
-    // MAC address of the device
-    struct rte_ether_addr eth_addr;
-    // IPv4 address
-    uint32_t ipv4_addr;
-    // UDP base port
-    uint16_t udp_port;
-    // Address length
-    size_t addrlen;
+    // Local Ethernet Address
+    struct rte_ether_addr   eth_addr;
+    // IPv4 Address and Port
+    struct sockaddr_in      local_addr;
 
     // List of EP associated with this domain
     struct slist endpoint_list;
@@ -291,7 +284,10 @@ struct dpdk_domain {
     // [Weijia] Connection management members
     struct rte_mempool* cm_pool;
     struct rte_ring*    cm_ring;
+    atomic_uint         cm_session_counter;
 };
+
+#define DPDK_MAX_CM_DATA_SIZE   256
 
 // DPDK endpoint connection state
 enum ep_conn_state {
@@ -402,14 +398,11 @@ enum dpdk_cm_msg_type {
 struct dpdk_cm_msg_hdr {
     uint32_t type;          // dpdk_cm_msg_type
     uint32_t session_id;    // a number picked by the connecting client to identify a session.
-} __attribute__ ((__packed__));
-
-struct dpdk_cm_msg {
-    struct dpdk_cm_msg_hdr              header;
     union {
         // connection request
         struct {
             uint16_t                    client_data_udp_port;
+            uint16_t                    paramlen;
         } __attribute__((__packed__))   connection_request;
         // connection acknowledgement
         struct {
@@ -431,7 +424,7 @@ struct dpdk_cm_msg {
         } __attribute__((__packed__))   disconnection_response;
         // space padding
         struct {
-            uint8_t                     bytes[64 - sizeof(struct dpdk_cm_msg_hdr)];
+            uint8_t                     bytes[56];
         } __attribute__((__packed__))   _padding;
     } __attribute__((__packed__))   payload;
 };
