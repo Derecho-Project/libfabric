@@ -342,6 +342,13 @@ struct dpdk_ep {
     struct slist_entry entry;
 };
 
+// Message ops
+extern struct fi_ops_msg dpdk_msg_ops;
+
+// connection manager ops
+extern struct fi_ops_cm dpdk_cm_ops;
+extern struct fi_ops_cm dpdk_pep_cm_ops;
+
 // Functions for objects creation
 int  dpdk_init_info(const struct fi_info **all_infos);
 int  dpdk_create_fabric(struct fi_fabric_attr *attr, struct fid_fabric **fabric, void *context);
