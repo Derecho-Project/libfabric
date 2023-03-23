@@ -20,7 +20,7 @@ static int dpdk_ep_connect(struct fid_ep *ep_fid, const void *addr, const void *
 
     // STEP 0 - validate the arguments
     if (paramlen > DPDK_MAX_CM_DATA_SIZE) {
-        DPDK_WARN(FI_LOG_EP_CTRL, "Size of connection parameter(%d) is greater than %d.\n",
+        DPDK_WARN(FI_LOG_EP_CTRL, "Size of connection parameter(%lu) is greater than %d.\n",
                   paramlen, DPDK_MAX_CM_DATA_SIZE);
         return -FI_EINVAL;
     }
@@ -39,9 +39,10 @@ static int dpdk_ep_connect(struct fid_ep *ep_fid, const void *addr, const void *
 
     // STEP 2 - local endpoint shifting to connecting state
     struct dpdk_ep *ep = container_of(ep_fid, struct dpdk_ep, util_ep.ep_fid);
-    eth_parse("ff:ff:ff:ff:ff:ff", &ep->remote_eth_addr);
-    ep->remote_ipv4_addr = rte_be_to_cpu32(paddrin->sin_addr.s_addr);
-    ep->remote_udp_port = 0;
+    eth_parse("ff:ff:ff:ff:ff:ff", ep->remote_eth_addr.addr_bytes);
+    ep->remote_ipv4_addr = rte_be_to_cpu_32(paddrin->sin_addr.s_addr);
+    ep->remote_cm_udp_port  = rte_be_to_cpu_16(paddrin->sin_port);
+    ep->remote_udp_port = 0; // this will be assigned later
     atomic_store(&ep->conn_state, ep_conn_state_connecting);
 
     // STEP 3 - send connection request
@@ -76,7 +77,7 @@ static int dpdk_ep_connect(struct fid_ep *ep_fid, const void *addr, const void *
     }
     //// fill ether header
     rte_ether_addr_copy(&domain->eth_addr,&eth->src_addr);
-    eth_parse("ff:ff:ff:ff:ff:ff",&eth->dst_addr);
+    eth_parse("ff:ff:ff:ff:ff:ff",eth->dst_addr.addr_bytes);
     eth->ether_type = rte_cpu_to_be_16(ETHERNET_P_IP);
     //// fill ipv4 header in big endian
     ipv4->src_addr          = domain->local_addr.sin_addr.s_addr;
@@ -104,10 +105,10 @@ static int dpdk_ep_connect(struct fid_ep *ep_fid, const void *addr, const void *
                                            sizeof(struct dpdk_cm_msg_hdr) +
                                            DPDK_MAX_CM_DATA_SIZE);
     //// fill cm message
-    connreq->type       = DPDK_CM_MSG_CONNECTION_REQUEST;
-    connreq->session_id = ++ domain->cm_session_counter;
-    connreq->payload.connection_request.client_data_udp_port    = ep->udp_port;
-    connreq->payload.connection_request.paramlen                = paramlen;
+    connreq->type       = rte_cpu_to_be_32(DPDK_CM_MSG_CONNECTION_REQUEST);
+    connreq->session_id = rte_cpu_to_be_32(++domain->cm_session_counter);
+    connreq->payload.connection_request.client_data_udp_port    = rte_cpu_to_be_16(ep->udp_port);
+    connreq->payload.connection_request.paramlen                = rte_cpu_to_be_16(paramlen);
     //// before sending
     connreq_mbuf->data_len  = RTE_ETHER_HDR_LEN + 
                               sizeof(struct rte_ipv4_hdr) +
@@ -196,8 +197,6 @@ static int dpdk_pep_setname(fid_t fid, void *addr, size_t addrlen) {
  */
 static int dpdk_pep_getname(fid_t fid, void *addr, size_t *addrlen) {
     struct dpdk_pep    *pep;
-    size_t addrlen_in = *addrlen;
-    int    ret;
 
     pep = container_of(fid, struct dpdk_pep, util_pep.pep_fid);
     
@@ -207,6 +206,7 @@ static int dpdk_pep_getname(fid_t fid, void *addr, size_t *addrlen) {
     }
 
     memcpy(addr,pep->info->src_addr,pep->info->src_addrlen);
+    *addrlen = pep->info->src_addrlen;
 
     return FI_SUCCESS;
 }
@@ -238,14 +238,14 @@ struct fi_ops_cm dpdk_pep_cm_ops = {
 
 // ====== Internals ======
 /**
- * This function must only be called from the dpdk_run_progress function from the domain PMD thread.
+ * This function must only be called from a PMD thread. 
  */
 int dpdk_cm_send(struct dpdk_domain* domain) {
     int ret = FI_SUCCESS;
 
     struct rte_mbuf* cm_mbuf;
 
-    while (rte_ring_sc_dequeue(domain->cm_ring,&cm_mbuf) == 0) {
+    while (rte_ring_sc_dequeue(domain->cm_ring,(void**)&cm_mbuf) == 0) {
         while(rte_eth_tx_burst(domain->port_id,domain->queue_id,&cm_mbuf,1) < 1);
         rte_pktmbuf_free(cm_mbuf);
     }
@@ -253,22 +253,182 @@ int dpdk_cm_send(struct dpdk_domain* domain) {
     return ret;
 }
 
+struct dpdk_cm_entry {
+    fid_t           fid;
+    struct fi_info* info;
+    uint8_t         data[DPDK_MAX_CM_DATA_SIZE];
+} ;
+
+/* processing connection request */
+static int process_cm_connreq(struct dpdk_domain*       domain,
+                              struct rte_ether_hdr*     eth_hdr,
+                              struct rte_ipv4_hdr*      ip_hdr,
+                              struct rte_udp_hdr*       udp_hdr,
+                              struct dpdk_cm_msg_hdr*   cm_hdr,
+                              void*                     cm_data) {
+    int ret = FI_SUCCESS;
+    struct dpdk_eq* eq = container_of(domain->util_domain.eq, struct dpdk_eq, util_eq);
+
+    // 1 - validate request
+    if (rte_be_to_cpu_32(cm_hdr->type) != DPDK_CM_MSG_CONNECTION_REQUEST) {
+        DPDK_WARN(FI_LOG_EP_CTRL,"%s got invalid message type:%d, expecting CONNREQ(%d).",
+                  __func__,rte_be_to_cpu_32(cm_hdr->type),DPDK_CM_MSG_CONNECTION_REQUEST);
+        return -FI_EINVAL;
+    }
+
+    // 2 - create connection handle and then the fi_info object
+    struct dpdk_conn_handle* handle = (struct dpdk_conn_handle*)calloc(1, sizeof(struct dpdk_conn_handle));
+    handle->fid.fclass          = FI_CLASS_CONNREQ;
+    handle->domain              = domain;
+    handle->session_id          = rte_be_to_cpu_32(cm_hdr->session_id);
+    handle->remote_ip_addr      = rte_be_to_cpu_32(ip_hdr->src_addr);
+    handle->remote_ctrl_port    = rte_be_to_cpu_16(udp_hdr->src_port);
+    handle->remote_data_port    = rte_be_to_cpu_16(cm_hdr->payload.connection_request.client_data_udp_port);
+
+    struct fi_info* info = fi_dupinfo(domain->info);
+    if (!info) {
+        DPDK_WARN(FI_LOG_EP_CTRL,"%s failed to duplicate the fi_info object from domain.",__func__);
+        ret = -FI_ENOMEM;
+        goto err1;
+    }
+
+    // info->src_addr is irrelavent because fi_endpoint() does not need it.
+    struct sockaddr_in *dest_addr   = (struct sockaddr_in*)calloc(1,sizeof(struct sockaddr));
+    if (!dest_addr) {
+        DPDK_WARN(FI_LOG_EP_CTRL,"%s failed to create destination address.",__func__);
+        ret = -FI_ENOMEM;
+        goto err2;
+    }
+    dest_addr->sin_family           = AF_INET;
+    dest_addr->sin_port             = udp_hdr->src_port;    // remote data port
+    dest_addr->sin_addr.s_addr      = ip_hdr->src_addr;     // remote ip address
+    info->addr_format               = FI_SOCKADDR_IN;
+    info->dest_addrlen              = sizeof(struct sockaddr);
+    info->dest_addr                 = dest_addr;
+    info->handle                    = &handle->fid;
+
+    // 3 - insert an event to event queue
+    struct dpdk_cm_entry    cm_entry;
+    /* [Weijia]: Generally, cm_entry.fid should point to the passive endpoint. But in DPDK design,
+     * we didn't track the pep point in the domain or fabric (the passive endpoint and domain is
+     * 1-1 though). Therefore we leave it a null pointer.
+     */
+    cm_entry.fid    = NULL;
+    cm_entry.info   = info;
+    uint16_t paramlen = rte_be_to_cpu_16(cm_hdr->payload.connection_request.paramlen);
+    if ( paramlen > DPDK_MAX_CM_DATA_SIZE) {
+        DPDK_WARN(FI_LOG_EP_CTRL,"%s failed to create connreq event because the peer's user data size (%d)"
+                                 "is too big. Truncated to %d bytes.", __func__, paramlen, DPDK_MAX_CM_DATA_SIZE);
+        paramlen = DPDK_MAX_CM_DATA_SIZE;
+    }
+    memcpy(&cm_entry.data, cm_data, paramlen);
+    ret = fi_eq_write(&eq->util_eq.eq_fid,FI_CONNREQ,(void*)&cm_entry,
+                       sizeof(struct fi_eq_cm_entry) + paramlen, 0);
+    if (ret < 0) {
+        DPDK_WARN(FI_LOG_EP_CTRL,"%s failed to insert connreq event to event queue with error code: %d.",
+                  __func__,ret);
+        goto err3;
+    }
+
+    return FI_SUCCESS;
+err3:
+    free(dest_addr);
+err2:
+    fi_freeinfo(info);
+err1:
+    return ret;
+}
+
+/* processing connection request acknowledgement */
+static int process_cm_connreq_ack(struct dpdk_domain*       domain,
+                                  struct rte_ether_hdr*     eth_hdr,
+                                  struct rte_ipv4_hdr*      ip_hdr,
+                                  struct rte_udp_hdr*       udp_hdr,
+                                  struct dpdk_cm_msg_hdr*   cm_hdr,
+                                  void*                     cm_data) {
+    //TODO:
+    return -FI_EPERM;
+}
+
+/* processing connection request rejection */
+static int process_cm_connreq_rej(struct dpdk_domain*       domain,
+                                  struct rte_ether_hdr*     eth_hdr,
+                                  struct rte_ipv4_hdr*      ip_hdr,
+                                  struct rte_udp_hdr*       udp_hdr,
+                                  struct dpdk_cm_msg_hdr*   cm_hdr,
+                                  void*                     cm_data) {
+    //TODO:
+    return -FI_EPERM;
+}
+
+/* processing disconnection request */
+static int process_cm_disconnect(struct dpdk_domain*       domain,
+                                 struct rte_ether_hdr*     eth_hdr,
+                                 struct rte_ipv4_hdr*      ip_hdr,
+                                 struct rte_udp_hdr*       udp_hdr,
+                                 struct dpdk_cm_msg_hdr*   cm_hdr,
+                                 void*                     cm_data) {
+    //TODO:
+    return -FI_EPERM;
+}
+
+/* processing disconnection acknowledgement */
+static int process_cm_disconnect_ack(struct dpdk_domain*       domain,
+                                     struct rte_ether_hdr*     eth_hdr,
+                                     struct rte_ipv4_hdr*      ip_hdr,
+                                     struct rte_udp_hdr*       udp_hdr,
+                                     struct dpdk_cm_msg_hdr*   cm_hdr,
+                                     void*                     cm_data) {
+    //TODO:
+    return -FI_EPERM;
+}
+
 /**
- Parse CM buf
-        struct rte_ether_hdr*   eth_hdr = rte_pktmbuf_mtod_offset(cm_mbuf,
-                                                                  struct rte_ether_hdr*,
-                                                                  0);
-        struct rte_ipv4_hdr*    ip_hdr  = rte_pktmbuf_mtod_offset(cm_mbuf,
-                                                                  struct rte_ipv4_hdr*,
-                                                                  RTE_ETHER_HDR_LEN);
-        struct rte_udp_hdr*     udp_hdr = rte_pktmbuf_mtod_offset(cm_mbuf,
-                                                                  struct rte_udp_hdr*,
-                                                                  RTE_ETHER_HDR_LEN + sizeof(struct rte_ipv4_hdr));
-        struct dpdk_cm_msg_hdr* cm_hdr  = rte_pktmbuf_mtod_offset(cm_mbuf,
-                                                                  struct dpdk_cm_msg_hdr*,
-                                                                  RTE_ETHER_HDR_LEN + sizeof(struct rte_ipv4_hdr) +
-                                                                  sizeof(struct rte_udp_hdr));
-        switch (cm_hdr->type) {
-        case DPDK_CM_MSG
-        }
- **/
+ * This function must only be called from a PMD thread.
+ */
+int dpdk_cm_recv(struct dpdk_domain* domain, struct rte_mbuf* cm_mbuf) {
+    int ret = FI_SUCCESS;
+
+    struct rte_ether_hdr*   eth_hdr = rte_pktmbuf_mtod_offset(cm_mbuf,
+                                                              struct rte_ether_hdr*,
+                                                              0);
+    struct rte_ipv4_hdr*    ip_hdr  = rte_pktmbuf_mtod_offset(cm_mbuf,
+                                                              struct rte_ipv4_hdr*,
+                                                              RTE_ETHER_HDR_LEN);
+    struct rte_udp_hdr*     udp_hdr = rte_pktmbuf_mtod_offset(cm_mbuf,
+                                                              struct rte_udp_hdr*,
+                                                              RTE_ETHER_HDR_LEN + sizeof(struct rte_ipv4_hdr));
+    struct dpdk_cm_msg_hdr* cm_hdr  = rte_pktmbuf_mtod_offset(cm_mbuf,
+                                                              struct dpdk_cm_msg_hdr*,
+                                                              RTE_ETHER_HDR_LEN + sizeof(struct rte_ipv4_hdr) +
+                                                              sizeof(struct rte_udp_hdr));
+    void*                   cm_data = rte_pktmbuf_mtod_offset(cm_mbuf, void*,
+                                                              RTE_ETHER_HDR_LEN + sizeof(struct rte_ipv4_hdr) +
+                                                              sizeof(struct rte_udp_hdr) + 
+                                                              sizeof(struct dpdk_cm_msg_hdr));
+
+    DPDK_TRACE(FI_LOG_EP_CTRL,"Receiving CM Message with type:%d.", cm_hdr->type);
+
+    switch (cm_hdr->type) {
+    case DPDK_CM_MSG_CONNECTION_REQUEST:
+        ret = process_cm_connreq(domain,eth_hdr,ip_hdr,udp_hdr,cm_hdr,cm_data);
+        break;
+    case DPDK_CM_MSG_CONNECTION_ACKNOWLEDGEMENT:
+        ret = process_cm_connreq_ack(domain,eth_hdr,ip_hdr,udp_hdr,cm_hdr,cm_data);
+        break;
+    case DPDK_CM_MSG_CONNECTION_REJECTION:
+        ret = process_cm_connreq_rej(domain,eth_hdr,ip_hdr,udp_hdr,cm_hdr,cm_data);
+        break;
+    case DPDK_CM_MSG_DISCONNECTION_REQUEST:
+        ret = process_cm_disconnect(domain,eth_hdr,ip_hdr,udp_hdr,cm_hdr,cm_data);
+        break;
+    case DPDK_CM_MSG_DISCONNECTION_ACKNOWLEDGEMENT:
+        ret = process_cm_disconnect_ack(domain,eth_hdr,ip_hdr,udp_hdr,cm_hdr,cm_data);
+        break;
+    default:
+        DPDK_WARN(FI_LOG_EP_CTRL,"Skipping unknown type:%d.", cm_hdr->type);
+        ret = FI_EINVAL;
+    }
+
+    return ret;
+}

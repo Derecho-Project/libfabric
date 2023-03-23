@@ -105,6 +105,10 @@ static int dpdk_domain_close(fid_t fid) {
         rte_ring_free(domain->cm_ring);
     }
 
+    if (domain->info) {
+        fi_freeinfo(domain->info);
+    }
+
     ret = ofi_domain_close(&domain->util_domain);
     if (ret)
         return ret;
@@ -179,6 +183,13 @@ int dpdk_domain_open(struct fid_fabric *fabric_fid, struct fi_info *info,
     domain->util_domain.domain_fid.mr      = &dpdk_domain_fi_ops_mr;
     *domain_fid                            = &domain->util_domain.domain_fid;
 
+    // keep a copy of domain
+    domain->info = fi_dupinfo(info);
+    if (!domain->info) {
+        DPDK_WARN(FI_LOG_DOMAIN, "Cannot");
+        ret = -FI_ENOMEM;
+        goto free;
+    }
     /* 2. DPDK-specific initialization */
 
     // Ethernet MTU. This excludes the Ethernet header and the CRC.
@@ -311,6 +322,9 @@ close:
     }
     if (domain->cm_ring) {
         rte_ring_free(domain->cm_ring);
+    }
+    if (domain->info) {
+        fi_freeinfo(domain->info);
     }
     (void)ofi_domain_close(&domain->util_domain);
 free:

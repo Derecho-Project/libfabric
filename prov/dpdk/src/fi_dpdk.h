@@ -242,20 +242,22 @@ struct lcore_queue_conf {
 // Represents a DPDK domain (=> a DPDK device)
 struct dpdk_domain {
     // Utility domain
-    struct util_domain util_domain;
+    struct util_domain      util_domain;
+    // we keep a copy of the fi_info.
+    struct fi_info*         info;
 
     // TODO: The following fields could be grouped in a "dev" struct,
     // which could be passed also to the child EPs for faster access.
     // Port ID of the DPDK device
-    uint16_t port_id;
+    uint16_t                port_id;
     // Queue ID of the DPDK device
-    uint16_t queue_id;
+    uint16_t                queue_id;
     // Device flags
-    uint64_t dev_flags;
+    uint64_t                dev_flags;
     // MTU
-    uint32_t mtu;
+    uint32_t                mtu;
     // DPDK core id
-    uint16_t lcore_id;
+    uint16_t                lcore_id;
 
     // Local Ethernet Address
     struct rte_ether_addr   eth_addr;
@@ -263,28 +265,28 @@ struct dpdk_domain {
     struct sockaddr_in      local_addr;
 
     // List of EP associated with this domain
-    struct slist endpoint_list;
+    struct slist            endpoint_list;
     // Number of EP in the list
-    size_t num_endpoints;
+    size_t                  num_endpoints;
     // Array of EP accessed by UDP port
-    struct dpdk_ep *udp_port_to_ep[MAX_ENDPOINTS_PER_APP];
+    struct dpdk_ep*         udp_port_to_ep[MAX_ENDPOINTS_PER_APP];
     // Mutex to access the list of EP
-    struct ofi_genlock ep_mutex;
+    struct ofi_genlock      ep_mutex;
 
     // Progress thread data
-    struct dpdk_progress progress;
+    struct dpdk_progress    progress;
 
     // Mempool for incoming packets
-    struct rte_mempool *rx_pool;
+    struct rte_mempool*     rx_pool;
 
     // Receive TLB to track incoming fragmented packet
     // TODO: Potentially, this could span multiple hardware queues.
     struct lcore_queue_conf lcore_queue_conf;
 
     // [Weijia] Connection management members
-    struct rte_mempool* cm_pool;
-    struct rte_ring*    cm_ring;
-    atomic_uint         cm_session_counter;
+    struct rte_mempool*     cm_pool;
+    struct rte_ring*        cm_ring;
+    atomic_uint             cm_session_counter;
 };
 
 #define DPDK_MAX_CM_DATA_SIZE   256
@@ -298,6 +300,16 @@ enum ep_conn_state {
     ep_conn_state_error,
 };
 
+// The connection handle for fi_reject / fi_accpet
+struct dpdk_conn_handle {
+    struct fid          fid;
+    struct dpdk_domain* domain;
+    uint32_t            session_id;
+    uint32_t            remote_ip_addr;
+    uint16_t            remote_ctrl_port;
+    uint16_t            remote_data_port;
+};
+
 // DPDK endpoint: represents an open connection
 struct dpdk_ep {
     // Reference to the associated endpoint
@@ -307,9 +319,10 @@ struct dpdk_ep {
 
     // Remote connection endpoint information
     // All are in host byte order
-    struct rte_ether_addr remote_eth_addr;
-    uint32_t              remote_ipv4_addr;
-    uint16_t              remote_udp_port;
+    struct rte_ether_addr   remote_eth_addr;
+    uint32_t                remote_ipv4_addr;
+    uint16_t                remote_udp_port;
+    uint16_t                remote_cm_udp_port; // the connection manager port.
 
     // Receive and Transmit queues (= indeed, a "queue pair")
     struct dpdk_xfer_queue sq;
@@ -402,6 +415,7 @@ enum dpdk_cm_msg_type {
     DPDK_CM_MSG_DISCONNECTION_ACKNOWLEDGEMENT,
 };
 
+// We are using network order/big endian for header fields
 struct dpdk_cm_msg_hdr {
     uint32_t type;          // dpdk_cm_msg_type
     uint32_t session_id;    // a number picked by the connecting client to identify a session.
@@ -417,7 +431,8 @@ struct dpdk_cm_msg_hdr {
         } __attribute__((__packed__))   connection_acknowledgement;
         // connection rejection
         struct {
-            uint32_t                    rejection_code;
+            uint16_t                    client_data_udp_port;
+            uint16_t                    rejection_code;
         } __attribute__((__packed__))   connection_rejection;
         // disconnection request
         struct {
@@ -438,6 +453,8 @@ struct dpdk_cm_msg_hdr {
 
 /* sending the connection management messages */
 int dpdk_cm_send(struct dpdk_domain* domain);
+/* processing the connection management messages */
+int dpdk_cm_recv(struct dpdk_domain* domain, struct rte_mbuf* cm_mbuf);
 
 // Passive Endpoint
 struct dpdk_pep {

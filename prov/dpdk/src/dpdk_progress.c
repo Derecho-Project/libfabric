@@ -573,8 +573,9 @@ static void process_rx_packet(struct dpdk_domain *domain, struct rte_mbuf *mbuf)
     udp_hdr          = (struct rte_udp_hdr *)rte_pktmbuf_adj(mbuf, sizeof(*ipv4_hdr));
     uint16_t rx_port = rte_be_to_cpu_16(udp_hdr->dst_port);
     if (rx_port == base_port) {
-        // TODO: Handle connection request.
         // Probably need to insert in some ring
+        dpdk_cm_recv(domain,mbuf);
+        rte_pktmbuf_free(mbuf);
     } else if (rx_port > base_port && rx_port < base_port + MAX_ENDPOINTS_PER_APP) {
         // Find the EP for this port
         dst_ep = domain->udp_port_to_ep[rx_port - (base_port + 1)];
