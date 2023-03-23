@@ -130,6 +130,8 @@ static int dpdk_ep_bind(struct fid *fid, struct fid *bfid, uint64_t flags) {
     return 0;
 }
 
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wunused-variable"
 static int dpdk_ep_close(struct fid *fid) {
     struct dpdk_progress *progress;
     struct dpdk_ep       *ep;
@@ -154,6 +156,7 @@ static int dpdk_ep_close(struct fid *fid) {
     free(ep);
     return 0;
 }
+#pragma GCC diagnostic pop
 
 static int dpdk_ep_ctrl(struct fid *fid, int command, void *arg) {
     struct dpdk_ep     *ep;
@@ -195,8 +198,6 @@ static struct fi_ops dpdk_ep_fi_ops = {
 int dpdk_endpoint(struct fid_domain *domain, struct fi_info *info, struct fid_ep **ep_fid,
                   void *context) {
     struct dpdk_ep          *ep;
-    struct dpdk_pep         *pep;
-    struct dpdk_conn_handle *handle;
     int                      ret = 0;
 
     ep = calloc(1, sizeof(*ep));
@@ -240,7 +241,7 @@ int dpdk_endpoint(struct fid_domain *domain, struct fi_info *info, struct fid_ep
     }
 
     // TODO: Cleanup and memory free in case of failure
-    RTE_LOG(DEBUG, USER1, "Initializing the QP TXQ to contain %u structs of size %u\n",
+    RTE_LOG(DEBUG, USER1, "Initializing the QP TXQ to contain %lu structs of size %lu\n",
             dpdk_default_tx_size, sizeof(*ep->txq));
     ep->txq     = calloc(dpdk_default_tx_size, sizeof(*ep->txq));
     if (!ep->txq) {
@@ -277,8 +278,23 @@ int dpdk_endpoint(struct fid_domain *domain, struct fi_info *info, struct fid_ep
         goto err4;
     }
 
-    // Set the state of the endpoint to unbound
-    atomic_store(&ep->conn_state, ep_conn_state_unbound);
+    // Set the state of the endpoint
+    if (info->handle) {
+        switch (info->handle->fclass) {
+        case FI_CLASS_CONNREQ:
+            // In case of FI_CLASS_CONNREQ, we pass the handle to ep for fi_accept().
+            ep->conn_handle = info->handle;
+            atomic_store(&ep->conn_state, ep_conn_state_connecting);
+            break;
+        default:
+            DPDK_WARN(FI_LOG_EP_CTRL,"%s get unexpected type:%lu from fi_info::handle.",
+                      __func__, info->handle->fclass);
+            ret = -FI_EINVAL;
+            goto err5;
+        }
+    } else {
+        atomic_store(&ep->conn_state, ep_conn_state_unbound);
+    }
 
     // Initialize the acknowledgement management system
     ep->readresp_store = calloc(dpdk_max_ird, sizeof(*ep->readresp_store));
@@ -286,7 +302,7 @@ int dpdk_endpoint(struct fid_domain *domain, struct fi_info *info, struct fid_ep
         // [Weijia] ep->udp_port hasn't been initialized here, right?
         RTE_LOG(DEBUG, USER1, "<ep=%" PRIx16 "> Set up readresp_store failed: %s\n", ep->udp_port,
                 strerror(errno));
-        goto err5;
+        goto err6;
     }
     ep->readresp_head_msn = 1;
     ep->ord_active        = 0;
@@ -346,8 +362,8 @@ err7:
 err6:
 err5:
 err4:
-err3:
-err2:
+// err3:
+// err2:
     ofi_endpoint_close(&ep->util_ep);
 err1:
     free(ep);
@@ -363,9 +379,9 @@ static int dpdk_pep_bind(struct fid* fid, struct fid *bfid, uint64_t flags) {
         return ofi_pep_bind_eq(&pep_l3->util_pep,
                                container_of(bfid, struct util_eq, eq_fid.fid), flags);
     default:
-        FI_WARN(&dpdk_prov, FI_LOG_EP_CTRL,
-            "invalid FID class %d for binding. Expect FI_CLASS_EQ(%d) only.\n",
-            bfid->fclass, FI_CLASS_EQ);
+        DPDK_WARN(FI_LOG_EP_CTRL,
+            "%s: invalid FID class %lu. Expecting FI_CLASS_EQ(%d) only.\n",
+            __func__, bfid->fclass, FI_CLASS_EQ);
         return -FI_EINVAL;
     }
 }
@@ -429,8 +445,6 @@ int dpdk_passive_ep(struct fid_fabric *fabric, struct fi_info *info, struct fid_
     // ops to the caller. We should be consistent and choose one of the two approaches!
     *pep_fid = &pep->util_pep.pep_fid;
     return FI_SUCCESS;
-err3:
-    fi_freeinfo(pep->info);
 err2:
     ofi_pep_close(&pep->util_pep);
 err1:

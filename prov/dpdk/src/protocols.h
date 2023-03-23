@@ -7,7 +7,6 @@
 #include <stdlib.h>
 
 #include "fi_dpdk.h"
-
 /* This file contains definitions and function prototypes for the userspace protocol processing.*/
 
 struct packet_context {
@@ -358,4 +357,6 @@ void memcpy_from_iov(char *restrict dest, size_t dest_size, const struct iovec *
                      size_t iov_count, size_t offset);
 void do_rdmap_send(struct dpdk_ep *ep, struct dpdk_xfer_entry *entry);
 void do_rdmap_terminate(struct dpdk_ep *ep, struct packet_context *orig, enum rdmap_errno errcode);
+
+int setup_queue_tbl(struct rx_queue *rxq, uint32_t lcore, uint32_t queue, uint16_t port_mtu);
 #endif // DPDK_PROTOCOLS_H

@@ -339,6 +339,7 @@ struct dpdk_ep {
     // Connection information
     struct ee_state remote_ep;
     atomic_uint     conn_state;
+    fid_t           conn_handle;
 
     // Acknowledgement management
     struct read_atomic_response_state *readresp_store;

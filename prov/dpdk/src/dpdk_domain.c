@@ -149,12 +149,12 @@ extern struct fi_ops_mr dpdk_domain_fi_ops_mr;
 // 3. start the DPDK progress thread (as a DPDK lcore)
 int dpdk_domain_open(struct fid_fabric *fabric_fid, struct fi_info *info,
                      struct fid_domain **domain_fid, void *context) {
-    struct dpdk_fabric *fabric;
+    // struct dpdk_fabric *fabric;
     struct dpdk_domain *domain;
     int                 ret;
 
     /* 1. libfabric-specific initialization */
-    fabric = container_of(fabric_fid, struct dpdk_fabric, util_fabric.fabric_fid);
+    // fabric = container_of(fabric_fid, struct dpdk_fabric, util_fabric.fabric_fid);
     ret    = ofi_prov_check_info(&dpdk_util_prov, fabric_fid->api_version, info);
     if (ret) {
         return ret;
@@ -219,7 +219,6 @@ int dpdk_domain_open(struct fid_fabric *fabric_fid, struct fi_info *info,
     // Allocate the mempool for CM mbufs
     char cm_pool_name[32];
     sprintf(cm_pool_name, "rx_pool_%s", domain->util_domain.name);
-    size_t cm_pool_size = rte_align32pow2(MAX_ENDPOINTS_PER_APP);
     domain->cm_pool = rte_pktmbuf_pool_create(cm_pool_name,                             // name
                                               rte_align32pow2(MAX_ENDPOINTS_PER_APP),   // n
                                               cache_size,                               // cache_size
