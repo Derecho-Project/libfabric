@@ -169,7 +169,7 @@ static int dpdk_ep_accept(struct fid_ep *ep, const void *param, size_t paramlen)
     struct dpdk_ep*             dep = container_of(ep,struct dpdk_ep,util_ep.ep_fid);
     struct dpdk_conn_handle*    conn_handle = NULL;
 
-    // STEP 0 - validate the arguments
+    // 0 - validate the arguments
     if (paramlen > DPDK_MAX_CM_DATA_SIZE) {
         ret = -FI_EINVAL;
         DPDK_WARN(FI_LOG_EP_CTRL, "Size of connection parameter(%lu) is greater than %d.\n",
@@ -234,6 +234,52 @@ error_group_1:
     return ret;
 }
 
+int dpdk_ep_reject(struct fid_pep* pep, fid_t handle, const void* param, size_t paramlen) {
+    int ret = FI_SUCCESS;
+    // 0 - validate the arguments
+    if (!pep) {
+        ret = -FI_EINVAL;
+        DPDK_WARN(FI_LOG_EP_CTRL, "%s: passive endpoint is invalid.\n", __func__);
+        goto error_group_1;
+    }
+    if (!handle) {
+        ret = -FI_EINVAL;
+        DPDK_WARN(FI_LOG_EP_CTRL, "%s: connection handle is invalid.\n", __func__);
+        goto error_group_1;
+    }
+    if (paramlen > DPDK_MAX_CM_DATA_SIZE) {
+        ret = -FI_EINVAL;
+        DPDK_WARN(FI_LOG_EP_CTRL, "Size of connection parameter(%lu) is greater than %d.\n",
+                  paramlen, DPDK_MAX_CM_DATA_SIZE);
+        goto error_group_1;
+    }
+
+    // 1 - notify the peer node with rejection
+    struct rte_mbuf*            connrej_mbuf = NULL;
+    struct dpdk_conn_handle*    conn_handle  = container_of(handle,struct dpdk_conn_handle,fid);
+    ret = create_cm_mbuf(conn_handle->domain,conn_handle->remote_ip_addr,conn_handle->remote_ctrl_port,&connrej_mbuf);
+    if (ret) {
+        goto error_group_1;
+    }
+    //// fill cm message
+    struct dpdk_cm_msg_hdr* connrej = get_cm_header(connrej_mbuf);
+    connrej->type            = DPDK_CM_MSG_CONNECTION_REJECTION;
+    connrej->session_id      = conn_handle->session_id;
+    connrej->typed_header.connection_rejection.client_data_udp_port
+                             = conn_handle->remote_data_port;
+    memcpy(connrej->payload,param,paramlen);
+    //// fill it to the ring
+    if(rte_ring_enqueue(conn_handle->domain->cm_ring,connrej_mbuf)) {
+        DPDK_WARN(FI_LOG_EP_CTRL, "CM ring is full. Please try again.\n");
+        ret = -FI_EAGAIN;
+        goto error_group_1;
+    }
+
+    return FI_SUCCESS;
+error_group_1:
+    return ret;
+}
+
 struct fi_ops_cm dpdk_cm_ops = {
     .size     = sizeof(struct fi_ops_cm),
     .setname  = fi_no_setname,
@@ -242,7 +288,7 @@ struct fi_ops_cm dpdk_cm_ops = {
     .connect  = dpdk_ep_connect,
     .listen   = fi_no_listen,
     .accept   = dpdk_ep_accept,
-    .reject   = fi_no_reject,
+    .reject   = dpdk_ep_reject,
     .shutdown = fi_no_shutdown, // TODO: Provide shutdown!
     .join     = fi_no_join,
 };
