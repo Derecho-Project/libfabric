@@ -8,6 +8,16 @@
 
 #include <ofi_util.h>
 
+/*
+ * internal data structures
+ */
+struct dpdk_cm_entry {
+    fid_t           fid;
+    struct fi_info* info;
+    uint8_t         data[DPDK_MAX_CM_DATA_SIZE];
+} ;
+
+
 static int dpdk_ep_getname(fid_t fid, void *addr, size_t *addrlen) {
     // TODO: return useful per-EP info
     printf("[dpdk_ep_connect] UNIMPLEMENTED\n");
@@ -129,14 +139,15 @@ static int dpdk_ep_connect(struct fid_ep *ep_fid, const void *addr, const void *
 
     // STEP 2 - local endpoint shifting to connecting state
     struct dpdk_ep *ep = container_of(ep_fid, struct dpdk_ep, util_ep.ep_fid);
+    struct dpdk_domain* domain = container_of(ep->util_ep.domain, struct dpdk_domain, util_domain);
     eth_parse("ff:ff:ff:ff:ff:ff", ep->remote_eth_addr.addr_bytes);
     ep->remote_ipv4_addr = rte_be_to_cpu_32(paddrin->sin_addr.s_addr);
     ep->remote_cm_udp_port  = rte_be_to_cpu_16(paddrin->sin_port);
     ep->remote_udp_port = 0; // this will be assigned later
     atomic_store(&ep->conn_state, ep_conn_state_connecting);
+    atomic_store(&ep->session_id, ++domain->cm_session_counter);
 
     // STEP 3 - send connection request
-    struct dpdk_domain* domain = container_of(ep->util_ep.domain, struct dpdk_domain, util_domain);
     struct rte_mbuf* connreq_mbuf;
     ret = create_cm_mbuf(domain,ep->remote_ipv4_addr,ep->remote_cm_udp_port,&connreq_mbuf);
     if (ret) {
@@ -145,7 +156,7 @@ static int dpdk_ep_connect(struct fid_ep *ep_fid, const void *addr, const void *
     //// fill cm message
     struct dpdk_cm_msg_hdr* connreq = get_cm_header(connreq_mbuf);
     connreq->type       = rte_cpu_to_be_32(DPDK_CM_MSG_CONNECTION_REQUEST);
-    connreq->session_id = rte_cpu_to_be_32(++domain->cm_session_counter);
+    connreq->session_id = rte_cpu_to_be_32(ep->session_id);
     connreq->typed_header.connection_request.client_data_udp_port    = rte_cpu_to_be_16(ep->udp_port);
     connreq->typed_header.connection_request.paramlen                = rte_cpu_to_be_16(paramlen);
     memcpy(connreq->payload, param, paramlen);
@@ -207,7 +218,25 @@ static int dpdk_ep_accept(struct fid_ep *ep, const void *param, size_t paramlen)
     // 3 - set endpoint to connected state
     atomic_store(&dep->conn_state, ep_conn_state_connected);
 
-    // 4 - notify the peer node with CONNECTED
+    // 4 - generate a FI_CONNECTED event locally, and
+    struct dpdk_cm_entry    cm_entry;
+    /* [Weijia]: Generally, cm_entry.fid should point to the passive endpoint. But in DPDK design,
+     * we didn't track the pep point in the domain or fabric (the passive endpoint and domain is
+     * 1-1 though). Therefore we leave it a null pointer.
+     */
+    cm_entry.fid    = NULL;
+    cm_entry.info   = NULL;
+    memcpy(&cm_entry.data, param, paramlen);
+    struct dpdk_eq* eq = container_of(dep->util_ep.eq,struct dpdk_eq,util_eq);
+    ret = fi_eq_write(&eq->util_eq.eq_fid,FI_CONNECTED,(void*)&cm_entry,
+                       sizeof(struct fi_eq_cm_entry) + paramlen, 0);
+    if (ret < 0) {
+        DPDK_WARN(FI_LOG_EP_CTRL,"%s failed to insert connreq event to event queue with error code: %d.",
+                  __func__,ret);
+        goto error_group_1;
+    }
+
+    // 5 - notify the peer node with CONNECTED
     struct rte_mbuf *connack_mbuf = NULL;
     struct dpdk_domain* domain = container_of(dep->util_ep.domain, struct dpdk_domain, util_domain);
     ret = create_cm_mbuf(domain,conn_handle->remote_ip_addr,conn_handle->remote_ctrl_port,&connack_mbuf);
@@ -216,10 +245,14 @@ static int dpdk_ep_accept(struct fid_ep *ep, const void *param, size_t paramlen)
     }
     //// fill cm message
     struct dpdk_cm_msg_hdr* connack = get_cm_header(connack_mbuf);
-    connack->type            = DPDK_CM_MSG_CONNECTION_ACKNOWLEDGEMENT;
-    connack->session_id      = conn_handle->session_id;
+    connack->type           = DPDK_CM_MSG_CONNECTION_ACKNOWLEDGEMENT;
+    connack->session_id     = conn_handle->session_id;
+    connack->typed_header.connection_acknowledgement.client_data_udp_port
+                            = dep->remote_udp_port;
     connack->typed_header.connection_acknowledgement.server_data_udp_port
                             = dep->udp_port;
+    connack->typed_header.connection_acknowledgement.paramlen
+                            = paramlen;
     memcpy(connack->payload,param,paramlen);
     //// fill it to the ring
     if(rte_ring_enqueue(domain->cm_ring,connack_mbuf)) {
@@ -392,12 +425,6 @@ int dpdk_cm_send(struct dpdk_domain* domain) {
     return ret;
 }
 
-struct dpdk_cm_entry {
-    fid_t           fid;
-    struct fi_info* info;
-    uint8_t         data[DPDK_MAX_CM_DATA_SIZE];
-} ;
-
 /* processing connection request */
 static int process_cm_connreq(struct dpdk_domain*       domain,
                               struct rte_ether_hdr*     eth_hdr,
@@ -478,18 +505,81 @@ err1:
     return ret;
 }
 
-/* processing connection request acknowledgement */
+/* processing connection request acknowledgement on the connecting client side */
 static int process_cm_connreq_ack(struct dpdk_domain*       domain,
                                   struct rte_ether_hdr*     eth_hdr,
                                   struct rte_ipv4_hdr*      ip_hdr,
                                   struct rte_udp_hdr*       udp_hdr,
                                   struct dpdk_cm_msg_hdr*   cm_hdr,
                                   void*                     cm_data) {
-    //TODO:
-    return -FI_EPERM;
+    int             ret = FI_SUCCESS;
+    struct dpdk_ep* ep = NULL;
+    // 0 - validate parameters
+    int         ep_idx = cm_hdr->typed_header.connection_acknowledgement.client_data_udp_port - 
+                         rte_be_to_cpu_16(domain->local_addr.sin_port);
+    if (ep_idx < 0 || ep_idx > MAX_ENDPOINTS_PER_APP) {
+        DPDK_WARN(FI_LOG_DOMAIN,"%s failed because endpoint is invalid: %d.",
+                                __func__, ep_idx);
+        ret = -FI_EINVAL;
+        goto error_group_1;
+    }
+    // TODO: [Weijia] the endpoint list might be implemented in a lockless approach?
+    ofi_genlock_lock(&domain->ep_mutex);
+    ep = domain->udp_port_to_ep[ep_idx];
+    ofi_genlock_unlock(&domain->ep_mutex);
+    // 1 - check local status
+    if (atomic_load(&ep->conn_state) != ep_conn_state_connecting) {
+        DPDK_WARN(FI_LOG_EP_CTRL,"%s failed because endpoint is in state(%d). Excepting connecting state(%d)",
+                                 __func__, ep->conn_state, ep_conn_state_connecting);
+        ret = -FI_ENOENT;
+        goto error_group_1;
+    }
+    if (atomic_load(&ep->session_id) != rte_be_to_cpu_32(cm_hdr->session_id)) {
+        DPDK_WARN(FI_LOG_EP_CTRL,"%s failed because session_id (%d) in connack does not match session_id (%d)"
+                                 "in the connecting endpoint.",
+                                  __func__, rte_be_to_cpu_32(cm_hdr->session_id),
+                                  atomic_load(&ep->session_id));
+        ret = -FI_ENOENT;
+        goto error_group_1;
+    }
+    // 2 - collect information from the header
+    ep->remote_udp_port =
+        rte_be_to_cpu_16(cm_hdr->typed_header.connection_acknowledgement.server_data_udp_port);
+
+    // 3 - change state: connecting --> connected.
+    atomic_store(&ep->conn_state,ep_conn_state_connected);
+
+    // 4 - generate an FI_CONNECTED event
+    struct dpdk_cm_entry    cm_entry;
+    /* [Weijia]: Generally, cm_entry.fid should point to the passive endpoint. But in DPDK design,
+     * we didn't track the pep point in the domain or fabric (the passive endpoint and domain is
+     * 1-1 though). Therefore we leave it a null pointer.
+     */
+    cm_entry.fid    = NULL;
+    cm_entry.info   = NULL;
+    uint16_t paramlen = rte_be_to_cpu_16(cm_hdr->typed_header.connection_acknowledgement.paramlen);
+    if ( paramlen > DPDK_MAX_CM_DATA_SIZE) {
+        DPDK_WARN(FI_LOG_EP_CTRL,"%s creating a 'connected' event: because the peer's user data size (%d)"
+                                 "is too big. Truncated to %d bytes.", __func__, paramlen, DPDK_MAX_CM_DATA_SIZE);
+        paramlen = DPDK_MAX_CM_DATA_SIZE;
+    }
+    memcpy(&cm_entry.data, cm_data, paramlen);
+    struct dpdk_eq* deq = container_of(ep->util_ep.eq, struct dpdk_eq, util_eq);
+    ret = fi_eq_write(&deq->util_eq.eq_fid,FI_CONNECTED,(void*)&cm_entry,
+                       sizeof(struct fi_eq_cm_entry) + paramlen, 0);
+    if (ret < 0) {
+        DPDK_WARN(FI_LOG_EP_CTRL,"%s failed to insert 'connected' event to event queue with error code: %d.",
+                  __func__,ret);
+        goto error_group_2;
+    }
+
+    return FI_SUCCESS;
+error_group_2: // endpoint is connected
+error_group_1: // endpoint is still connecting
+    return ret;
 }
 
-/* processing connection request rejection */
+/* processing connection request rejection  */
 static int process_cm_connreq_rej(struct dpdk_domain*       domain,
                                   struct rte_ether_hdr*     eth_hdr,
                                   struct rte_ipv4_hdr*      ip_hdr,
@@ -497,7 +587,7 @@ static int process_cm_connreq_rej(struct dpdk_domain*       domain,
                                   struct dpdk_cm_msg_hdr*   cm_hdr,
                                   void*                     cm_data) {
     //TODO:
-    return -FI_EPERM;
+    return -FI_ENOSYS;
 }
 
 /* processing disconnection request */
@@ -508,7 +598,7 @@ static int process_cm_disconnect(struct dpdk_domain*       domain,
                                  struct dpdk_cm_msg_hdr*   cm_hdr,
                                  void*                     cm_data) {
     //TODO:
-    return -FI_EPERM;
+    return -FI_ENOSYS;
 }
 
 /* processing disconnection acknowledgement */
@@ -519,7 +609,7 @@ static int process_cm_disconnect_ack(struct dpdk_domain*       domain,
                                      struct dpdk_cm_msg_hdr*   cm_hdr,
                                      void*                     cm_data) {
     //TODO:
-    return -FI_EPERM;
+    return -FI_ENOSYS;
 }
 
 /**

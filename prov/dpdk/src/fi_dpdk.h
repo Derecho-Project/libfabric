@@ -340,6 +340,7 @@ struct dpdk_ep {
     // Connection information
     struct ee_state remote_ep;
     atomic_uint     conn_state;
+    atomic_uint     session_id;
     fid_t           conn_handle;
 
     // Acknowledgement management
@@ -429,7 +430,9 @@ struct dpdk_cm_msg_hdr {
         } __attribute__((__packed__))   connection_request;
         // connection acknowledgement
         struct {
+            uint16_t                    client_data_udp_port;
             uint16_t                    server_data_udp_port;
+            uint16_t                    paramlen;
         } __attribute__((__packed__))   connection_acknowledgement;
         // connection rejection
         struct {
