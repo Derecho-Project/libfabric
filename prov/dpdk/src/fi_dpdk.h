@@ -319,7 +319,7 @@ struct dpdk_ep {
     uint16_t udp_port;
 
     // Remote connection endpoint information
-    // All are in host byte order
+    // All are in host/cpu byte order
     struct rte_ether_addr   remote_eth_addr;
     uint32_t                remote_ipv4_addr;
     uint16_t                remote_udp_port;

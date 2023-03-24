@@ -111,7 +111,7 @@ static int create_cm_mbuf(struct dpdk_domain* domain,
 error_group_1:
     *out_cm_mbuf = NULL;
     return ret;
-}
+} /* create_cm_buf */
 
 static int dpdk_ep_connect(struct fid_ep *ep_fid, const void *addr, const void *param,
                            size_t paramlen) {
@@ -264,9 +264,9 @@ static int dpdk_ep_accept(struct fid_ep *ep, const void *param, size_t paramlen)
     // error handling
 error_group_1:
     return ret;
-}
+} /* dpdk_ep_accept */
 
-int dpdk_ep_reject(struct fid_pep* pep, fid_t handle, const void* param, size_t paramlen) {
+static int dpdk_ep_reject(struct fid_pep* pep, fid_t handle, const void* param, size_t paramlen) {
     int ret = FI_SUCCESS;
     // 0 - validate the arguments
     if (!pep) {
@@ -310,7 +310,58 @@ int dpdk_ep_reject(struct fid_pep* pep, fid_t handle, const void* param, size_t 
     return FI_SUCCESS;
 error_group_1:
     return ret;
-}
+} /* dpdk_ep_reject */
+
+static int dpdk_ep_shutdown(struct fid_ep* ep, uint64_t flags) {
+    int ret = FI_SUCCESS;
+    struct dpdk_ep*             dep = container_of(ep,struct dpdk_ep,util_ep.ep_fid);
+    struct dpdk_domain*         domain = container_of(dep->util_ep.domain,struct dpdk_domain,util_domain);
+    struct rte_mbuf*            disconnreq_mbuf = NULL;
+    // 0 - handle shutdown for states
+    switch (dep->conn_state) {
+    case ep_conn_state_connected:
+        // send a DPDK_CM_MSG_DISCONNECTION_REQUEST message to peer.
+        {
+            ret = create_cm_mbuf(domain,dep->remote_ipv4_addr,dep->remote_cm_udp_port,&disconnreq_mbuf);
+            if (ret) {
+                goto error_group_1;
+            }
+            atomic_store(&dep->session_id, ++domain->cm_session_counter);
+            struct dpdk_cm_msg_hdr* disconnreq = get_cm_header(disconnreq_mbuf);
+            disconnreq->type        = rte_cpu_to_be_32(DPDK_CM_MSG_DISCONNECTION_REQUEST);
+            disconnreq->session_id  = rte_cpu_to_be_32(dep->session_id);
+            disconnreq->typed_header.disconnection_request.local_data_udp_port
+                                    = rte_cpu_to_be_16(dep->udp_port);
+            disconnreq->typed_header.disconnection_request.remote_data_udp_port
+                                    = rte_cpu_to_be_16(dep->remote_udp_port);
+            //// fill it to the ring
+            if(rte_ring_enqueue(domain->cm_ring,disconnreq_mbuf)) {
+                DPDK_WARN(FI_LOG_EP_CTRL, "CM ring is full. Please try again.\n");
+                ret = -FI_EAGAIN;
+                goto error_group_2;
+            }
+        } // then, change to shutdown state
+    case ep_conn_state_unbound:
+    case ep_conn_state_connecting:
+        /* TODO:
+         * Shutting down an endpoint in ep_conn_state_connecting state needs more care.
+         * Currently, we assume the peer relies on the data path failure handling.
+         */
+        atomic_store(&dep->conn_state,ep_conn_state_shutdown);
+        break;
+    case ep_conn_state_shutdown:
+    case ep_conn_state_error:
+    default:
+        // nothing to do.
+    }
+    return FI_SUCCESS;
+error_group_2: // disconnreq_mbuf may need to be freed.
+    if (disconnreq_mbuf) {
+        rte_pktmbuf_free(disconnreq_mbuf);
+    }
+error_group_1: // nothing changed
+    return ret;
+} /* dpdk_ep_shutdown */
 
 struct fi_ops_cm dpdk_cm_ops = {
     .size     = sizeof(struct fi_ops_cm),
@@ -321,7 +372,7 @@ struct fi_ops_cm dpdk_cm_ops = {
     .listen   = fi_no_listen,
     .accept   = dpdk_ep_accept,
     .reject   = dpdk_ep_reject,
-    .shutdown = fi_no_shutdown, // TODO: Provide shutdown!
+    .shutdown = dpdk_ep_shutdown,
     .join     = fi_no_join,
 };
 
@@ -422,7 +473,7 @@ int dpdk_cm_send(struct dpdk_domain* domain) {
     }
 
     return ret;
-}
+} /* dpdk_cm_send */
 
 /* processing connection request */
 static int process_cm_connreq(struct dpdk_domain*       domain,
@@ -599,7 +650,7 @@ static int process_cm_disconnect(struct dpdk_domain*       domain,
                                  void*                     cm_data) {
     //TODO:
     return -FI_ENOSYS;
-}
+} /* process_cm_disconnect */
 
 /* processing disconnection acknowledgement */
 static int process_cm_disconnect_ack(struct dpdk_domain*       domain,
@@ -610,7 +661,7 @@ static int process_cm_disconnect_ack(struct dpdk_domain*       domain,
                                      void*                     cm_data) {
     //TODO:
     return -FI_ENOSYS;
-}
+} /* process_cm_disconnect_ack */
 
 /**
  * This function must only be called from a PMD thread.
