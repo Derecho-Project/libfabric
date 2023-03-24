@@ -434,7 +434,8 @@ int dpdk_passive_ep(struct fid_fabric *fabric, struct fi_info *info, struct fid_
     pep->util_pep.pep_fid.cm      = &dpdk_pep_cm_ops;
     pep->util_pep.pep_fid.ops     = &dpdk_pep_ops;
 
-    pep->info = fi_dupinfo(info);
+    pep->state = DPDK_PEP_INIT;
+    pep->info  = fi_dupinfo(info);
     if (!pep->info) {
         ret = -FI_ENOMEM;
         goto err2;

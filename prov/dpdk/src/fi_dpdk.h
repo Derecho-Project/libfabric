@@ -386,14 +386,10 @@ void dpdk_handle_event_list(struct dpdk_progress *progress);
 
 // ======= Passive Endpoint and Connection Management (CM)  =======
 // CM states
-enum dpdk_cm_state {
-    DPDK_CM_LISTENING,
-    DPDK_CM_CONNECTING,
-    DPDK_CM_WAIT_REQ,
-    DPDK_CM_REQ_SENT,
-    DPDK_CM_REQ_RVCD,
-    DPDK_CM_RESP_READY,
-    /* CM context is freed once connected */
+enum dpdk_pep_state {
+    DPDK_PEP_INIT,
+    DPDK_PEP_LISTENING,
+    DPDK_PEP_SHUTDOWN
 };
 
 // FID classes, specific for the DPDK provider
@@ -461,7 +457,7 @@ int dpdk_cm_recv(struct dpdk_domain* domain, struct rte_mbuf* cm_mbuf);
 struct dpdk_pep {
     struct util_pep         util_pep;
     struct fi_info          *info;
-    enum dpdk_cm_state      state;
+    enum dpdk_pep_state      state;
 };
 
 int dpdk_passive_ep(struct fid_fabric *fabric, struct fi_info *info, struct fid_pep **pep,

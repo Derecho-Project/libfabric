@@ -18,9 +18,83 @@ struct dpdk_cm_entry {
 } ;
 
 static int dpdk_ep_getname(fid_t fid, void *addr, size_t *addrlen) {
-    // TODO: return useful per-EP info
-    printf("[dpdk_ep_connect] UNIMPLEMENTED\n");
-    return 0;
+    int ret = FI_SUCCESS;
+    switch(fid->fclass) {
+    case FI_CLASS_EP:
+        {
+            struct dpdk_ep*     ep = container_of(fid,struct dpdk_ep,util_ep.ep_fid);
+            struct dpdk_domain* domain =
+                container_of(ep->util_ep.domain,struct dpdk_domain,util_domain.domain_fid);
+            // TODO: IPv6 support needs special care.
+            if (*addrlen < domain->info->src_addrlen) {
+                DPDK_WARN(FI_LOG_EP_CTRL, "%s failed because address buffer len(%lu) is smaller than the endpoint "
+                                          "address size(%lu).", __func__, *addrlen, domain->info->src_addrlen);
+                ret = -FI_EINVAL;
+                goto error_group_1;
+            }
+            memcpy(addr,domain->info->src_addr,domain->info->src_addrlen);
+            struct sockaddr_in* paddrin = (struct sockaddr_in*)addr;
+            paddrin->sin_port = rte_cpu_to_be_16(ep->udp_port);
+            *addrlen = domain->info->src_addrlen;
+        }
+        break;
+    case FI_CLASS_PEP:
+        {
+            struct dpdk_pep*    pep = container_of(fid,struct dpdk_pep,util_pep.pep_fid);
+            // TODO: IPv6 support needs special care.
+            if (*addrlen < pep->info->src_addrlen) {
+                DPDK_WARN(FI_LOG_EP_CTRL, "%s failed because address buffer len(%lu) is smaller than the pep "
+                                          "address size(%lu).", __func__, *addrlen, pep->info->src_addrlen);
+                ret = -FI_EINVAL;
+                goto error_group_1;
+            }
+            memcpy(addr,pep->info->src_addr,pep->info->src_addrlen);
+            *addrlen = pep->info->src_addrlen;
+        }
+        break;
+    default:
+        DPDK_WARN(FI_LOG_EP_CTRL, "%s see invalid fid type:%lu, expecting EP(%d) or PEP(%d).",
+                  __func__,fid->fclass,FI_CLASS_EP,FI_CLASS_PEP);
+        ret = -FI_ENODATA;
+        goto error_group_1;
+    }
+    return FI_SUCCESS;
+error_group_1: // nothing changed.
+    return ret;
+}
+
+static int dpdk_ep_getpeer(struct fid_ep *ep, void *addr, size_t *addrlen) {
+    int ret = FI_SUCCESS;
+    struct dpdk_ep* dep = container_of(ep,struct dpdk_ep,util_ep.ep_fid);
+    enum ep_conn_state ep_state = atomic_load(&dep->conn_state);
+    switch(ep_state) {
+    case ep_conn_state_connected:
+        // TODO:IPv6 support needs special care.
+        if (*addrlen < sizeof(struct sockaddr_in)) {
+            DPDK_WARN(FI_LOG_EP_CTRL, "%s failed because address buffer len(%lu) is smaller than the pep "
+                                      "address size(%lu).", __func__, *addrlen, sizeof(struct sockaddr_in));
+            ret = -FI_EINVAL;
+            goto error_group_1;
+        }
+        struct sockaddr_in* paddrin = (struct sockaddr_in*)addr;
+        paddrin->sin_family = AF_INET;
+        paddrin->sin_port = rte_cpu_to_be_16(dep->remote_udp_port);
+        paddrin->sin_addr.s_addr = rte_cpu_to_be_32(dep->remote_ipv4_addr);
+        *addrlen = sizeof(struct sockaddr_in);
+        break;
+    case ep_conn_state_unbound:
+    case ep_conn_state_connecting:
+    case ep_conn_state_shutdown:
+    case ep_conn_state_error:
+    default:
+        DPDK_WARN(FI_LOG_EP_CTRL, "%s cannot retrieve peer info in %d state.",
+                  __func__, ep_state);
+        ret = -FI_ENODATA;
+        goto error_group_1;
+    }
+    return FI_SUCCESS;
+error_group_1://nothing changed.
+    return ret;
 }
 
 /*
@@ -367,7 +441,7 @@ struct fi_ops_cm dpdk_cm_ops = {
     .size     = sizeof(struct fi_ops_cm),
     .setname  = fi_no_setname,
     .getname  = dpdk_ep_getname,
-    .getpeer  = fi_no_getpeer, // TODO: Provide an implementation!
+    .getpeer  = dpdk_ep_getpeer,
     .connect  = dpdk_ep_connect,
     .listen   = fi_no_listen,
     .accept   = dpdk_ep_accept,
@@ -434,9 +508,10 @@ static int dpdk_pep_getname(fid_t fid, void *addr, size_t *addrlen) {
 }
 
 static int dpdk_pep_listen(struct fid_pep *pep_fid) {
-
-    printf("[dpdk_pep_listen] UNIMPLEMENTED\n");
-    return 0;
+    // change the state
+    struct dpdk_pep* pep = container_of(pep_fid,struct dpdk_pep,util_pep.pep_fid);
+    pep->state = DPDK_PEP_LISTENING;
+    return FI_SUCCESS;
 }
 
 struct fi_ops_cm dpdk_pep_cm_ops = {
