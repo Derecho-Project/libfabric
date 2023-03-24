@@ -134,7 +134,7 @@ static int dpdk_ep_bind(struct fid *fid, struct fid *bfid, uint64_t flags) {
 #pragma GCC diagnostic ignored "-Wunused-variable"
 static int dpdk_ep_close(struct fid *fid) {
     struct dpdk_progress *progress;
-    struct dpdk_ep       *ep;
+    struct dpdk_ep       *ep = NULL;
 
     printf("[dpdk_ep_close] UNIMPLEMENTED\n");
     // ep = container_of(fid, struct dpdk_ep, util_ep.ep_fid.fid);
@@ -153,7 +153,7 @@ static int dpdk_ep_close(struct fid *fid) {
     // ofi_close_socket(ep->bsock.sock);
 
     // ofi_endpoint_close(&ep->util_ep);
-    free(ep);
+    // free(ep);
     return 0;
 }
 #pragma GCC diagnostic pop

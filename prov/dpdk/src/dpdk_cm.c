@@ -14,6 +14,96 @@ static int dpdk_ep_getname(fid_t fid, void *addr, size_t *addrlen) {
     return 0;
 }
 
+/*
+ * Create a connection manager message buffer.
+ * @param domain            DPDK domain
+ * @param remote_ip_addr    The remote connection manager ip address in cpu order
+ * @param remote_cm_port    The remote connection manager control udp port in cpu order
+ * @param out_cm_mbuf       The output parameter
+ *
+ * @return FI_SUCCESS or error code.
+ */
+#define get_cm_header(m) \
+    rte_pktmbuf_mtod_offset(m,struct dpdk_cm_msg_hdr*,\
+        sizeof(struct rte_ether_hdr) + \
+        sizeof(struct rte_ipv4_hdr) + \
+        sizeof(struct rte_udp_hdr))
+
+static int create_cm_mbuf(struct dpdk_domain* domain,
+                          uint32_t            remote_ip_addr,
+                          uint16_t            remote_cm_port,
+                          struct rte_mbuf**   out_cm_mbuf) {
+    int ret = FI_SUCCESS;
+    struct rte_mbuf* cm_mbuf = rte_pktmbuf_alloc(domain->cm_pool);
+    if (!cm_mbuf) {
+        ret = -FI_EIO;
+        DPDK_WARN(FI_LOG_EP_CTRL, "Failed to allocate mbuf with rte_pktmbuf_alloc(): %s",
+                  rte_strerror(rte_errno));
+        goto error_group_1;
+    }
+    size_t                  ofst    = 0;
+    struct rte_ether_hdr*   eth     = rte_pktmbuf_mtod_offset(cm_mbuf,
+                                                              struct rte_ether_hdr*,
+                                                              ofst);
+    ofst += sizeof(struct rte_ether_hdr);
+    struct rte_ipv4_hdr*    ipv4    = rte_pktmbuf_mtod_offset(cm_mbuf,
+                                                              struct rte_ipv4_hdr*,
+                                                              ofst);
+    ofst += sizeof(struct rte_ipv4_hdr);
+    struct rte_udp_hdr*     udp     = rte_pktmbuf_mtod_offset(cm_mbuf, 
+                                                              struct rte_udp_hdr*,
+                                                              ofst);
+    //// fill mbuf
+    if (domain->dev_flags & port_checksum_offload) {
+        cm_mbuf->ol_flags |= RTE_MBUF_F_TX_UDP_CKSUM | RTE_MBUF_F_TX_IPV4 | RTE_MBUF_F_TX_IP_CKSUM;
+    }
+    //// fill ether header
+    rte_ether_addr_copy(&domain->eth_addr,&eth->src_addr);
+    eth_parse("ff:ff:ff:ff:ff:ff",eth->dst_addr.addr_bytes);
+    eth->ether_type = rte_cpu_to_be_16(ETHERNET_P_IP);
+    //// fill ipv4 header in big endian
+    ipv4->src_addr          = domain->local_addr.sin_addr.s_addr;
+    ipv4->dst_addr          = rte_cpu_to_be_32(remote_ip_addr);
+    ipv4->version           = IPV4;
+    ipv4->ihl               = 0x5;
+    ipv4->type_of_service   = 0;
+    ipv4->total_length      = rte_cpu_to_be_16(sizeof(struct rte_ipv4_hdr) +
+                                               sizeof(struct rte_udp_hdr) +
+                                               sizeof(struct dpdk_cm_msg_hdr) +
+                                               DPDK_MAX_CM_DATA_SIZE);
+    ipv4->packet_id         = 0;
+    ipv4->fragment_offset   = 0;
+    ipv4->time_to_live      = 64;
+    ipv4->next_proto_id     = IP_UDP;
+    ipv4->hdr_checksum      = 0x0000;
+    if (cm_mbuf->ol_flags & RTE_MBUF_F_TX_IP_CKSUM) {
+        ipv4->hdr_checksum = rte_ipv4_cksum(ipv4);
+    }
+    //// fill udp header
+    udp->src_port       = domain->local_addr.sin_port;
+    udp->dst_port       = rte_cpu_to_be_16(remote_cm_port);
+    udp->dgram_cksum    = 0;
+    udp->dgram_len      = rte_cpu_to_be_16(sizeof(struct rte_udp_hdr) +
+                                           sizeof(struct dpdk_cm_msg_hdr) +
+                                           DPDK_MAX_CM_DATA_SIZE);
+    //// before sending
+    cm_mbuf->data_len  = RTE_ETHER_HDR_LEN + 
+                         sizeof(struct rte_ipv4_hdr) +
+                         sizeof(struct rte_udp_hdr) +
+                         sizeof(struct dpdk_cm_msg_hdr) +
+                         DPDK_MAX_CM_DATA_SIZE;
+    cm_mbuf->pkt_len   = cm_mbuf->data_len;
+    cm_mbuf->l2_len    = RTE_ETHER_HDR_LEN;
+    cm_mbuf->l3_len    = sizeof(struct rte_ipv4_hdr);
+    cm_mbuf->l4_len    = sizeof(struct rte_udp_hdr);
+
+    *out_cm_mbuf = cm_mbuf;
+    return FI_SUCCESS;
+error_group_1:
+    *out_cm_mbuf = NULL;
+    return ret;
+}
+
 static int dpdk_ep_connect(struct fid_ep *ep_fid, const void *addr, const void *param,
                            size_t paramlen) {
     int ret = FI_SUCCESS;
@@ -47,79 +137,18 @@ static int dpdk_ep_connect(struct fid_ep *ep_fid, const void *addr, const void *
 
     // STEP 3 - send connection request
     struct dpdk_domain* domain = container_of(ep->util_ep.domain, struct dpdk_domain, util_domain);
-    struct rte_mbuf* connreq_mbuf = rte_pktmbuf_alloc(domain->cm_pool);
-    if (!connreq_mbuf) {
-        ret = -FI_EIO;
-        DPDK_WARN(FI_LOG_EP_CTRL, "Failed to allocate mbuf with rte_pktmbuf_alloc(): %s",
-                  rte_strerror(rte_errno));
+    struct rte_mbuf* connreq_mbuf;
+    ret = create_cm_mbuf(domain,ep->remote_ipv4_addr,ep->remote_cm_udp_port,&connreq_mbuf);
+    if (ret) {
         goto error;
     }
-    //// connreq_mbuf
-    size_t                  ofst    = 0;
-    struct rte_ether_hdr*   eth     = rte_pktmbuf_mtod_offset(connreq_mbuf,
-                                                              struct rte_ether_hdr*,
-                                                              ofst);
-    ofst += sizeof(struct rte_ether_hdr);
-    struct rte_ipv4_hdr*    ipv4    = rte_pktmbuf_mtod_offset(connreq_mbuf,
-                                                              struct rte_ipv4_hdr*,
-                                                              ofst);
-    ofst += sizeof(struct rte_ipv4_hdr);
-    struct rte_udp_hdr*     udp     = rte_pktmbuf_mtod_offset(connreq_mbuf, 
-                                                              struct rte_udp_hdr*,
-                                                              ofst);
-    ofst += sizeof(struct rte_udp_hdr);
-    struct dpdk_cm_msg_hdr* connreq = rte_pktmbuf_mtod_offset(connreq_mbuf,
-                                                              struct dpdk_cm_msg_hdr*,
-                                                              ofst);
-    //// fill mbuf
-    if (domain->dev_flags & port_checksum_offload) {
-        connreq_mbuf->ol_flags |= RTE_MBUF_F_TX_UDP_CKSUM | RTE_MBUF_F_TX_IPV4 | RTE_MBUF_F_TX_IP_CKSUM;
-    }
-    //// fill ether header
-    rte_ether_addr_copy(&domain->eth_addr,&eth->src_addr);
-    eth_parse("ff:ff:ff:ff:ff:ff",eth->dst_addr.addr_bytes);
-    eth->ether_type = rte_cpu_to_be_16(ETHERNET_P_IP);
-    //// fill ipv4 header in big endian
-    ipv4->src_addr          = domain->local_addr.sin_addr.s_addr;
-    ipv4->dst_addr          = paddrin->sin_addr.s_addr;
-    ipv4->version           = IPV4;
-    ipv4->ihl               = 0x5;
-    ipv4->type_of_service   = 0;
-    ipv4->total_length      = rte_cpu_to_be_16(sizeof(struct rte_ipv4_hdr) +
-                                               sizeof(struct rte_udp_hdr) +
-                                               sizeof(struct dpdk_cm_msg_hdr) +
-                                               DPDK_MAX_CM_DATA_SIZE);
-    ipv4->packet_id         = 0;
-    ipv4->fragment_offset   = 0;
-    ipv4->time_to_live      = 64;
-    ipv4->next_proto_id     = IP_UDP;
-    ipv4->hdr_checksum      = 0x0000;
-    if (connreq_mbuf->ol_flags & RTE_MBUF_F_TX_IP_CKSUM) {
-        ipv4->hdr_checksum = rte_ipv4_cksum(ipv4);
-    }
-    //// fill udp header
-    udp->src_port       = domain->local_addr.sin_port;
-    udp->dst_port       = paddrin->sin_port;
-    udp->dgram_cksum    = 0;
-    udp->dgram_len      = rte_cpu_to_be_16(sizeof(struct rte_udp_hdr) +
-                                           sizeof(struct dpdk_cm_msg_hdr) +
-                                           DPDK_MAX_CM_DATA_SIZE);
     //// fill cm message
+    struct dpdk_cm_msg_hdr* connreq = get_cm_header(connreq_mbuf);
     connreq->type       = rte_cpu_to_be_32(DPDK_CM_MSG_CONNECTION_REQUEST);
     connreq->session_id = rte_cpu_to_be_32(++domain->cm_session_counter);
-    connreq->payload.connection_request.client_data_udp_port    = rte_cpu_to_be_16(ep->udp_port);
-    connreq->payload.connection_request.paramlen                = rte_cpu_to_be_16(paramlen);
-    //// before sending
-    connreq_mbuf->data_len  = RTE_ETHER_HDR_LEN + 
-                              sizeof(struct rte_ipv4_hdr) +
-                              sizeof(struct rte_udp_hdr) +
-                              sizeof(struct dpdk_cm_msg_hdr) +
-                              DPDK_MAX_CM_DATA_SIZE;
-    connreq_mbuf->pkt_len   = connreq_mbuf->data_len;
-    connreq_mbuf->l2_len    = RTE_ETHER_HDR_LEN;
-    connreq_mbuf->l3_len    = sizeof(struct rte_ipv4_hdr);
-    connreq_mbuf->l4_len    = sizeof(struct rte_udp_hdr);
-
+    connreq->typed_header.connection_request.client_data_udp_port    = rte_cpu_to_be_16(ep->udp_port);
+    connreq->typed_header.connection_request.paramlen                = rte_cpu_to_be_16(paramlen);
+    memcpy(connreq->payload, param, paramlen);
     //// fill it to the ring
     if(rte_ring_enqueue(domain->cm_ring,connreq_mbuf)) {
         DPDK_WARN(FI_LOG_EP_CTRL, "CM ring is full. Please try again.\n");
@@ -136,9 +165,73 @@ error:
 } /* dpdk_ep_connect */
 
 static int dpdk_ep_accept(struct fid_ep *ep, const void *param, size_t paramlen) {
+    int ret = FI_SUCCESS;
+    struct dpdk_ep*             dep = container_of(ep,struct dpdk_ep,util_ep.ep_fid);
+    struct dpdk_conn_handle*    conn_handle = NULL;
 
-    printf("[dpdk_ep_accept] UNIMPLEMENTED\n");
-    return 0;
+    // STEP 0 - validate the arguments
+    if (paramlen > DPDK_MAX_CM_DATA_SIZE) {
+        ret = -FI_EINVAL;
+        DPDK_WARN(FI_LOG_EP_CTRL, "Size of connection parameter(%lu) is greater than %d.\n",
+                  paramlen, DPDK_MAX_CM_DATA_SIZE);
+        goto error_group_1;
+    }
+
+    // 1 - test if ep is ready for fi_accept()
+    if (dep->conn_state != ep_conn_state_connecting) {
+        ret = -FI_EINVAL;
+        DPDK_WARN(FI_LOG_EP_CTRL,"%p failed because of invalid endpoint state(%u). Expecting %d.",
+            __func__, dep->conn_state, ep_conn_state_connecting);
+        goto error_group_1;
+    }
+    if (!dep->conn_handle) {
+        ret = -FI_EINVAL;
+        DPDK_WARN(FI_LOG_EP_CTRL,"%p failed because of the absence of a connection handle.",
+            __func__);
+        goto error_group_1;
+    }
+    if (dep->conn_handle->fclass != FI_CLASS_CONNREQ) {
+        ret = -FI_EINVAL;
+        DPDK_WARN(FI_LOG_EP_CTRL,"%p failed because of unexpected connection handle class (%lu). Excepting %d.",
+            __func__, dep->conn_handle->fclass, FI_CLASS_CONNREQ);
+        goto error_group_1;
+    }
+
+    // 2 - set up endpoint for connection ready.
+    conn_handle = container_of(dep->conn_handle,struct dpdk_conn_handle,fid);
+    eth_parse("ff:ff:ff:ff:ff:ff", dep->remote_eth_addr.addr_bytes);
+    dep->remote_ipv4_addr   = conn_handle->remote_ip_addr;
+    dep->remote_cm_udp_port = conn_handle->remote_ctrl_port;
+    dep->remote_udp_port    = conn_handle->remote_data_port;
+
+    // 3 - set endpoint to connected state
+    atomic_store(&dep->conn_state, ep_conn_state_connected);
+
+    // 4 - notify the peer node with CONNECTED
+    struct rte_mbuf *connack_mbuf = NULL;
+    struct dpdk_domain* domain = container_of(dep->util_ep.domain, struct dpdk_domain, util_domain);
+    ret = create_cm_mbuf(domain,conn_handle->remote_ip_addr,conn_handle->remote_ctrl_port,&connack_mbuf);
+    if (ret) {
+        goto error_group_1;
+    }
+    //// fill cm message
+    struct dpdk_cm_msg_hdr* connack = get_cm_header(connack_mbuf);
+    connack->type            = DPDK_CM_MSG_CONNECTION_ACKNOWLEDGEMENT;
+    connack->session_id      = conn_handle->session_id;
+    connack->typed_header.connection_acknowledgement.server_data_udp_port
+                            = dep->udp_port;
+    memcpy(connack->payload,param,paramlen);
+    //// fill it to the ring
+    if(rte_ring_enqueue(domain->cm_ring,connack_mbuf)) {
+        DPDK_WARN(FI_LOG_EP_CTRL, "CM ring is full. Please try again.\n");
+        ret = -FI_EAGAIN;
+        goto error_group_1;
+    }
+
+    return FI_SUCCESS;
+    // error handling
+error_group_1:
+    return ret;
 }
 
 struct fi_ops_cm dpdk_cm_ops = {
@@ -283,7 +376,7 @@ static int process_cm_connreq(struct dpdk_domain*       domain,
     handle->session_id          = rte_be_to_cpu_32(cm_hdr->session_id);
     handle->remote_ip_addr      = rte_be_to_cpu_32(ip_hdr->src_addr);
     handle->remote_ctrl_port    = rte_be_to_cpu_16(udp_hdr->src_port);
-    handle->remote_data_port    = rte_be_to_cpu_16(cm_hdr->payload.connection_request.client_data_udp_port);
+    handle->remote_data_port    = rte_be_to_cpu_16(cm_hdr->typed_header.connection_request.client_data_udp_port);
 
     struct fi_info* info = fi_dupinfo(domain->info);
     if (!info) {
@@ -315,7 +408,7 @@ static int process_cm_connreq(struct dpdk_domain*       domain,
      */
     cm_entry.fid    = NULL;
     cm_entry.info   = info;
-    uint16_t paramlen = rte_be_to_cpu_16(cm_hdr->payload.connection_request.paramlen);
+    uint16_t paramlen = rte_be_to_cpu_16(cm_hdr->typed_header.connection_request.paramlen);
     if ( paramlen > DPDK_MAX_CM_DATA_SIZE) {
         DPDK_WARN(FI_LOG_EP_CTRL,"%s failed to create connreq event because the peer's user data size (%d)"
                                  "is too big. Truncated to %d bytes.", __func__, paramlen, DPDK_MAX_CM_DATA_SIZE);

@@ -301,6 +301,7 @@ enum ep_conn_state {
 };
 
 // The connection handle for fi_reject / fi_accpet
+// The ip address are in the cpu endian.
 struct dpdk_conn_handle {
     struct fid          fid;
     struct dpdk_domain* domain;
@@ -449,7 +450,8 @@ struct dpdk_cm_msg_hdr {
         struct {
             uint8_t                     bytes[56];
         } __attribute__((__packed__))   _padding;
-    } __attribute__((__packed__))   payload;
+    } __attribute__((__packed__))   typed_header;
+    uint8_t payload[];
 };
 
 /* sending the connection management messages */
