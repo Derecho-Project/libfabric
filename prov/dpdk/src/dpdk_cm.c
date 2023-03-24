@@ -266,7 +266,7 @@ error_group_1:
     return ret;
 } /* dpdk_ep_accept */
 
-static int dpdk_ep_reject(struct fid_pep* pep, fid_t handle, const void* param, size_t paramlen) {
+static int dpdk_pep_reject(struct fid_pep* pep, fid_t handle, const void* param, size_t paramlen) {
     int ret = FI_SUCCESS;
     // 0 - validate the arguments
     if (!pep) {
@@ -371,7 +371,7 @@ struct fi_ops_cm dpdk_cm_ops = {
     .connect  = dpdk_ep_connect,
     .listen   = fi_no_listen,
     .accept   = dpdk_ep_accept,
-    .reject   = dpdk_ep_reject,
+    .reject   = fi_no_reject,
     .shutdown = dpdk_ep_shutdown,
     .join     = fi_no_join,
 };
@@ -436,12 +436,6 @@ static int dpdk_pep_getname(fid_t fid, void *addr, size_t *addrlen) {
 static int dpdk_pep_listen(struct fid_pep *pep_fid) {
 
     printf("[dpdk_pep_listen] UNIMPLEMENTED\n");
-    return 0;
-}
-
-static int dpdk_pep_reject(struct fid_pep *pep, fid_t fid_handle, const void *param,
-                           size_t paramlen) {
-    printf("[dpdk_pep_reject] UNIMPLEMENTED\n");
     return 0;
 }
 
