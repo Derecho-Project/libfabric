@@ -17,7 +17,6 @@ struct dpdk_cm_entry {
     uint8_t         data[DPDK_MAX_CM_DATA_SIZE];
 } ;
 
-
 static int dpdk_ep_getname(fid_t fid, void *addr, size_t *addrlen) {
     // TODO: return useful per-EP info
     printf("[dpdk_ep_connect] UNIMPLEMENTED\n");
@@ -505,13 +504,15 @@ err1:
     return ret;
 }
 
-/* processing connection request acknowledgement on the connecting client side */
-static int process_cm_connreq_ack(struct dpdk_domain*       domain,
-                                  struct rte_ether_hdr*     eth_hdr,
-                                  struct rte_ipv4_hdr*      ip_hdr,
-                                  struct rte_udp_hdr*       udp_hdr,
-                                  struct dpdk_cm_msg_hdr*   cm_hdr,
-                                  void*                     cm_data) {
+/* processing connection request acknowledgement or rejection 
+ * on the connecting client side.
+ */
+static int process_cm_connreq_ack_or_rej(struct dpdk_domain*       domain,
+                                         struct rte_ether_hdr*     eth_hdr,
+                                         struct rte_ipv4_hdr*      ip_hdr,
+                                         struct rte_udp_hdr*       udp_hdr,
+                                         struct dpdk_cm_msg_hdr*   cm_hdr,
+                                         void*                     cm_data) {
     int             ret = FI_SUCCESS;
     struct dpdk_ep* ep = NULL;
     // 0 - validate parameters
@@ -547,25 +548,35 @@ static int process_cm_connreq_ack(struct dpdk_domain*       domain,
         rte_be_to_cpu_16(cm_hdr->typed_header.connection_acknowledgement.server_data_udp_port);
 
     // 3 - change state: connecting --> connected.
-    atomic_store(&ep->conn_state,ep_conn_state_connected);
+    switch (rte_be_to_cpu_32(cm_hdr->type)) {
+    case DPDK_CM_MSG_CONNECTION_ACKNOWLEDGEMENT:
+        atomic_store(&ep->conn_state,ep_conn_state_connected);
+        break;
+    case DPDK_CM_MSG_CONNECTION_REJECTION:
+        atomic_store(&ep->conn_state,ep_conn_state_shutdown);
+        break;
+    default:
+        DPDK_WARN(FI_LOG_EP_CTRL,"%s failed because the connection message(%d) is neither CONNACK nor CONNREJ.",
+                  __func__,rte_be_to_cpu_32(cm_hdr->type));
+        ret = -FI_EINVAL;
+        goto error_group_1;
+    }
 
-    // 4 - generate an FI_CONNECTED event
+    // 4 - generate an event
     struct dpdk_cm_entry    cm_entry;
-    /* [Weijia]: Generally, cm_entry.fid should point to the passive endpoint. But in DPDK design,
-     * we didn't track the pep point in the domain or fabric (the passive endpoint and domain is
-     * 1-1 though). Therefore we leave it a null pointer.
-     */
-    cm_entry.fid    = NULL;
+    cm_entry.fid    = &ep->util_ep.ep_fid.fid;
     cm_entry.info   = NULL;
     uint16_t paramlen = rte_be_to_cpu_16(cm_hdr->typed_header.connection_acknowledgement.paramlen);
     if ( paramlen > DPDK_MAX_CM_DATA_SIZE) {
-        DPDK_WARN(FI_LOG_EP_CTRL,"%s creating a 'connected' event: because the peer's user data size (%d)"
+        DPDK_WARN(FI_LOG_EP_CTRL,"%s creating an event: because the peer's user data size (%d)"
                                  "is too big. Truncated to %d bytes.", __func__, paramlen, DPDK_MAX_CM_DATA_SIZE);
         paramlen = DPDK_MAX_CM_DATA_SIZE;
     }
     memcpy(&cm_entry.data, cm_data, paramlen);
     struct dpdk_eq* deq = container_of(ep->util_ep.eq, struct dpdk_eq, util_eq);
-    ret = fi_eq_write(&deq->util_eq.eq_fid,FI_CONNECTED,(void*)&cm_entry,
+    uint32_t event = (rte_be_to_cpu_32(cm_hdr->type) == DPDK_CM_MSG_CONNECTION_ACKNOWLEDGEMENT)?
+                     FI_CONNECTED:FI_SHUTDOWN;
+    ret = fi_eq_write(&deq->util_eq.eq_fid,event,(void*)&cm_entry,
                        sizeof(struct fi_eq_cm_entry) + paramlen, 0);
     if (ret < 0) {
         DPDK_WARN(FI_LOG_EP_CTRL,"%s failed to insert 'connected' event to event queue with error code: %d.",
@@ -574,20 +585,9 @@ static int process_cm_connreq_ack(struct dpdk_domain*       domain,
     }
 
     return FI_SUCCESS;
-error_group_2: // endpoint is connected
+error_group_2: // endpoint has changed.
 error_group_1: // endpoint is still connecting
     return ret;
-}
-
-/* processing connection request rejection  */
-static int process_cm_connreq_rej(struct dpdk_domain*       domain,
-                                  struct rte_ether_hdr*     eth_hdr,
-                                  struct rte_ipv4_hdr*      ip_hdr,
-                                  struct rte_udp_hdr*       udp_hdr,
-                                  struct dpdk_cm_msg_hdr*   cm_hdr,
-                                  void*                     cm_data) {
-    //TODO:
-    return -FI_ENOSYS;
 }
 
 /* processing disconnection request */
@@ -643,10 +643,8 @@ int dpdk_cm_recv(struct dpdk_domain* domain, struct rte_mbuf* cm_mbuf) {
         ret = process_cm_connreq(domain,eth_hdr,ip_hdr,udp_hdr,cm_hdr,cm_data);
         break;
     case DPDK_CM_MSG_CONNECTION_ACKNOWLEDGEMENT:
-        ret = process_cm_connreq_ack(domain,eth_hdr,ip_hdr,udp_hdr,cm_hdr,cm_data);
-        break;
     case DPDK_CM_MSG_CONNECTION_REJECTION:
-        ret = process_cm_connreq_rej(domain,eth_hdr,ip_hdr,udp_hdr,cm_hdr,cm_data);
+        ret = process_cm_connreq_ack_or_rej(domain,eth_hdr,ip_hdr,udp_hdr,cm_hdr,cm_data);
         break;
     case DPDK_CM_MSG_DISCONNECTION_REQUEST:
         ret = process_cm_disconnect(domain,eth_hdr,ip_hdr,udp_hdr,cm_hdr,cm_data);
