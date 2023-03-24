@@ -444,11 +444,6 @@ struct dpdk_cm_msg_hdr {
             uint16_t                    local_data_udp_port;
             uint16_t                    remote_data_udp_port;
         } __attribute__((__packed__))   disconnection_request;
-        // disconnection response
-        struct {
-            uint16_t                    local_data_udp_port;
-            uint16_t                    remote_data_udp_port;
-        } __attribute__((__packed__))   disconnection_response;
         // space padding
         struct {
             uint8_t                     bytes[56];

@@ -567,7 +567,7 @@ static int process_cm_connreq_ack_or_rej(struct dpdk_domain*       domain,
     int             ret = FI_SUCCESS;
     struct dpdk_ep* ep = NULL;
     // 0 - validate parameters
-    int         ep_idx = cm_hdr->typed_header.connection_acknowledgement.client_data_udp_port - 
+    int         ep_idx = rte_be_to_cpu_16(cm_hdr->typed_header.connection_acknowledgement.client_data_udp_port) - 
                          rte_be_to_cpu_16(domain->local_addr.sin_port);
     if (ep_idx < 0 || ep_idx > MAX_ENDPOINTS_PER_APP) {
         DPDK_WARN(FI_LOG_DOMAIN,"%s failed because endpoint is invalid: %d.",
@@ -648,20 +648,58 @@ static int process_cm_disconnect(struct dpdk_domain*       domain,
                                  struct rte_udp_hdr*       udp_hdr,
                                  struct dpdk_cm_msg_hdr*   cm_hdr,
                                  void*                     cm_data) {
-    //TODO:
-    return -FI_ENOSYS;
-} /* process_cm_disconnect */
+    int             ret = FI_SUCCESS;
+    struct dpdk_ep* ep = NULL;
+    // 0 - validate parameters
+    int         ep_idx = rte_be_to_cpu_16(cm_hdr->typed_header.disconnection_request.remote_data_udp_port) - 
+                         rte_be_to_cpu_16(domain->local_addr.sin_port);
+    if (ep_idx < 0 || ep_idx > MAX_ENDPOINTS_PER_APP) {
+        DPDK_WARN(FI_LOG_DOMAIN,"%s failed because endpoint is invalid: %d.",
+                                __func__, ep_idx);
+        ret = -FI_EINVAL;
+        goto error_group_1;
+    }
+    // TODO: [Weijia] the endpoint list might be implemented in a lockless approach?
+    ofi_genlock_lock(&domain->ep_mutex);
+    ep = domain->udp_port_to_ep[ep_idx];
+    ofi_genlock_unlock(&domain->ep_mutex);
+    // 1 - check local status
+    uint32_t ep_state = atomic_load(&ep->conn_state);
+    switch (ep_state) {
+    case ep_conn_state_connected:
+        {
+            // change state
+            atomic_store(&ep->conn_state,ep_conn_state_shutdown);
+            // generate a shutdown event
+            struct dpdk_cm_entry    cm_entry;
+            cm_entry.fid    = &ep->util_ep.ep_fid.fid;
+            cm_entry.info   = NULL;
+            struct dpdk_eq* deq = container_of(ep->util_ep.eq, struct dpdk_eq, util_eq);
+            ret = fi_eq_write(&deq->util_eq.eq_fid,FI_SHUTDOWN,(void*)&cm_entry,
+                               sizeof(struct fi_eq_cm_entry), 0);
+            if (ret < 0) {
+                DPDK_WARN(FI_LOG_EP_CTRL,"%s failed to insert 'connected' event to event queue with error code: %d.",
+                          __func__,ret);
+                goto error_group_2;
+            }
+        }
+        break;
+    case ep_conn_state_connecting:
+    case ep_conn_state_unbound:
+    case ep_conn_state_shutdown:
+    case ep_conn_state_error:
+    default:
+        DPDK_WARN(FI_LOG_EP_CTRL,"%s ignores unexpected disconnection message because endpoint is in %d state.",
+                  __func__, ep_state);
+        goto error_group_1;
+    }
 
-/* processing disconnection acknowledgement */
-static int process_cm_disconnect_ack(struct dpdk_domain*       domain,
-                                     struct rte_ether_hdr*     eth_hdr,
-                                     struct rte_ipv4_hdr*      ip_hdr,
-                                     struct rte_udp_hdr*       udp_hdr,
-                                     struct dpdk_cm_msg_hdr*   cm_hdr,
-                                     void*                     cm_data) {
-    //TODO:
-    return -FI_ENOSYS;
-} /* process_cm_disconnect_ack */
+    return FI_SUCCESS;
+    // 1 - 
+error_group_2: // state chagned.
+error_group_1: // nothing changed.
+    return ret;
+} /* process_cm_disconnect */
 
 /**
  * This function must only be called from a PMD thread.
@@ -699,9 +737,6 @@ int dpdk_cm_recv(struct dpdk_domain* domain, struct rte_mbuf* cm_mbuf) {
         break;
     case DPDK_CM_MSG_DISCONNECTION_REQUEST:
         ret = process_cm_disconnect(domain,eth_hdr,ip_hdr,udp_hdr,cm_hdr,cm_data);
-        break;
-    case DPDK_CM_MSG_DISCONNECTION_ACKNOWLEDGEMENT:
-        ret = process_cm_disconnect_ack(domain,eth_hdr,ip_hdr,udp_hdr,cm_hdr,cm_data);
         break;
     default:
         DPDK_WARN(FI_LOG_EP_CTRL,"Skipping unknown type:%d.", cm_hdr->type);
