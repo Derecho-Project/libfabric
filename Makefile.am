@@ -145,7 +145,8 @@ bin_PROGRAMS = \
 	util/fi_info \
 	util/fi_strerror \
 	util/fi_pingpong \
-        util/fi_test
+    util/fi_test \
+    util/fi_cm_test
 
 bin_SCRIPTS =
 
@@ -164,6 +165,10 @@ util_fi_pingpong_LDADD = $(linkback)
 util_fi_test_SOURCES = \
 	util/test.c
 util_fi_test_LDADD = $(linkback)
+
+util_fi_cm_test_SOURCES = \
+    util/cm_test.c
+util_fi_cm_test_LDADD = $(linkback)
 
 nodist_src_libfabric_la_SOURCES =
 src_libfabric_la_SOURCES =			\
