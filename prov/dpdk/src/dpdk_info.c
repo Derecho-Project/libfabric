@@ -207,6 +207,7 @@ static int dpdk_check_hints(uint32_t version,
     }
 
     if (!ofi_valid_addr_format(info->addr_format, hints->addr_format)) {
+        DPDK_INFO(FI_LOG_CORE, "address format unmatch.\n");
         return -FI_ENODATA;
     }
 
@@ -217,12 +218,15 @@ static int dpdk_check_hints(uint32_t version,
         return -FI_ENODATA;
     }
 
+    /** [Weijia] I doubt ofi_check_fabric_attr()'s using of FI_VERSION_LT. The comparison should be reversed?
     if (hints->fabric_attr) {
         ret = ofi_check_fabric_attr(&dpdk_prov, info->fabric_attr, hints->fabric_attr);
         if (ret) {
+            DPDK_INFO(FI_LOG_CORE, "fabric_attr check failed.\n");
             return ret;
         }
     }
+    **/
 
     if (hints->domain_attr) {
         if (hints->domain_attr->name &&
@@ -235,6 +239,7 @@ static int dpdk_check_hints(uint32_t version,
         ret = ofi_check_domain_attr(&dpdk_prov, version, info->domain_attr, hints);
 
         if (ret) {
+            DPDK_INFO(FI_LOG_CORE, "domain_attr check failed.\n");
             return ret;
         }
     }
@@ -242,6 +247,7 @@ static int dpdk_check_hints(uint32_t version,
     if (hints->ep_attr) {
         ret = ofi_check_ep_attr(&dpdk_util_prov,info->fabric_attr->api_version,info,hints);
         if (ret) {
+            DPDK_INFO(FI_LOG_CORE, "ep_attr check failed.\n");
             return ret;
         }
     }
@@ -249,6 +255,7 @@ static int dpdk_check_hints(uint32_t version,
     if (hints->rx_attr) {
         ret = ofi_check_rx_attr(&dpdk_prov, info, hints->rx_attr, hints->mode);
         if (ret) {
+            DPDK_INFO(FI_LOG_CORE, "rx_attr check failed.\n");
             return ret;
         }
     }
@@ -256,6 +263,7 @@ static int dpdk_check_hints(uint32_t version,
     if (hints->tx_attr) {
         ret = ofi_check_tx_attr(&dpdk_prov, info->tx_attr, hints->tx_attr, hints->mode);
         if (ret) {
+            DPDK_INFO(FI_LOG_CORE, "tx_attr check failed.\n");
             return ret;
         }
     }
@@ -273,11 +281,13 @@ int dpdk_getinfo(uint32_t version, const char *node, const char *service, uint64
         if (hints) {
             if (hints->ep_attr) {
                 if (ofi_check_ep_type(&dpdk_prov, check_info->ep_attr, hints->ep_attr)) {
+                    DPDK_TRACE(FI_LOG_FABRIC, "ofi_check_ep_type: unmatch.\n");
                     continue;
                 }
             }
 
             if (dpdk_check_hints(version, hints, check_info)) {
+                DPDK_TRACE(FI_LOG_FABRIC, "dpdk_check_hints: unmatch.\n");
                 continue;
             }
         }
@@ -293,6 +303,8 @@ int dpdk_getinfo(uint32_t version, const char *node, const char *service, uint64
         if (hints && hints->src_addr) {
             cur_info->src_addr = malloc(hints->src_addrlen);
             if (!cur_info->src_addr) {
+                DPDK_WARN(FI_LOG_FABRIC, "%s: failed to allocate %lu bytes for src_addr.\n",
+                          __func__,hints->src_addrlen);
                 return -FI_ENOMEM;
             }
             memcpy(cur_info->src_addr,hints->src_addr,hints->src_addrlen);
@@ -302,6 +314,8 @@ int dpdk_getinfo(uint32_t version, const char *node, const char *service, uint64
         if (hints && hints->dest_addr) {
             cur_info->dest_addr = malloc(hints->dest_addrlen);
             if (!cur_info->dest_addr) {
+                DPDK_WARN(FI_LOG_FABRIC, "%s: failed to allocate %lu bytes for dest_addr.\n",
+                          __func__,hints->dest_addrlen);
                 return -FI_ENOMEM;
             }
             memcpy(cur_info->dest_addr,hints->dest_addr,hints->dest_addrlen);
@@ -309,6 +323,8 @@ int dpdk_getinfo(uint32_t version, const char *node, const char *service, uint64
         } else if (node) {
             struct addrinfo *dest_addr;
             if(getaddrinfo(node,service,NULL,&dest_addr)) {
+                DPDK_WARN(FI_LOG_FABRIC, "%s: cannot find destination address for node:%s.\n",
+                          __func__,node);
                 return -FI_ENODATA;
             }
             cur_info->dest_addrlen = dest_addr->ai_addrlen;
