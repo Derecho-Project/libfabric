@@ -6,6 +6,7 @@
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <netdb.h>
+#include <arpa/inet.h>
 
 #include <rdma/fabric.h>
 #include <rdma/fi_cm.h>
@@ -95,41 +96,57 @@ static void *alloc_mem(size_t memsz, size_t pgsz, bool huge) {
     return addr;
 }
 
-static void default_context(const char* provider_name, const char* domain_name, const char* src_ip_port) {
-    memset((void *)&g_ctxt, 0, sizeof(struct lf_ctxt));
-
-    /** parse the service and port */
-    struct addrinfo     src_hints;
-    struct addrinfo*    src_res;
+static struct addrinfo* parse_ip_port_string(const char* ip_port_str) {
+    struct addrinfo     hints;
+    struct addrinfo*    res;
     char*               node    = NULL;
     char*               service = NULL;
     uint32_t            colon_pos = 0;
-    while(colon_pos < strlen(src_ip_port)) {
-        if (src_ip_port[colon_pos] == ':') {
+    while(colon_pos < strlen(ip_port_str)) {
+        if (ip_port_str[colon_pos] == ':') {
             break;
         }
         colon_pos ++;
     }
-    node = strndup(src_ip_port,colon_pos);
+    node = strndup(ip_port_str,colon_pos);
     /** if we do have the port **/
-    if ((colon_pos+1) < strlen(src_ip_port)) {
-        service = strdup(src_ip_port+colon_pos+1);
+    if ((colon_pos+1) < strlen(ip_port_str)) {
+        service = strdup(ip_port_str+colon_pos+1);
     }
-    bzero(&src_hints,sizeof(src_hints));
-    src_hints.ai_family = AF_INET;
+    bzero(&hints,sizeof(hints));
+    hints.ai_family = AF_INET;
     
-    int errcode = getaddrinfo(node,service,&src_hints,&src_res);
+    int errcode = getaddrinfo(node,service,&hints,&res);
     if (errcode) {
         fprintf(stderr, "failed to get source address for %s. Error:%s\n",
-                src_ip_port, gai_strerror(errcode));
-        if (service) {
-            free(service);
-        }
-        if (node) {
-            free(node);
-        }
-        return;
+                ip_port_str, gai_strerror(errcode));
     }
+    if (service) {
+        free(service);
+    }
+    if (node) {
+        free(node);
+    }
+    return res;
+}
+
+static void print_addrinfo(const struct addrinfo* ai) {
+    char ipbuf[32];
+    inet_ntop(AF_INET,&((struct sockaddr_in*)(ai->ai_addr))->sin_addr,ipbuf,32);
+    printf("ai_flags:       %d\n",ai->ai_flags);
+    printf("ai_family:      %d\n",ai->ai_family);
+    printf("ai_socktype:    %d\n",ai->ai_socktype);
+    printf("ai_protocol:    %d\n",ai->ai_protocol);
+    printf("ai_addrlen:     %d\n",ai->ai_addrlen);
+    printf("ai_addr:        %s:%d\n",ipbuf,ntohs(((struct sockaddr_in*)(ai->ai_addr))->sin_port));
+    printf("ai_canonname:   %s\n",ai->ai_canonname);
+}
+
+static void default_context(const char* provider_name, const char* domain_name, const char* src_ip_port) {
+    memset((void *)&g_ctxt, 0, sizeof(struct lf_ctxt));
+
+    /** parse the service and port */
+    struct addrinfo* src_res = parse_ip_port_string(src_ip_port);
 
     /** Create a new empty fi_info structure */
     g_ctxt.hints = fi_allocinfo();
@@ -183,12 +200,13 @@ static void default_context(const char* provider_name, const char* domain_name, 
     /** **/
     {
         int cntr = 0;
-        struct addrinfo* nxt = src_res->ai_next;
+        struct addrinfo* nxt = src_res;
         while (nxt!=NULL) {
+            print_addrinfo(nxt);
             nxt = nxt->ai_next;
             cntr++;
         }
-        fprintf(stdout,"getaddrinfo: there are %d more entries dropped.\n",cntr);
+        fprintf(stdout,"getaddrinfo: last %d entries are dropped.\n",cntr-1);
     }
 
     freeaddrinfo(src_res);
@@ -425,7 +443,7 @@ void do_server() {
     }
 }
 
-void do_client() {
+void do_client(const char* server_ip_and_port) {
     int ret;
 
     // Active endpoint and associated event queue
@@ -441,11 +459,21 @@ void do_client() {
     struct fi_eq_cm_entry entry;
     uint32_t              event;
 
+    struct addrinfo* svr_ai = parse_ip_port_string(server_ip_and_port);
+
+    if (!svr_ai) {
+        fprintf(stderr,"%s cannot get server address from string:%s.\n", __func__,
+                server_ip_and_port);
+        return;
+    }
+
     ret = fi_connect(ep, g_ctxt.pep_addr, NULL, 0);
     if (ret) {
         printf("fi_connect() failed: %s\n", fi_strerror(-ret));
+        freeaddrinfo(svr_ai);
         exit(2);
     }
+    freeaddrinfo(svr_ai);
 
     // TODO: We should get an async event from the eq, but we don't have one yet!
     // Get connection acceptance from the server
@@ -501,13 +529,18 @@ void do_client() {
     }
 }
 
-
+#define CMD_ARG_HELP    "<info|client|server> <prov> <domain> <local_ip:local_cm_port> [remote_ip:remote_cm_port,mandatory for client]"
 
 int main(int argc, char **argv) {
     int ret;
     if (argc < 5) {
-        printf("Usage: %s <info|client|server> <prov> <domain> <local_ip:local_cm_port> [remote_ip:remote_cm_port]\n", argv[0]);
-        exit(1);
+        printf("Usage: %s" CMD_ARG_HELP  "\n", argv[0]);
+        return 1;
+    }
+
+    if (strcmp(argv[1],"client") == 0 && argc < 6) {
+        printf("Usage: %s" CMD_ARG_HELP "\n", argv[0]);
+        return 1;
     }
 
     // Initialize the Libfabric hints to ask for the right provider, fabric, domain.
@@ -551,7 +584,7 @@ int main(int argc, char **argv) {
     if (strcmp(argv[1], "client") == 0) {
 
         printf("Starting Client... \n");
-        do_client();
+        do_client(argv[5]);
     } else if (strcmp(argv[1], "server") == 0) {
 
         printf("Starting Server...\n");
