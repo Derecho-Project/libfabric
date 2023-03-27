@@ -3,6 +3,9 @@
 #include <string.h>
 #include <sys/mman.h>
 #include <unistd.h>
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <netdb.h>
 
 #include <rdma/fabric.h>
 #include <rdma/fi_cm.h>
@@ -92,8 +95,41 @@ static void *alloc_mem(size_t memsz, size_t pgsz, bool huge) {
     return addr;
 }
 
-static void default_context(const char* provider_name, const char* domain_name) {
+static void default_context(const char* provider_name, const char* domain_name, const char* src_ip_port) {
     memset((void *)&g_ctxt, 0, sizeof(struct lf_ctxt));
+
+    /** parse the service and port */
+    struct addrinfo     src_hints;
+    struct addrinfo*    src_res;
+    char*               node    = NULL;
+    char*               service = NULL;
+    uint32_t            colon_pos = 0;
+    while(colon_pos < strlen(src_ip_port)) {
+        if (src_ip_port[colon_pos] == ':') {
+            break;
+        }
+        colon_pos ++;
+    }
+    node = strndup(src_ip_port,colon_pos);
+    /** if we do have the port **/
+    if ((colon_pos+1) < strlen(src_ip_port)) {
+        service = strdup(src_ip_port+colon_pos+1);
+    }
+    bzero(&src_hints,sizeof(src_hints));
+    src_hints.ai_family = AF_INET;
+    
+    int errcode = getaddrinfo(node,service,&src_hints,&src_res);
+    if (errcode) {
+        fprintf(stderr, "failed to get source address for %s. Error:%s\n",
+                src_ip_port, gai_strerror(errcode));
+        if (service) {
+            free(service);
+        }
+        if (node) {
+            free(node);
+        }
+        return;
+    }
 
     /** Create a new empty fi_info structure */
     g_ctxt.hints = fi_allocinfo();
@@ -138,6 +174,24 @@ static void default_context(const char* provider_name, const char* domain_name) 
         g_ctxt.hints->domain_attr->mr_mode =
             FI_MR_LOCAL | FI_MR_ALLOCATED | FI_MR_PROV_KEY | FI_MR_VIRT_ADDR;
     }
+
+    /** set the address space **/
+    g_ctxt.hints->addr_format = FI_SOCKADDR_IN;
+    g_ctxt.hints->src_addrlen = src_res->ai_addrlen;
+    g_ctxt.hints->src_addr    = malloc(src_res->ai_addrlen);
+    memcpy(g_ctxt.hints->src_addr,src_res->ai_addr,src_res->ai_addrlen);
+    /** **/
+    {
+        int cntr = 0;
+        struct addrinfo* nxt = src_res->ai_next;
+        while (nxt!=NULL) {
+            nxt = nxt->ai_next;
+            cntr++;
+        }
+        fprintf(stdout,"getaddrinfo: there are %d more entries dropped.\n",cntr);
+    }
+
+    freeaddrinfo(src_res);
 }
 
 int lf_initialize() {
@@ -451,13 +505,13 @@ void do_client() {
 
 int main(int argc, char **argv) {
     int ret;
-    if (argc < 4) {
-        printf("Usage: %s <info|client|server> <prov> <domain>\n", argv[0]);
+    if (argc < 5) {
+        printf("Usage: %s <info|client|server> <prov> <domain> <local_ip:local_cm_port> [remote_ip:remote_cm_port]\n", argv[0]);
         exit(1);
     }
 
     // Initialize the Libfabric hints to ask for the right provider, fabric, domain.
-    default_context(argv[2],argv[3]);
+    default_context(argv[2],argv[3],argv[4]);
 
     // Get the fabric info
     ret = fi_getinfo(LF_VERSION, NULL, NULL, 0, g_ctxt.hints, &g_ctxt.fi);
