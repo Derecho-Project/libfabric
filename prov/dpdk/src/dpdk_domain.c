@@ -219,7 +219,7 @@ int dpdk_domain_open(struct fid_fabric *fabric_fid, struct fi_info *info,
 
     // Allocate the mempool for CM mbufs
     char cm_pool_name[32];
-    sprintf(cm_pool_name, "rx_pool_%s", domain->util_domain.name);
+    sprintf(cm_pool_name, "cm_pool_%s", domain->util_domain.name);
     domain->cm_pool = rte_pktmbuf_pool_create(cm_pool_name,                             // name
                                               rte_align32pow2(MAX_ENDPOINTS_PER_APP),   // n
                                               cache_size,                               // cache_size
