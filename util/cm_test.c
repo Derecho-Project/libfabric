@@ -575,11 +575,12 @@ int main(int argc, char **argv) {
     }
 
     // Allocate a memory region
+    /* [Weijia] disable memory registration for cm test.
     ret = register_memory_region();
     if (ret != 0) {
         printf("register_memory_region failed: %s\n", fi_strerror(-ret));
         exit(1);
-    }
+    }*/
 
     if (strcmp(argv[1], "client") == 0) {
 
