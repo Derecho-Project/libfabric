@@ -212,6 +212,7 @@ int dpdk_domain_open(struct fid_fabric *fabric_fid, struct fi_info *info,
     if (domain->rx_pool == NULL) {
         DPDK_WARN(FI_LOG_CORE, "Cannot create RX mbuf pool for domain %s: %s",
                 domain->util_domain.name, rte_strerror(rte_errno));
+        ret = -FI_ENOMEM;
         goto close;
     }
     DPDK_TRACE(FI_LOG_CORE, "RX mempool created.");
@@ -233,6 +234,7 @@ int dpdk_domain_open(struct fid_fabric *fabric_fid, struct fi_info *info,
     if (!domain->cm_pool) {
         DPDK_WARN(FI_LOG_CORE, "Cannot create CM mbuf pool for domain %s: %s",
                   domain->util_domain.name, rte_strerror(rte_errno));
+        ret = -FI_ENOMEM;
         goto close;
     }
     DPDK_TRACE(FI_LOG_CORE, "CM mempool created.");
@@ -247,6 +249,7 @@ int dpdk_domain_open(struct fid_fabric *fabric_fid, struct fi_info *info,
     if (!domain->cm_ring) {
         DPDK_WARN(FI_LOG_CORE, "Fail to create CM ring for domain %s: %s",
                   domain->util_domain.name, rte_strerror(rte_errno));
+        ret = -FI_ENOMEM;
         goto close;
     }
     DPDK_TRACE(FI_LOG_CORE, "CM ring created.");
@@ -262,10 +265,10 @@ int dpdk_domain_open(struct fid_fabric *fabric_fid, struct fi_info *info,
     domain->port_id  = 0;
     domain->queue_id = 0;
     domain->lcore_id = 1; // lcore 0 is the main thread, so this must be > 0
-    if (port_init(domain->rx_pool, domain->port_id, domain->queue_id, domain->mtu,
-                  &domain->dev_flags) < 0)
+    if ((ret=port_init(domain->rx_pool, domain->port_id, domain->queue_id, domain->mtu,
+                  &domain->dev_flags)) < 0)
     {
-        FI_WARN(&dpdk_prov, FI_LOG_CORE, "Port Init DPDK: error\n");
+        DPDK_WARN(FI_LOG_CORE, "Port Init DPDK: error\n");
         goto free;
     };
 
