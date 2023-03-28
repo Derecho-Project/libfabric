@@ -317,14 +317,14 @@ static int dpdk_ep_accept(struct fid_ep *ep, const void *param, size_t paramlen)
     }
     //// fill cm message
     struct dpdk_cm_msg_hdr* connack = get_cm_header(connack_mbuf);
-    connack->type           = DPDK_CM_MSG_CONNECTION_ACKNOWLEDGEMENT;
-    connack->session_id     = conn_handle->session_id;
+    connack->type           = rte_cpu_to_be_32(DPDK_CM_MSG_CONNECTION_ACKNOWLEDGEMENT);
+    connack->session_id     = rte_cpu_to_be_32(conn_handle->session_id);
     connack->typed_header.connection_acknowledgement.client_data_udp_port
-                            = dep->remote_udp_port;
+                            = rte_cpu_to_be_16(dep->remote_udp_port);
     connack->typed_header.connection_acknowledgement.server_data_udp_port
-                            = dep->udp_port;
+                            = rte_cpu_to_be_16(dep->udp_port);
     connack->typed_header.connection_acknowledgement.paramlen
-                            = paramlen;
+                            = rte_cpu_to_be_16(paramlen);
     memcpy(connack->payload,param,paramlen);
     //// fill it to the ring
     DPDK_DBG(FI_LOG_EP_CTRL, "adding connack to cm ring.\n");
