@@ -803,7 +803,7 @@ int dpdk_cm_recv(struct dpdk_domain*    domain,
 
     DPDK_TRACE(FI_LOG_EP_CTRL,"Receiving CM Message with type:%d.", cm_hdr->type);
 
-    switch (cm_hdr->type) {
+    switch (rte_be_to_cpu_32(cm_hdr->type)) {
     case DPDK_CM_MSG_CONNECTION_REQUEST:
         DPDK_DBG(FI_LOG_EP_CTRL,"received CONNREQ message, calling process_cm_connreq().\n");
         ret = process_cm_connreq(domain,eth_hdr,ip_hdr,udp_hdr,cm_hdr,cm_data);
