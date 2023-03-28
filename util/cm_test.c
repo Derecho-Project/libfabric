@@ -414,12 +414,13 @@ void do_server() {
         return;
     }
     fi_freeinfo(entry.info);
-    printf("server connected...waiting for 1 min\n");
+    printf("server connected...waiting for 10 secs\n");
     fflush(stdin);
 
-    sleep(60);
+    sleep(10);
 
     // Server loop
+    /*
     struct iovec  msg_iov;
     struct fi_msg msg;
     msg_iov.iov_base = g_mr.buffer;
@@ -458,6 +459,14 @@ void do_server() {
 
         printf("Received a new message [size = %lu]: %s\n", comp.len, (char *)g_mr.buffer);
     }
+    */
+    fi_close(ep);
+    fi_close(eq);
+
+    printf("Disconnected, waiting for another 10 secs.\n");
+    sleep(10);
+
+    return;
 }
 
 void do_client(const char* server_ip_and_port) {
@@ -503,8 +512,9 @@ void do_client(const char* server_ip_and_port) {
     }
     printf("client connected... sleep for 1 min.\n");
     fflush(stdin);
-    sleep(60);
+    sleep(10);
 
+    /*
     // Now the connection is open, I can send
     struct iovec  msg_iov;
     struct fi_msg msg;
@@ -545,6 +555,16 @@ void do_client(const char* server_ip_and_port) {
 
         printf("Insert a message size: ");
     }
+    */
+    fi_shutdown(ep,0);
+
+    fi_close(ep);
+    fi_close(eq);
+
+    printf("Disconnected, waiting for another 10 secs.\n");
+    sleep(10);
+
+    return;
 }
 
 #define CMD_ARG_HELP    "<info|client|server> <prov> <domain> <local_ip:local_cm_port> [remote_ip:remote_cm_port,mandatory for client]"
@@ -601,11 +621,9 @@ int main(int argc, char **argv) {
     }*/
 
     if (strcmp(argv[1], "client") == 0) {
-
         printf("Starting Client... \n");
         do_client(argv[5]);
     } else if (strcmp(argv[1], "server") == 0) {
-
         printf("Starting Server...\n");
         do_server();
     } else {
