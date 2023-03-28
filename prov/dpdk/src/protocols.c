@@ -12,8 +12,6 @@ void enqueue_ether_frame(struct rte_mbuf *sendmsg, unsigned int ether_type, stru
 
     struct rte_ether_hdr *eth =
         rte_pktmbuf_mtod_offset(sendmsg, struct rte_ether_hdr *, ETHERNET_HDR_OFFSET);
-    sendmsg->data_len += RTE_ETHER_HDR_LEN;
-    sendmsg->pkt_len += RTE_ETHER_HDR_LEN;
 
     rte_ether_addr_copy(dst_addr, &eth->dst_addr);
     rte_ether_addr_copy(&domain->eth_addr, &eth->src_addr);
@@ -31,7 +29,6 @@ void enqueue_ether_frame(struct rte_mbuf *sendmsg, unsigned int ether_type, stru
                  rte_ipv4_fragment_packet(sendmsg, (struct rte_mbuf **)pkts_out, MAX_FRAG_NUM,
                                           domain->mtu, ep->tx_hdr_mempool, ep->tx_ddp_mempool)) < 0)
         {
-            printf("[ERROR] Error while fragmenting packets: %s\n", rte_strerror(-used_mbufs));
             RTE_LOG(ERR, USER1, "Error while fragmenting packets: %s\n", rte_strerror(-used_mbufs));
             return;
         }
@@ -137,18 +134,17 @@ int32_t ip_parse(char *addr, uint32_t *dst) {
 }
 
 /* Appends a skeleton IPv4 header to the packet. Assume that src_addr and dst_addr are in
- * host byte order. */
+ * host byte order. The PAYLOAD must be the payload of the IP packet, including higher-level headers
+ */
 struct rte_ipv4_hdr *prepend_ipv4_header(struct rte_mbuf *sendmsg, int next_proto_id,
                                          uint32_t src_addr, uint32_t dst_addr,
                                          uint16_t ddp_length) {
     struct rte_ipv4_hdr *ip;
 
     // Get payload length
-    size_t total_length = ddp_length + INNER_HDR_LEN;
+    size_t total_length = ddp_length + IP_HDR_LEN;
 
-    ip = rte_pktmbuf_mtod_offset(sendmsg, struct rte_ipv4_hdr *, IP_HDR_OFFSET);
-    sendmsg->data_len += IP_HDR_LEN;
-    sendmsg->pkt_len += IP_HDR_LEN;
+    ip              = rte_pktmbuf_mtod_offset(sendmsg, struct rte_ipv4_hdr *, IP_HDR_OFFSET);
     sendmsg->l3_len = IP_HDR_LEN;
 
     ip->src_addr        = rte_cpu_to_be_32(src_addr);
@@ -282,21 +278,20 @@ int setup_queue_tbl(struct rx_queue *rxq, uint32_t lcore, uint32_t queue, uint16
 
 /* UDP */
 
-/* Appends a skeleton IPv4 header to the packet.  Note that this sets the
+/* Appends a UDP header to the packet.  Note that this sets the
  * checksum to 0, which must either be computed in full or offloaded (in which
  * case the IP psuedo-header checksum must be pre-computed by the caller).
+ * The PAYLOAD must be the payload for the UDP packet, including higher-level headers.
  */
 struct rte_udp_hdr *prepend_udp_header(struct rte_mbuf *sendmsg, unsigned int src_port,
                                        unsigned int dst_port, uint16_t ddp_length) {
     struct rte_udp_hdr *udp;
 
     // Get payload length
-    size_t total_length = UDP_HDR_LEN + TRP_HDR_LEN + RDMAP_HDR_LEN + ddp_length;
+    size_t total_length = UDP_HDR_LEN + ddp_length;
 
     // Get and fill the UDP header
-    udp = rte_pktmbuf_mtod_offset(sendmsg, struct rte_udp_hdr *, UDP_HDR_OFFSET);
-    sendmsg->data_len += UDP_HDR_LEN;
-    sendmsg->pkt_len += UDP_HDR_LEN;
+    udp             = rte_pktmbuf_mtod_offset(sendmsg, struct rte_udp_hdr *, UDP_HDR_OFFSET);
     sendmsg->l4_len = UDP_HDR_LEN;
 
     udp->src_port    = rte_cpu_to_be_16(src_port);
@@ -307,19 +302,7 @@ struct rte_udp_hdr *prepend_udp_header(struct rte_mbuf *sendmsg, unsigned int sr
     return udp;
 } /* prepend_udp_header */
 
-/** Adds a UDP datagram to our packet TX queue to be transmitted when the queue
- * is next flushed.
- *
- * @param ep
- *   The endpoint that is sending this datagram.
- * @param sendmsg
- *   The mbuf containing the datagram to send.
- * @param dest
- *   The address handle of the destination for this datagram.
- * @param payload_checksum
- *   The non-complemented checksum of the packet payload.  Ignored if
- *   checksum_offload is enabled.
- */
+// The DDP length must include the higher-level headers and the payload length
 void send_udp_dgram(struct dpdk_ep *ep, struct rte_mbuf *sendmsg, uint32_t raw_cksum,
                     uint16_t ddp_length) {
     struct rte_udp_hdr  *udp;
@@ -330,8 +313,9 @@ void send_udp_dgram(struct dpdk_ep *ep, struct rte_mbuf *sendmsg, uint32_t raw_c
         sendmsg->ol_flags |= RTE_MBUF_F_TX_UDP_CKSUM | RTE_MBUF_F_TX_IPV4 | RTE_MBUF_F_TX_IP_CKSUM;
     }
 
-    udp = prepend_udp_header(sendmsg, ep->udp_port, ep->remote_udp_port, ddp_length);
-    ip  = prepend_ipv4_header(sendmsg, IP_UDP, domain->ipv4_addr, ep->remote_ipv4_addr, ddp_length);
+    udp              = prepend_udp_header(sendmsg, ep->udp_port, ep->remote_udp_port, ddp_length);
+    ip               = prepend_ipv4_header(sendmsg, IP_UDP, domain->ipv4_addr, ep->remote_ipv4_addr,
+                                           ddp_length + UDP_HDR_LEN);
     udp->dgram_cksum = rte_ipv4_phdr_cksum(ip, sendmsg->ol_flags);
 
     if (!(sendmsg->ol_flags & RTE_MBUF_F_TX_UDP_CKSUM)) {
@@ -344,6 +328,7 @@ void send_udp_dgram(struct dpdk_ep *ep, struct rte_mbuf *sendmsg, uint32_t raw_c
     }
 
     enqueue_ether_frame(sendmsg, RTE_ETHER_TYPE_IPV4, ep, &ep->remote_eth_addr);
+
 } /* send_udp_dgram */
 
 /* TRP */
@@ -354,39 +339,47 @@ void send_trp_ack(struct dpdk_ep *ep) {
     struct trp_hdr     *trp;
 
     assert(!(ee->trp_flags & trp_recv_missing));
-    sendmsg      = rte_pktmbuf_alloc(ep->tx_hdr_mempool);
-    trp          = (struct trp_hdr *)rte_pktmbuf_append(sendmsg, sizeof(*trp));
+    sendmsg = rte_pktmbuf_alloc(ep->tx_hdr_mempool);
+    RTE_LOG(DEBUG, USER1, "Sending TRP ACK\n");
+
+    trp = rte_pktmbuf_mtod_offset(sendmsg, struct trp_hdr *, TRP_HDR_OFFSET);
+    sendmsg->data_len += TRP_HDR_LEN + UDP_HDR_LEN + IP_HDR_LEN + RTE_ETHER_HDR_LEN;
+    sendmsg->pkt_len += TRP_HDR_LEN + UDP_HDR_LEN + IP_HDR_LEN + RTE_ETHER_HDR_LEN;
+
     trp->psn     = rte_cpu_to_be_32(ee->send_next_psn);
     trp->ack_psn = rte_cpu_to_be_32(ee->recv_ack_psn);
     trp->opcode  = rte_cpu_to_be_16(0);
     ee->trp_flags &= ~trp_ack_update;
 
-    // TODO: Is the size correct?
     send_udp_dgram(ep, sendmsg,
                    (domain->dev_flags & port_checksum_offload) ? 0
                                                                : rte_raw_cksum(trp, sizeof(*trp)),
-                   rte_pktmbuf_pkt_len(sendmsg));
+                   TRP_HDR_LEN);
 } /* send_trp_ack */
 
 void send_trp_sack(struct dpdk_ep *ep) {
-    struct rte_mbuf    *sendmsg;
-    struct ee_state    *ee = &ep->remote_ep;
-    struct trp_hdr     *trp;
     struct dpdk_domain *domain = container_of(ep->util_ep.domain, struct dpdk_domain, util_domain);
+    struct ee_state    *ee     = &ep->remote_ep;
+    struct rte_mbuf    *sendmsg;
+    struct trp_hdr     *trp;
 
     assert(ee->trp_flags & trp_recv_missing);
-    sendmsg      = rte_pktmbuf_alloc(ep->tx_hdr_mempool);
-    trp          = (struct trp_hdr *)rte_pktmbuf_append(sendmsg, sizeof(*trp));
+    sendmsg = rte_pktmbuf_alloc(ep->tx_hdr_mempool);
+    RTE_LOG(DEBUG, USER1, "Sending TRP SACK\n");
+
+    trp = rte_pktmbuf_mtod_offset(sendmsg, struct trp_hdr *, TRP_HDR_OFFSET);
+    sendmsg->data_len += TRP_HDR_LEN + UDP_HDR_LEN + IP_HDR_LEN + RTE_ETHER_HDR_LEN;
+    sendmsg->pkt_len += TRP_HDR_LEN + UDP_HDR_LEN + IP_HDR_LEN + RTE_ETHER_HDR_LEN;
+
     trp->psn     = rte_cpu_to_be_32(ee->recv_sack_psn.min);
     trp->ack_psn = rte_cpu_to_be_32(ee->recv_sack_psn.max);
     trp->opcode  = rte_cpu_to_be_16(trp_sack);
-
     ee->trp_flags &= ~trp_ack_update;
 
     send_udp_dgram(ep, sendmsg,
                    (domain->dev_flags & port_checksum_offload) ? 0
                                                                : rte_raw_cksum(trp, sizeof(*trp)),
-                   rte_pktmbuf_pkt_len(sendmsg));
+                   TRP_HDR_LEN);
 } /* send_trp_sack */
 
 void process_trp_sack(struct ee_state *ep, uint32_t psn_min, uint32_t psn_max) {
@@ -424,49 +417,26 @@ static inline struct rte_mbuf **tx_pending_entry(struct ee_state *ee, uint32_t p
 
 } /* tx_pending_entry */
 
-static struct rdmap_terminate_payload *terminate_append_ddp_header(
-    struct rdmap_packet *orig, struct rte_mbuf *sendmsg, struct rdmap_terminate_packet *term) {
-    struct rdmap_terminate_payload *p;
-    size_t                          hdr_size;
-
-    term->hdrct = rdmap_hdrct_m | rdmap_hdrct_d;
-    if (DDP_GET_T(orig->ddp_flags)) {
-        hdr_size = sizeof(struct rdmap_tagged_packet);
-    } else {
-        hdr_size = sizeof(struct rdmap_untagged_packet);
-    }
-    p = (struct rdmap_terminate_payload *)rte_pktmbuf_append(sendmsg, hdr_size);
-    memcpy(&p->payload, orig, hdr_size);
-    return p;
-} /* terminate_append_ddp_header */
-
+// This is executed multiple times in case of packet retransmission
 int resend_ddp_segment(struct dpdk_ep *ep, struct rte_mbuf *sendmsg, struct ee_state *ee) {
     struct pending_datagram_info *info;
     struct trp_hdr               *trp;
     uint32_t                      payload_raw_cksum = 0;
     struct dpdk_domain *domain = container_of(ep->util_ep.domain, struct dpdk_domain, util_domain);
 
-    info                  = (struct pending_datagram_info *)(sendmsg + 1);
-    info->next_retransmit = rte_get_timer_cycles() + rte_get_timer_hz() / 100;
+    info = (struct pending_datagram_info *)(sendmsg + 1);
+    // TODO: [Lorenzo] We should make this timeout a configurable parameter
+    info->next_retransmit = rte_get_timer_cycles() + rte_get_timer_hz() / 1000;
     if (info->transmit_count++ > RETRANSMIT_MAX) {
         return -EIO;
     }
 
-    // TODO: Is this necessary?
-    // WARNING: this clones the mbuf data (=> our headers) but not the prepended
-    // private pending_datagram_info structure! From here on, do not use it, or
-    // copy it here!
-    sendmsg = rte_pktmbuf_clone(sendmsg, sendmsg->pool);
-    if (sendmsg == NULL) {
-        RTE_LOG(ERR, USER1, "Failed to clone mbuf\n");
-        return -ENOMEM;
-    }
+    // [Lorenzo] Removed the clone: it is unclear how it should be used in our case
+    // with a mix of direct/indirect buffers.
 
     // Prepare the TRP header
     // TODO: Should this be a sort of "prepend TRP header" as well? Why in a function called DDP?
     trp = rte_pktmbuf_mtod_offset(sendmsg, struct trp_hdr *, TRP_HDR_OFFSET);
-    sendmsg->data_len += TRP_HDR_LEN;
-    sendmsg->pkt_len += TRP_HDR_LEN;
 
     trp->psn     = rte_cpu_to_be_32(info->psn);
     trp->ack_psn = rte_cpu_to_be_32(ee->recv_ack_psn);
@@ -479,11 +449,14 @@ int resend_ddp_segment(struct dpdk_ep *ep, struct rte_mbuf *sendmsg, struct ee_s
         payload_raw_cksum = info->ddp_raw_cksum + rte_raw_cksum(trp, sizeof(*trp));
     }
 
-    send_udp_dgram(ep, sendmsg, payload_raw_cksum, info->ddp_length);
+    send_udp_dgram(ep, sendmsg, payload_raw_cksum, TRP_HDR_LEN + info->ddp_length);
 
     return 0;
 } /* resend_ddp_segment */
 
+// This is executed only once per RDMAP packet.
+// The payload side must include the RDMAP header length and the payload length.
+// The pkt_len of the "sendmsg" mbuf must be set to the total HEADER + PAYLOAD length.
 int send_ddp_segment(struct dpdk_ep *ep, struct rte_mbuf *sendmsg,
                      struct read_atomic_response_state *readresp, struct dpdk_xfer_entry *wqe,
                      size_t payload_length) {
@@ -515,9 +488,15 @@ int send_ddp_segment(struct dpdk_ep *ep, struct rte_mbuf *sendmsg,
 /* RDMAP */
 
 void free_extbuf_cb(void *addr, void *opaque) {
-    return;
 }
 
+// This function is similar to the rte_pktmbuf_ext_shinfo_init_helper. However, the "original" one
+// would allocate the rte_mbuf_ext_shared_info structure at the end of the external buffer. We
+// can't, because the buffer is user-managed memory. So this function stores the struct in the
+// area the user passes as first argument. Generally, and specifically for this case, the caller
+// will pass a private area of the mbuf as first argument. DO NOT PASS a NULL callback pointer: it
+// will be called by DPDK causing a segfault. Just pass a function that does nothing, if you do not
+// need this feature.
 static inline void rte_pktmbuf_ext_shinfo_init_helper_custom(
     struct rte_mbuf_ext_shared_info *ret_shinfo, rte_mbuf_extbuf_free_callback_t free_cb,
     void *fcb_opaque) {
@@ -531,9 +510,8 @@ static inline void rte_pktmbuf_ext_shinfo_init_helper_custom(
 
 static void put_iov_in_chain(struct rte_mempool *pool, struct rte_mbuf *head_pkt, size_t dest_size,
                              const struct iovec *restrict src, size_t iov_count, size_t offset) {
-    size_t           prev, pos, cur;
-    char            *src_iov_base;
-    struct rte_mbuf *prev_pkt = head_pkt;
+    size_t prev, pos, cur;
+    char  *src_iov_base;
 
     pos = 0;
     for (uint32_t y = 0, prev = 0; pos < dest_size && y < iov_count; ++y) {
@@ -542,13 +520,14 @@ static void put_iov_in_chain(struct rte_mempool *pool, struct rte_mbuf *head_pkt
             src_iov_base = src[y].iov_base;
 
             // Prepare an mbuf to point at the relevant payload
-            struct rte_mbuf                *payload_mbuf = rte_pktmbuf_alloc(pool);
-            char                           *data         = src_iov_base + offset - prev;
-            rte_iova_t                      iova         = rte_mem_virt2iova(data);
-            struct rte_mbuf_ext_shared_info ret_shinfo;
-            rte_pktmbuf_ext_shinfo_init_helper_custom(&ret_shinfo, &free_extbuf_cb, NULL);
+            struct rte_mbuf                 *payload_mbuf = rte_pktmbuf_alloc(pool);
+            char                            *data         = src_iov_base + offset - prev;
+            rte_iova_t                       iova         = rte_mem_virt2iova(data);
+            struct rte_mbuf_ext_shared_info *ret_shinfo =
+                (struct rte_mbuf_ext_shared_info *)(payload_mbuf + 1);
+            rte_pktmbuf_ext_shinfo_init_helper_custom(ret_shinfo, free_extbuf_cb, NULL);
             // Attach the memory buffer to the mbuf
-            rte_pktmbuf_attach_extbuf(payload_mbuf, data, iova, cur, &ret_shinfo);
+            rte_pktmbuf_attach_extbuf(payload_mbuf, data, iova, cur, ret_shinfo);
             payload_mbuf->pkt_len = payload_mbuf->data_len = cur;
 
             // Put packets in chain
@@ -581,10 +560,8 @@ void memcpy_from_iov(char *restrict dest, size_t dest_size, const struct iovec *
 }
 
 void do_rdmap_send(struct dpdk_ep *ep, struct dpdk_xfer_entry *wqe) {
-    struct dpdk_domain *domain = container_of(ep->util_ep.domain, struct dpdk_domain, util_domain);
     struct rdmap_untagged_packet *new_rdmap;
     struct rte_mbuf              *sendmsg;
-    unsigned int                  packet_length;
     size_t                        payload_length;
 
     uint16_t mtu = MAX_RDMAP_PAYLOAD_SIZE;
@@ -597,22 +574,26 @@ void do_rdmap_send(struct dpdk_ep *ep, struct dpdk_xfer_entry *wqe) {
         (wqe->bytes_sent < wqe->total_length || (wqe->bytes_sent == 0 && wqe->total_length == 0)) &&
         serial_less_32(wqe->remote_ep->send_next_psn, wqe->remote_ep->send_max_psn))
     {
-        sendmsg = rte_pktmbuf_alloc(ep->tx_ddp_mempool);
+        sendmsg = rte_pktmbuf_alloc(ep->tx_hdr_mempool);
         if (!sendmsg) {
             // TODO: Should we create an "error" state?
             wqe->state = SEND_XFER_COMPLETE;
-            RTE_LOG(ERR, USER1, "Failed to allocate mbuf from pool %s\n", ep->tx_ddp_mempool->name);
+            RTE_LOG(ERR, USER1, "Failed to allocate mbuf from pool %s\n", ep->tx_hdr_mempool->name);
             return;
         }
 
-        // Data payload length
+        // Header len. Add now the LEN of the packet. Now, because from now on, all the functions
+        // will be potentially executed more than once in case of retransmission
+        // TODO: Dos this make sense? In case of re-transmission to re-traverse the whole stack?
+        sendmsg->data_len += RTE_ETHER_HDR_LEN + INNER_HDR_LEN;
+        sendmsg->pkt_len += RTE_ETHER_HDR_LEN + INNER_HDR_LEN;
+
+        // Data payload length. Not part of the pktmbuf, as sendmsg refers only to the headers
         payload_length = RTE_MIN(mtu, wqe->total_length - wqe->bytes_sent);
 
         // Prepare the RDMAP header
         new_rdmap =
             rte_pktmbuf_mtod_offset(sendmsg, struct rdmap_untagged_packet *, RDMAP_HDR_OFFSET);
-        sendmsg->data_len         = RDMAP_HDR_LEN;
-        sendmsg->pkt_len          = RDMAP_HDR_LEN;
         new_rdmap->head.ddp_flags = (wqe->total_length - wqe->bytes_sent <= mtu)
                                         ? DDP_V1_UNTAGGED_LAST_DF
                                         : DDP_V1_UNTAGGED_DF;
@@ -635,14 +616,14 @@ void do_rdmap_send(struct dpdk_ep *ep, struct dpdk_xfer_entry *wqe) {
             //     payload_length);
             // } else {
 
-            // TODO: This is zero-copy send. But what about small sizes?
+            // This is zero-copy send. But what about small sizes?
             // We could enable a mechanism that if total_size is <threshold, we copy the data
             // Attach the header buffer to the mbuf(s) that describe the payload
             put_iov_in_chain(ep->tx_ddp_mempool, sendmsg, payload_length, wqe->iov, wqe->iov_count,
                              wqe->bytes_sent);
         }
 
-        send_ddp_segment(ep, sendmsg, NULL, wqe, payload_length);
+        send_ddp_segment(ep, sendmsg, NULL, wqe, RDMAP_HDR_LEN + payload_length);
         RTE_LOG(DEBUG, USER1, "<ep=%" PRIx16 "> SEND transmit msn=%" PRIu32 " [%zu-%zu]\n",
                 ep->udp_port, wqe->msn, wqe->bytes_sent, wqe->bytes_sent + payload_length);
 
@@ -655,56 +636,94 @@ void do_rdmap_send(struct dpdk_ep *ep, struct dpdk_xfer_entry *wqe) {
 } /* do_rdmap_send */
 
 void do_rdmap_terminate(struct dpdk_ep *ep, struct packet_context *orig, enum rdmap_errno errcode) {
-    {
-        struct rte_mbuf                *sendmsg = rte_pktmbuf_alloc(ep->tx_ddp_mempool);
-        struct rdmap_terminate_packet  *new_rdmap;
-        struct rdmap_terminate_payload *payload;
 
-        new_rdmap =
-            (struct rdmap_terminate_packet *)rte_pktmbuf_append(sendmsg, sizeof(*new_rdmap));
-        new_rdmap->untagged.head.ddp_flags  = DDP_V1_UNTAGGED_LAST_DF;
-        new_rdmap->untagged.head.rdmap_info = rdmap_opcode_terminate | RDMAP_V1;
-        new_rdmap->untagged.head.sink_stag  = 0;
-        new_rdmap->untagged.qn              = rte_cpu_to_be_32(2);
-        new_rdmap->untagged.msn             = rte_cpu_to_be_32(1);
-        new_rdmap->untagged.mo              = rte_cpu_to_be_32(0);
-        new_rdmap->error_code               = rte_cpu_to_be_16(errcode);
-        new_rdmap->reserved                 = 0;
-        switch (errcode & 0xff00) {
-        case 0x0100:
-            /* Error caused by RDMA Read Request */
-            new_rdmap->hdrct = rdmap_hdrct_m | rdmap_hdrct_d | rdmap_hdrct_r;
+    /* Note 1. This uses 16 bytes more that regular data transfer headers.
+     * To handle this, we made hdr_mbufs larger of 16 bytes to accomodate for this case.
+     * A different design would be to allocate a new mbuf for the terminate packet, and a header
+     * one for all the other, lower-layer headers. It seems to me that it is simpler to go with
+     * the first option.
+     */
 
-            payload = (struct rdmap_terminate_payload *)rte_pktmbuf_append(
-                sendmsg, 2 + sizeof(struct rdmap_readreq_packet));
-            memcpy(&payload->payload, orig->rdmap, sizeof(struct rdmap_readreq_packet));
-            break;
-        case 0x0200:
-        case 0x1200:
-            /* Error caused by DDP or RDMAP untagged message other than
-             * Read Request */
-            if (orig) {
-                payload = terminate_append_ddp_header(orig->rdmap, sendmsg, new_rdmap);
-            } else {
-                new_rdmap->hdrct = 0;
-                payload          = NULL;
-            }
-            break;
-        case 0x1000:
-        case 0x1100:
-            /* DDP layer error */
-            payload = terminate_append_ddp_header(orig->rdmap, sendmsg, new_rdmap);
-            break;
-        case 0x0000:
-        default:
+    /* Note 2. In this case of termination, the regular RDMAP header is "augmented" with
+     * additional info, represented by the structure  struct rdmap_terminate_packet (26 bytes
+     * instead of 22). The packet should also contain a description of the packet that caused
+     * the error (rdmap_packet) and the original ddp_size. Both these fields are stored in the
+     * struct rdmap_terminate_payload (12 bytes, 2 + 10). Hence, the RDMAP part accounts for 38
+     * bytes, to which we have to add the lower-level headers (ethernet, ip, udp, trp), for a
+     * total size of 90 bytes.
+     */
+
+    struct rte_mbuf                *sendmsg = rte_pktmbuf_alloc(ep->tx_hdr_mempool);
+    struct rdmap_terminate_packet  *new_rdmap;
+    struct rdmap_terminate_payload *payload;
+
+    new_rdmap = rte_pktmbuf_mtod_offset(sendmsg, struct rdmap_terminate_packet *, RDMAP_HDR_OFFSET);
+    sendmsg->data_len = sizeof(struct rdmap_terminate_packet);
+
+    new_rdmap->untagged.head.ddp_flags  = DDP_V1_UNTAGGED_LAST_DF;
+    new_rdmap->untagged.head.rdmap_info = rdmap_opcode_terminate | RDMAP_V1;
+    new_rdmap->untagged.head.sink_stag  = 0;
+    new_rdmap->untagged.qn              = rte_cpu_to_be_32(2);
+    new_rdmap->untagged.msn             = rte_cpu_to_be_32(1);
+    new_rdmap->untagged.mo              = rte_cpu_to_be_32(0);
+    new_rdmap->error_code               = rte_cpu_to_be_16(errcode);
+    new_rdmap->reserved                 = 0;
+
+    switch (errcode & 0xff00) {
+    case 0x0100:
+        /* Error caused by RDMA Read Request */
+        new_rdmap->hdrct = rdmap_hdrct_m | rdmap_hdrct_d | rdmap_hdrct_r;
+
+        payload = rte_pktmbuf_mtod_offset(sendmsg, struct rdmap_terminate_payload *,
+                                          RDMAP_HDR_OFFSET + sizeof(struct rdmap_terminate_packet));
+        sendmsg->data_len += sizeof(struct rdmap_terminate_payload);
+        memcpy(&payload->payload, orig->rdmap, sizeof(struct rdmap_packet));
+        break;
+    case 0x0200:
+    case 0x1200:
+        /* Error caused by DDP or RDMAP untagged message other than
+         * Read Request */
+        if (orig) {
+            new_rdmap->hdrct = rdmap_hdrct_m | rdmap_hdrct_d;
+
+            payload =
+                rte_pktmbuf_mtod_offset(sendmsg, struct rdmap_terminate_payload *,
+                                        RDMAP_HDR_OFFSET + sizeof(struct rdmap_terminate_packet));
+            sendmsg->data_len += sizeof(struct rdmap_terminate_payload);
+            memcpy(&payload->payload, orig->rdmap, RDMAP_HDR_OFFSET + sizeof(struct rdmap_packet));
+        } else {
             new_rdmap->hdrct = 0;
             payload          = NULL;
-            break;
         }
+        break;
+    case 0x1000:
+    case 0x1100:
+        /* DDP layer error */
+        new_rdmap->hdrct = rdmap_hdrct_m | rdmap_hdrct_d;
 
-        if (payload) {
-            payload->ddp_seg_len = rte_cpu_to_be_16(orig->ddp_seg_length);
-        }
-        (void)send_ddp_segment(ep, sendmsg, NULL, NULL, 0);
-    } /* do_rdmap_terminate */
-}
+        payload = rte_pktmbuf_mtod_offset(sendmsg, struct rdmap_terminate_payload *,
+                                          sizeof(struct rdmap_terminate_packet));
+        sendmsg->data_len += sizeof(struct rdmap_terminate_payload);
+        memcpy(&payload->payload, orig->rdmap, sizeof(struct rdmap_packet));
+        break;
+    case 0x0000:
+    default:
+        new_rdmap->hdrct = 0;
+        payload          = NULL;
+        break;
+    }
+
+    if (payload) {
+        payload->ddp_seg_len = rte_cpu_to_be_16(orig->ddp_seg_length);
+    }
+
+    // Add the length of the lower-level headers
+    sendmsg->data_len += TRP_HDR_LEN + UDP_HDR_LEN + IP_HDR_LEN + RTE_ETHER_HDR_LEN;
+    sendmsg->pkt_len = sendmsg->data_len;
+    printf("Sending RDMAP terminate packet of size: %u\n", sendmsg->pkt_len);
+
+    size_t total_size =
+        (payload) ? sizeof(struct rdmap_terminate_packet) + sizeof(struct rdmap_terminate_payload)
+                  : sizeof(struct rdmap_terminate_packet);
+    (void)send_ddp_segment(ep, sendmsg, NULL, NULL, total_size);
+} /* do_rdmap_terminate */

@@ -87,14 +87,6 @@ static int dpdk_ep_bind(struct fid *fid, struct fid *bfid, uint64_t flags) {
             FI_WARN(&dpdk_prov, FI_LOG_EP_CTRL, "ofi_ep_bind_cq failed");
             return ret;
         }
-        if (flags & FI_RECV) {
-            ep->recv_cq = cq;
-        } else if (flags & FI_SEND) {
-            ep->send_cq = cq;
-        } else {
-            FI_WARN(&dpdk_prov, FI_LOG_EP_CTRL, "invalid flags for CQ binding");
-            return -FI_EINVAL;
-        }
         // TODO: Not ideal... see cq readfrom
         cq->ep = ep;
         break;
@@ -151,7 +143,7 @@ static int dpdk_ep_close(struct fid *fid) {
     // ofi_close_socket(ep->bsock.sock);
 
     // ofi_endpoint_close(&ep->util_ep);
-    free(ep);
+    // free(ep);
     return 0;
 }
 
@@ -208,6 +200,15 @@ static int dpdk_ep_connect(struct fid_ep *ep_fid, const void *addr, const void *
 }
 
 static int dpdk_ep_accept(struct fid_ep *ep, const void *param, size_t paramlen) {
+
+    // TODO: This is a placeholder to have the EP work
+    // This is for Weijia to provide the actual implementation
+    struct dpdk_ep *dpdk_ep = container_of(ep, struct dpdk_ep, util_ep.ep_fid);
+    eth_parse("ff:ff:ff:ff:ff:ff", &dpdk_ep->remote_eth_addr);
+    ip_parse("10.0.0.211", &dpdk_ep->remote_ipv4_addr);
+    dpdk_ep->remote_udp_port = 2510;
+
+    atomic_store(&dpdk_ep->conn_state, ep_conn_state_connected);
 
     printf("[dpdk_ep_accept] UNIMPLEMENTED\n");
     return 0;
@@ -282,7 +283,7 @@ int dpdk_endpoint(struct fid_domain *domain, struct fi_info *info, struct fid_ep
     }
 
     // TODO: Cleanup and memory free in case of failure
-    RTE_LOG(DEBUG, USER1, "Initializing the QP TXQ to contain %u structs of size %u\n",
+    RTE_LOG(DEBUG, USER1, "Initializing the QP TXQ to contain %u structs of size %lu\n",
             dpdk_default_tx_size, sizeof(*ep->txq));
     ep->txq     = calloc(dpdk_default_tx_size, sizeof(*ep->txq));
     ep->txq_end = ep->txq;
@@ -332,7 +333,7 @@ int dpdk_endpoint(struct fid_domain *domain, struct fi_info *info, struct fid_ep
     // We keep the original idea to reserve a private size to store local TX info
     // represented by the pending_datagram_info struct
     // TODO: Maybe add some space after the header to store "small" data that can be copied?
-    size_t mbuf_size    = RTE_ETHER_HDR_LEN + INNER_HDR_LEN + RTE_ETHER_CRC_LEN;
+    size_t mbuf_size = RTE_ETHER_HDR_LEN + INNER_HDR_LEN + RTE_ETHER_CRC_LEN + HDR_MBUF_EXTRA_SPACE;
     size_t cache_size   = 64;
     size_t private_size = PENDING_DATAGRAM_INFO_SIZE;
     char   tx_hdr_mempool_name[20];
@@ -349,7 +350,7 @@ int dpdk_endpoint(struct fid_domain *domain, struct fi_info *info, struct fid_ep
     // and will be put in chain with the headers
     mbuf_size    = 0; // Will reference external memory!
     cache_size   = 64;
-    private_size = 0;
+    private_size = sizeof(struct rte_mbuf_ext_shared_info); // Keeps info about ext memory
     char tx_ddp_mempool_name[20];
     sprintf(tx_ddp_mempool_name, "ddp_pool_%u", ep->udp_port);
     ep->tx_ddp_mempool = rte_pktmbuf_pool_create(tx_ddp_mempool_name, pool_size, cache_size,

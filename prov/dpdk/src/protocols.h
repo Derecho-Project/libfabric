@@ -14,6 +14,7 @@ struct packet_context {
     struct ee_state     *src_ep;
     size_t               ddp_seg_length;
     struct rdmap_packet *rdmap;
+    struct rte_mbuf     *mbuf_head;
     uint32_t             psn;
 };
 
@@ -26,6 +27,9 @@ struct packet_context {
 /* All the headers that are included in the MTU size */
 #define MTU           1500
 #define INNER_HDR_LEN (IP_HDR_LEN + UDP_HDR_LEN + TRP_HDR_LEN + RDMAP_HDR_LEN)
+#define HDR_MBUF_EXTRA_SPACE                                                                       \
+    (sizeof(struct rdmap_terminate_packet) + sizeof(struct rdmap_terminate_payload) -              \
+     sizeof(struct rdmap_untagged_packet))
 
 /* Offsets of headers in the hdr mbufs */
 #define ETHERNET_HDR_OFFSET 0
@@ -75,6 +79,8 @@ struct rte_ipv4_hdr *prepend_ipv4_header(struct rte_mbuf *sendmsg, int next_prot
 struct rte_mbuf *reassemble(struct rte_mbuf *m, struct lcore_queue_conf *qconf, uint16_t vlan_id,
                             uint64_t tms);
 
+int setup_queue_tbl(struct rx_queue *rxq, uint32_t lcore, uint32_t queue, uint16_t port_mtu);
+
 /* UDP */
 
 // UDP max payload size
@@ -93,7 +99,7 @@ struct rte_udp_hdr *prepend_udp_header(struct rte_mbuf *sendmsg, unsigned int sr
                                        unsigned int dst_port, uint16_t ddp_length);
 
 /* TRP */
-#define RETRANSMIT_MAX 5
+#define RETRANSMIT_MAX 2
 
 enum {
     trp_req = 0x1000,
@@ -256,7 +262,6 @@ static_assert(sizeof(struct rdmap_untagged_packet) == 22,
               "unexpected sizeof(rdmap_untagged_packet)");
 
 #define RDMAP_TAGGED_ALLOC_SIZE(len) (sizeof(struct rdmap_tagged_packet) + (len))
-
 struct rdmap_readreq_packet {
     struct rdmap_untagged_packet untagged;
     uint64_t                     sink_offset;

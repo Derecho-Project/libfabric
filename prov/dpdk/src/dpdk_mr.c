@@ -5,6 +5,11 @@
  * 1) Page aligned, to a page size that in the future will be configurable, and currently is the
  * default system page size (sysconf(_SC_PAGESIZE))
  * 2) The length of the buffer to register must be a multiple of that page size
+ *
+ * TODO: [Lorenzo] Currently, there seems to be an issue with memory registration when using a
+ * non-Mellanox driver. The rte_dev_dma_map succeeds, but when I send chunks of data >4096 (the
+ * default page size) the driver actually sends garbage on the network, which means the memory is
+ * not actually registered. We need to FIX that.
  */
 
 // ===== HELPER FUNCTIONS =====
@@ -52,6 +57,8 @@ static int dpdk_mr_reg(struct fid *fid, const void *buf, size_t len, uint64_t ac
     iovas               = malloc(sizeof(*iovas) * n_pages);
 
     // a-1) Pin pages
+    // TODO: With the INTEL driver, this seems to be conflicting with the rte_dev_dma_map() call
+    // below. We need to understand if the mlock is necessary and if so how to solve that.
     mlock(data_buffer_orig, data_buffer_len);
 
     // a-2) Populate IOVA addresses

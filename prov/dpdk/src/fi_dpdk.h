@@ -191,6 +191,9 @@ struct dpdk_xfer_entry {
     uint64_t              atomic_compare;
     uint8_t               atomic_opcode;
 
+    // For send
+    uint32_t local_stag; /* only used for READs */
+
     // For receive
     bool   complete;
     size_t recv_size;
@@ -322,9 +325,6 @@ struct dpdk_ep {
     // the burst should be flushed at that point
     struct rte_mbuf **txq_end;
     struct rte_mbuf **txq;
-    // Receive and Transmit completion queues
-    struct dpdk_cq *send_cq;
-    struct dpdk_cq *recv_cq;
 
     // Connection information
     struct ee_state remote_ep;

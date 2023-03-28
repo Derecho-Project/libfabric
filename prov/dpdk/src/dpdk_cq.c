@@ -166,7 +166,8 @@ int dpdk_cq_open(struct fid_domain *domain, struct fi_cq_attr *attr, struct fid_
         ret = rte_errno;
         goto cleanup;
     }
-    ret = rte_ring_init(cq->cqe_ring, name, cq->capacity + 1, RING_F_SP_ENQ);
+    // Ring is single consumer (the user thread?) and single producer (the loop thread?)
+    ret = rte_ring_init(cq->cqe_ring, name, cq->capacity + 1, RING_F_SC_DEQ | RING_F_SP_ENQ);
     if (ret) {
         ret = -ret;
         rte_free(cq->cqe_ring);

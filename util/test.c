@@ -53,7 +53,8 @@ struct lf_ctxt {
     struct fid_domain *domain;                     /** domain handle */
     struct fid_pep    *pep;                        /** passive endpoint for receiving connection */
     struct fid_eq     *peq;                        /** event queue for connection management */
-    struct fid_cq     *cq;                         /** completion queue for all rma operations */
+    struct fid_cq     *rx_cq;                      /** completion queue for all rx rma operations */
+    struct fid_cq     *tx_cq;                      /** completion queue for all tx rma operations */
     size_t             pep_addr_len;               /** length of local pep address */
     char               pep_addr[MAX_LF_ADDR_SIZE]; /** local pep address */
     struct fi_eq_attr  eq_attr;                    /** event queue attributes */
@@ -188,29 +189,47 @@ int init_active_ep(struct fi_info *fi, struct fid_ep **ep, struct fid_eq **eq) {
         return ret;
     }
 
-    /* Create a completion queue */
+    /* Create a RX completion queue */
     g_ctxt.cq_attr.size = 2097152;
-    ret                 = fi_cq_open(g_ctxt.domain, &(g_ctxt.cq_attr), &(g_ctxt.cq), NULL);
+    ret                 = fi_cq_open(g_ctxt.domain, &(g_ctxt.cq_attr), &(g_ctxt.rx_cq), NULL);
     if (ret) {
-        printf("fi_cq_open() failed: %s\n", fi_strerror(-ret));
+        printf("fi_cq_open(1) failed: %s\n", fi_strerror(-ret));
         return ret;
     }
-    if (!g_ctxt.cq) {
+    if (!g_ctxt.rx_cq) {
         printf("Pointer to completion queue is null\n");
         return -1;
     }
 
-    /* Bind endpoint to event queue and completion queue */
+    /* Create a TX completion queue */
+    ret = fi_cq_open(g_ctxt.domain, &(g_ctxt.cq_attr), &(g_ctxt.tx_cq), NULL);
+    if (ret) {
+        printf("fi_cq_open(2) failed: %s\n", fi_strerror(-ret));
+        return ret;
+    }
+    if (!g_ctxt.tx_cq) {
+        printf("Pointer to completion queue is null\n");
+        return -1;
+    }
+
+    /* Bind endpoint to event queue and completion queues */
     ret = fi_ep_bind(*ep, &(*eq)->fid, 0);
     if (ret) {
         printf("fi_ep_bind() failed to bind event queue: %s\n", fi_strerror(-ret));
         return ret;
     }
 
-    const uint64_t ep_flags = FI_RECV | FI_TRANSMIT | FI_SELECTIVE_COMPLETION;
-    ret                     = fi_ep_bind(*ep, &(g_ctxt.cq)->fid, ep_flags);
+    uint64_t ep_flags = FI_RECV;
+    ret               = fi_ep_bind(*ep, &(g_ctxt.rx_cq)->fid, ep_flags);
     if (ret) {
-        printf("fi_ep_bind() failed to bind completion queue: %s\n", fi_strerror(-ret));
+        printf("fi_ep_bind() failed to bind RX completion queue: %s\n", fi_strerror(-ret));
+        return ret;
+    }
+
+    ep_flags = FI_TRANSMIT;
+    ret      = fi_ep_bind(*ep, &(g_ctxt.tx_cq)->fid, ep_flags);
+    if (ret) {
+        printf("fi_ep_bind() failed to bind TX completion queue: %s\n", fi_strerror(-ret));
         return ret;
     }
 
@@ -363,14 +382,23 @@ void do_server() {
         struct fi_cq_msg_entry comp;
         fi_addr_t              src_addr;
         do {
-            ret = fi_cq_readfrom(g_ctxt.cq, &comp, 1, &src_addr);
+            ret = fi_cq_readfrom(g_ctxt.rx_cq, &comp, 1, &src_addr);
             if (ret < 0 && ret != -FI_EAGAIN) {
                 printf("CQ read failed: %s", fi_strerror(-ret));
                 break;
             }
         } while (ret == -FI_EAGAIN);
 
-        printf("Received a new message [size = %u]: %s\n", comp.len, (char *)g_mr.buffer);
+        printf("Received a new message [size = %lu]: ", comp.len);
+        for (int i = 0; i < comp.len; i++) {
+            char c = ((char *)g_mr.buffer)[i];
+            if (c == 'a') {
+                putc(c, stdout);
+            } else {
+                putc('.', stdout);
+            }
+        }
+        printf("\n");
     }
 }
 
@@ -427,7 +455,7 @@ void do_client() {
     while (fgets((char *restrict)&input, 8, stdin) != NULL) {
         msg_iov.iov_len = atol(input);
         if (msg_iov.iov_len > g_mr.size) {
-            printf("Size too big. Max is %d, inserted size is %ld\n", g_mr.size, msg_iov.iov_len);
+            printf("Size too big. Max is %ld, inserted size is %ld\n", g_mr.size, msg_iov.iov_len);
             printf("Insert a message size: ");
             continue;
         }
@@ -443,8 +471,23 @@ void do_client() {
             continue;
         }
 
-        // TODO: Get send completion. For the moment, just sleep
-        usleep(1000);
+        // Get send completion.
+        // TODO-1: Check what exactly we are receiving!
+        // TODO-2: Are we sure we should wait until the ACK? This is the way uRDMA implemented this,
+        // but not sure this is the same semantic of libfabric. Check the Libfabric spec.
+        struct fi_cq_msg_entry comp;
+        fi_addr_t              src_addr;
+        do {
+            ret = fi_cq_readfrom(g_ctxt.tx_cq, &comp, 1, &src_addr);
+            if (ret < 0 && ret != -FI_EAGAIN) {
+                printf("CQ read failed: %s", fi_strerror(-ret));
+                break;
+            }
+        } while (ret == -FI_EAGAIN);
+        // TODO: Actually, we should check the completion state to know if the operation
+        // was in fact successful or there was some error. Probably there is a LF-specific
+        // way to do that
+        printf("Message successfully sent!\n");
 
         printf("Insert a message size: ");
     }

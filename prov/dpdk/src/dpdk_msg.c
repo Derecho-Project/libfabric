@@ -100,7 +100,7 @@ static ssize_t dpdk_recvmsg(struct fid_ep *ep_fid, const struct fi_msg *msg, uin
     rx_entry->input_size = 0;
     rx_entry->complete   = false;
 
-    FI_DBG(&dpdk_prov, FI_LOG_EP_CTRL, "Enqueue a read request", ep->udp_port);
+    FI_DBG(&dpdk_prov, FI_LOG_EP_CTRL, "Enqueue a read request for EP %u", ep->udp_port);
     ret = rte_ring_enqueue(ep->rq.ring, rx_entry);
     if (ret < 0) {
         ret = -ret;
@@ -157,7 +157,10 @@ static ssize_t dpdk_sendmsg(struct fid_ep *ep_fid, const struct fi_msg *msg, uin
         return ret;
     }
 
-    // TODO: support libfabric flags
+    // TODO: I did not check the meaning of the flags wrt the Libfabric specification
+    // We should really do a check here to make sure which flags must be supported. So far I only
+    // care about FI_COMPLETION, but not in a careful way.
+    tx_entry->flags = flags;
 
     // Fill the TX entry with the data from the msg
     tx_entry->opcode  = xfer_send;
