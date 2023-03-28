@@ -380,7 +380,7 @@ static int dpdk_pep_bind(struct fid* fid, struct fid *bfid, uint64_t flags) {
         struct util_eq* eq_l2 = container_of(bfid,struct util_eq,eq_fid.fid);
         ret = ofi_pep_bind_eq(&pep_l3->util_pep, eq_l2, flags);
         if (ret == FI_SUCCESS) {
-            struct dpdk_fabric* fabric_l3 = container_of(pep_l3->util_pep.fabric,struct dpdk_fabric,util_eq);
+            struct dpdk_fabric* fabric_l3 = container_of(pep_l3->util_pep.fabric,struct dpdk_fabric,util_fabric);
             fabric_l3->util_eq = eq_l2;
         }
         break;
