@@ -544,6 +544,12 @@ int dpdk_cm_send(struct dpdk_domain* domain) {
     struct rte_mbuf* cm_mbuf;
 
     while (rte_ring_sc_dequeue(domain->cm_ring,(void**)&cm_mbuf) == 0) {
+        struct dpdk_cm_msg_hdr* cm_hdr = rte_pktmbuf_mtod_offset(cm_mbuf,struct dpdk_cm_msg_hdr*,
+                                                              sizeof(struct rte_ether_hdr) + 
+                                                              sizeof(struct rte_ipv4_hdr) +
+                                                              sizeof(struct rte_udp_hdr));
+        DPDK_DBG(FI_LOG_EP_CTRL,"Sending dpdk cm message type(%u), session_id(%u).\n", 
+                 cm_hdr->type,cm_hdr->session_id);
         while(rte_eth_tx_burst(domain->port_id,domain->queue_id,&cm_mbuf,1) < 1);
         rte_pktmbuf_free(cm_mbuf);
     }
