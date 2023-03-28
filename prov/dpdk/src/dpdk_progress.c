@@ -576,6 +576,7 @@ static void process_rx_packet(struct dpdk_domain *domain, struct rte_mbuf *mbuf)
         // Probably need to insert in some ring
         dpdk_cm_recv(domain,mbuf);
         rte_pktmbuf_free(mbuf);
+        return;
     } else if (rx_port > base_port && rx_port < base_port + MAX_ENDPOINTS_PER_APP) {
         // Find the EP for this port
         dst_ep = domain->udp_port_to_ep[rx_port - (base_port + 1)];
@@ -583,11 +584,13 @@ static void process_rx_packet(struct dpdk_domain *domain, struct rte_mbuf *mbuf)
             RTE_LOG(NOTICE, USER1, "<dev=%s> Drop packet with UDP dst port %" PRIu16 ";\n",
                     domain->util_domain.name, rx_port);
             rte_pktmbuf_free(mbuf);
+            return;
         }
     } else {
         RTE_LOG(NOTICE, USER1, "<dev=%s> Drop packet with UDP dst port %" PRIu16 ";\n",
                 domain->util_domain.name, rx_port);
         rte_pktmbuf_free(mbuf);
+        return;
     }
 
     // If we got here, we have a valid packet for a valid EP
