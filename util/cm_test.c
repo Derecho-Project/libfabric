@@ -489,13 +489,14 @@ void do_client(const char* server_ip_and_port) {
 
     ssize_t n_read = fi_eq_sread(eq, &event, &entry, sizeof(entry), -1, 0);
     if (n_read != sizeof(entry)) {
-        printf("failed to connect remote. n_read=%ld.\n", n_read);
-        exit(2);
+        fprintf(stderr,"failed to connect remote. n_read=%ld.\n", n_read);
+        return;
     }
     if (event != FI_CONNECTED || entry.fid != &ep->fid) {
         fprintf(stderr, "fi_eq_sread() got unexpected even: %d, quitting...\n", event);
         return;
     }
+    printf("connected.");
 
     // Now the connection is open, I can send
     struct iovec  msg_iov;
