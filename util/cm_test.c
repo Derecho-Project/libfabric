@@ -400,12 +400,17 @@ void do_server() {
     n_read = fi_eq_sread(eq, &event, &entry, sizeof(entry), -1, 0);
     if (n_read != sizeof(entry)) {
         printf("failed to connect remote. n_read=%ld.\n", n_read);
-        exit(2);
+        return;
     }
-    if (event != FI_CONNECTED || entry.fid != &(ep->fid)) {
+    if (event != FI_CONNECTED) {
         fi_freeinfo(entry.info);
         printf("Unexpected CM event: %d.\n", event);
-        exit(2);
+        return;
+    }
+    if (entry.fid != &(ep->fid)) {
+        fi_freeinfo(entry.info);
+        printf("Event fid@%p does not match accepting endpoint fid@%p.\n", entry.fid, &ep->fid);
+        return;
     }
     fi_freeinfo(entry.info);
 

@@ -294,11 +294,7 @@ static int dpdk_ep_accept(struct fid_ep *ep, const void *param, size_t paramlen)
 
     // 4 - generate a FI_CONNECTED event locally, and
     struct dpdk_cm_entry    cm_entry;
-    /* [Weijia]: Generally, cm_entry.fid should point to the passive endpoint. But in DPDK design,
-     * we didn't track the pep point in the domain or fabric (the passive endpoint and domain is
-     * 1-1 though). Therefore we leave it a null pointer.
-     */
-    cm_entry.fid    = NULL;
+    cm_entry.fid    = &ep->fid;
     cm_entry.info   = NULL;
     memcpy(&cm_entry.data, param, paramlen);
     struct dpdk_eq* eq = container_of(dep->util_ep.eq,struct dpdk_eq,util_eq);
