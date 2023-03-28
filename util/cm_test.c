@@ -343,6 +343,8 @@ void do_server() {
         printf("fi_listen() failed: %s\n", fi_strerror(-ret));
         exit(2);
     }
+
+    /**
     // Get the local address
     ret = fi_getname(&(g_ctxt.pep->fid), g_ctxt.pep_addr, &(g_ctxt.pep_addr_len));
     if (ret) {
@@ -353,6 +355,7 @@ void do_server() {
         printf("local name is too big to fit in local buffer\n");
         exit(2);
     }
+    **/
 
     // Synchronously read from the passive event queue, init the server ep
     struct fi_eq_cm_entry entry;
@@ -361,16 +364,21 @@ void do_server() {
     struct fid_ep        *ep;
     struct fid_eq        *eq;
 
-    // TODO: We should get an async event from the eq, but we don't have one yet!
-    // n_read = fi_eq_sread(g_ctxt.peq, &event, &entry, sizeof(entry), -1, 0);
-    // if (n_read != sizeof(entry)) {
-    //     printf("Failed to get connection from remote. n_read=%ld\n", n_read);
-    //     exit(2);
-    // }
+    n_read = fi_eq_sread(g_ctxt.peq, &event, &entry, sizeof(entry), -1, 0);
+    if (n_read != sizeof(entry)) {
+        fprintf(stderr,"Failed to get connection from remote. n_read=%ld\n", n_read);
+        return;
+    }
+    if (event != FI_CONNREQ) {
+        fprintf(stderr,"fi_eq_sread got unexpected event: %u, quitting...\n", event);
+        return;
+    }
 
+    /*
     // Instead, we simulate the async event by hand-crafting the entry
     entry.fid  = &(g_ctxt.pep->fid);
     entry.info = fi_dupinfo(g_ctxt.fi);
+    */
 
     // Create active ep and associate it to serve the incoming connection
     if (init_active_ep(entry.info, &ep, &eq)) {
@@ -439,7 +447,7 @@ void do_server() {
             }
         } while (ret == -FI_EAGAIN);
 
-        printf("Received a new message [size = %u]: %s\n", comp.len, (char *)g_mr.buffer);
+        printf("Received a new message [size = %lu]: %s\n", comp.len, (char *)g_mr.buffer);
     }
 }
 
@@ -451,8 +459,8 @@ void do_client(const char* server_ip_and_port) {
     struct fid_eq *eq;
 
     if (init_active_ep(g_ctxt.fi, &ep, &eq)) {
-        printf("failed to initialize client endpoint.\n");
-        exit(2);
+        fprintf(stderr,"failed to initialize client endpoint.\n");
+        return;
     }
 
     // Connect to the server
@@ -475,17 +483,15 @@ void do_client(const char* server_ip_and_port) {
     }
     freeaddrinfo(svr_ai);
 
-    // TODO: We should get an async event from the eq, but we don't have one yet!
-    // Get connection acceptance from the server
-    // ssize_t n_read = fi_eq_sread(eq, &event, &entry, sizeof(entry), -1, 0);
-    // if (n_read != sizeof(entry)) {
-    //     printf("failed to connect remote. n_read=%ld.\n", n_read);
-    //     exit(2);
-    // }
-    // if (event != FI_CONNECTED || entry.fid != &ep->fid) {
-    //     printf("RDMC Unexpected CM event: %d.\n", event);
-    //     exit(2);
-    // }
+    ssize_t n_read = fi_eq_sread(eq, &event, &entry, sizeof(entry), -1, 0);
+    if (n_read != sizeof(entry)) {
+        printf("failed to connect remote. n_read=%ld.\n", n_read);
+        exit(2);
+    }
+    if (event != FI_CONNECTED || entry.fid != &ep->fid) {
+        fprintf(stderr, "fi_eq_sread() got unexpected even: %d, quitting...\n", event);
+        return;
+    }
 
     // Now the connection is open, I can send
     struct iovec  msg_iov;
@@ -506,7 +512,7 @@ void do_client(const char* server_ip_and_port) {
     while (fgets((char *restrict)&input, 8, stdin) != NULL) {
         msg_iov.iov_len = atol(input);
         if (msg_iov.iov_len > g_mr.size) {
-            printf("Size too big. Max is %d, inserted size is %ld\n", g_mr.size, msg_iov.iov_len);
+            printf("Size too big. Max is %lu, inserted size is %ld\n", g_mr.size, msg_iov.iov_len);
             printf("Insert a message size: ");
             continue;
         }
