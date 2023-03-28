@@ -572,8 +572,6 @@ struct dpdk_cq {
     atomic_bool      notify_flag;
     // Vector of dpdk_wc
     struct fi_dpdk_wc *storage;
-    // Associated EP // TODO: Not ideal...
-    struct dpdk_ep *ep;
 };
 
 int dpdk_cq_open(struct fid_domain *domain, struct fi_cq_attr *attr, struct fid_cq **cq_fid,

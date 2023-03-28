@@ -87,8 +87,6 @@ static int dpdk_ep_bind(struct fid *fid, struct fid *bfid, uint64_t flags) {
             FI_WARN(&dpdk_prov, FI_LOG_EP_CTRL, "ofi_ep_bind_cq failed");
             return ret;
         }
-        // TODO: Not ideal... see cq readfrom
-        cq->ep = ep;
         break;
 
         // TODO: for the moment, just associate the CQ.

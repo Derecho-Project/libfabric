@@ -20,20 +20,17 @@ static ssize_t dpdk_cq_readfrom(struct fid_cq *cq_fid, void *buf, size_t count,
     int ret;
 
     // Get a dpdk_ep from the cq
-    // TODO: There must be a better (i.e., more "libfabric-oriented") way to do this...
     struct dpdk_cq *cq = container_of(cq_fid, struct dpdk_cq, util_cq.cq_fid);
-    struct dpdk_ep *ep = cq->ep;
+    // struct dpdk_ep *ep = cq->ep;
 
     // Array of WQEs that I read from the CQE.
-    // TODO: What should I do with those?
     // I am expected to return only those successfult?
     // See the libfabric spec for more details.
     struct fi_dpdk_wc *cqe[dpdk_default_rx_burst_size];
 
-    // TODO: Why the lock on the RQ???
-    rte_spinlock_lock(&ep->rq.lock);
+    // rte_spinlock_lock(&ep->rq.lock);
     ret = rte_ring_dequeue_burst(cq->cqe_ring, (void **)cqe, count, NULL);
-    rte_spinlock_unlock(&ep->rq.lock);
+    // rte_spinlock_unlock(&ep->rq.lock);
     if (ret == 0) {
         return -EAGAIN;
     }
