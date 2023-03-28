@@ -243,6 +243,8 @@ static int dpdk_ep_connect(struct fid_ep *ep_fid, const void *addr, const void *
     }
     DPDK_DBG(FI_LOG_EP_CTRL, "connreq msg added to cm ring.\n");
 
+    return FI_SUCCESS;
+
 error:
     if (connreq_mbuf) {
         rte_pktmbuf_free(connreq_mbuf);
