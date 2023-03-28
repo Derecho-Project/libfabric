@@ -402,7 +402,21 @@ enum {
 // ======= Fabric, Domain, Endpoint and Threads  =======
 // Represents a DPDK fabric
 struct dpdk_fabric {
-    struct util_fabric util_fabric;
+    struct util_fabric  util_fabric;
+    /*** [Weijia]
+     TODO: This is a suboptimal design we should fix later.
+
+     Currently, the passive endpoint rely on domain's progress thread to handle
+     the connection manager messages. Therefore, the domain's progress thread
+     needs this pointer to access the event queue the passive endpoint binds to
+     . This ties up a passive endpoint to a domain, breaking the libfabric
+     object model.
+
+     Instead, the passive endpoints should have their own hardware queues and a
+     dedicated connection management thread. This also separate the control and
+     data planes.
+     ***/
+    struct util_eq*     util_eq;
 };
  
 // ======= Passive Endpoint and Connection Management (CM)  =======

@@ -374,16 +374,23 @@ err1:
 static int dpdk_pep_bind(struct fid* fid, struct fid *bfid, uint64_t flags) {
     struct dpdk_pep* pep_l3 = container_of(fid, struct dpdk_pep, util_pep.pep_fid.fid);
 
+    int ret = FI_SUCCESS;
     switch(bfid->fclass) {
     case FI_CLASS_EQ:
-        return ofi_pep_bind_eq(&pep_l3->util_pep,
-                               container_of(bfid, struct util_eq, eq_fid.fid), flags);
+        struct util_eq* eq_l2 = container_of(bfid,struct util_eq,eq_fid.fid);
+        ret = ofi_pep_bind_eq(&pep_l3->util_pep, eq_l2, flags);
+        if (ret == FI_SUCCESS) {
+            struct dpdk_fabric* fabric_l3 = container_of(pep_l3->util_pep.fabric,struct dpdk_fabric,util_eq);
+            fabric_l3->util_eq = eq_l2;
+        }
+        break;
     default:
         DPDK_WARN(FI_LOG_EP_CTRL,
             "%s: invalid FID class %lu. Expecting FI_CLASS_EQ(%d) only.\n",
             __func__, bfid->fclass, FI_CLASS_EQ);
-        return -FI_EINVAL;
+        ret = -FI_EINVAL;
     }
+    return ret;
 }
 
 // === PEP functions ===

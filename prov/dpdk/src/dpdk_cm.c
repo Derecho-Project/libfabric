@@ -556,7 +556,9 @@ static int process_cm_connreq(struct dpdk_domain*       domain,
                               struct dpdk_cm_msg_hdr*   cm_hdr,
                               void*                     cm_data) {
     int ret = FI_SUCCESS;
-    struct dpdk_eq* eq = container_of(domain->util_domain.eq, struct dpdk_eq, util_eq);
+    // TODO:
+    struct dpdk_fabric* fabric = container_of(domain->util_domain.fabric, struct dpdk_fabric, util_fabric);
+    struct dpdk_eq*     eq = container_of(fabric->util_eq, struct dpdk_eq, util_eq);
 
     // 1 - validate request
     if (rte_be_to_cpu_32(cm_hdr->type) != DPDK_CM_MSG_CONNECTION_REQUEST) {
