@@ -7,6 +7,7 @@
 #include <sys/socket.h>
 #include <netdb.h>
 #include <arpa/inet.h>
+#include <time.h>
 
 #include <rdma/fabric.h>
 #include <rdma/fi_cm.h>
@@ -413,6 +414,9 @@ void do_server() {
         return;
     }
     fi_freeinfo(entry.info);
+    printf("connected...waiting for 1 min");
+
+    sleep(60);
 
     // Server loop
     struct iovec  msg_iov;
@@ -496,7 +500,8 @@ void do_client(const char* server_ip_and_port) {
         fprintf(stderr, "fi_eq_sread() got unexpected even: %d, quitting...\n", event);
         return;
     }
-    printf("connected.");
+    printf("connected... sleep for 1min.");
+    sleep(60);
 
     // Now the connection is open, I can send
     struct iovec  msg_iov;
