@@ -235,11 +235,13 @@ static int dpdk_ep_connect(struct fid_ep *ep_fid, const void *addr, const void *
     connreq->typed_header.connection_request.paramlen                = rte_cpu_to_be_16(paramlen);
     memcpy(connreq->payload, param, paramlen);
     //// fill it to the ring
+    DPDK_DBG(FI_LOG_EP_CTRL, "adding connreq to cm ring.\n");
     if(rte_ring_mp_enqueue(domain->cm_ring,connreq_mbuf)) {
         DPDK_WARN(FI_LOG_EP_CTRL, "CM ring is full. Please try again.\n");
         ret = -FI_EAGAIN;
         goto error;
     }
+    DPDK_DBG(FI_LOG_EP_CTRL, "connreq msg added to cm ring.\n");
 
 error:
     if (connreq_mbuf) {
@@ -325,11 +327,13 @@ static int dpdk_ep_accept(struct fid_ep *ep, const void *param, size_t paramlen)
                             = paramlen;
     memcpy(connack->payload,param,paramlen);
     //// fill it to the ring
+    DPDK_DBG(FI_LOG_EP_CTRL, "adding connack to cm ring.\n");
     if(rte_ring_mp_enqueue(domain->cm_ring,connack_mbuf)) {
         DPDK_WARN(FI_LOG_EP_CTRL, "CM ring is full. Please try again.\n");
         ret = -FI_EAGAIN;
         goto error_group_1;
     }
+    DPDK_DBG(FI_LOG_EP_CTRL, "connack msg added to cm ring.\n");
 
     return FI_SUCCESS;
     // error handling
@@ -372,12 +376,13 @@ static int dpdk_pep_reject(struct fid_pep* pep, fid_t handle, const void* param,
                              = conn_handle->remote_data_port;
     memcpy(connrej->payload,param,paramlen);
     //// fill it to the ring
+    DPDK_DBG(FI_LOG_EP_CTRL, "adding connrej to cm ring.\n");
     if(rte_ring_mp_enqueue(conn_handle->domain->cm_ring,connrej_mbuf)) {
         DPDK_WARN(FI_LOG_EP_CTRL, "CM ring is full. Please try again.\n");
         ret = -FI_EAGAIN;
         goto error_group_1;
     }
-
+    DPDK_DBG(FI_LOG_EP_CTRL, "connrej msg added to cm ring.\n");
     return FI_SUCCESS;
 error_group_1:
     return ret;
@@ -406,11 +411,13 @@ static int dpdk_ep_shutdown(struct fid_ep* ep, uint64_t flags) {
             disconnreq->typed_header.disconnection_request.remote_data_udp_port
                                     = rte_cpu_to_be_16(dep->remote_udp_port);
             //// fill it to the ring
+            DPDK_DBG(FI_LOG_EP_CTRL, "adding disconnreq to cm ring.\n");
             if(rte_ring_mp_enqueue(domain->cm_ring,disconnreq_mbuf)) {
                 DPDK_WARN(FI_LOG_EP_CTRL, "CM ring is full. Please try again.\n");
                 ret = -FI_EAGAIN;
                 goto error_group_2;
             }
+            DPDK_DBG(FI_LOG_EP_CTRL, "disconnreq msg added to cm ring.\n");
             //// then, change to shutdown state
             atomic_store(&dep->conn_state,ep_conn_state_shutdown);
         }
@@ -629,12 +636,12 @@ err1:
 /* processing connection request acknowledgement or rejection 
  * on the connecting client side.
  */
-static int process_cm_connreq_ack_or_rej(struct dpdk_domain*       domain,
-                                         struct rte_ether_hdr*     eth_hdr,
-                                         struct rte_ipv4_hdr*      ip_hdr,
-                                         struct rte_udp_hdr*       udp_hdr,
-                                         struct dpdk_cm_msg_hdr*   cm_hdr,
-                                         void*                     cm_data) {
+static int process_cm_conn_ack_or_rej(struct dpdk_domain*       domain,
+                                      struct rte_ether_hdr*     eth_hdr,
+                                      struct rte_ipv4_hdr*      ip_hdr,
+                                      struct rte_udp_hdr*       udp_hdr,
+                                      struct dpdk_cm_msg_hdr*   cm_hdr,
+                                      void*                     cm_data) {
     int             ret = FI_SUCCESS;
     struct dpdk_ep* ep = NULL;
     // 0 - validate parameters
@@ -800,17 +807,23 @@ int dpdk_cm_recv(struct dpdk_domain* domain, struct rte_mbuf* cm_mbuf) {
 
     switch (cm_hdr->type) {
     case DPDK_CM_MSG_CONNECTION_REQUEST:
+        DPDK_DBG(FI_LOG_EP_CTRL,"received CONNREQ message, calling process_cm_connreq().\n");
         ret = process_cm_connreq(domain,eth_hdr,ip_hdr,udp_hdr,cm_hdr,cm_data);
+        DPDK_DBG(FI_LOG_EP_CTRL,"returned from process_cm_connreq(). retcode=%d\n",ret);
         break;
     case DPDK_CM_MSG_CONNECTION_ACKNOWLEDGEMENT:
     case DPDK_CM_MSG_CONNECTION_REJECTION:
-        ret = process_cm_connreq_ack_or_rej(domain,eth_hdr,ip_hdr,udp_hdr,cm_hdr,cm_data);
+        DPDK_DBG(FI_LOG_EP_CTRL,"received CONNACK/CONNREJ message, calling process_cm_conn_ack_or_rej().\n");
+        ret = process_cm_conn_ack_or_rej(domain,eth_hdr,ip_hdr,udp_hdr,cm_hdr,cm_data);
+        DPDK_DBG(FI_LOG_EP_CTRL,"returned from process_cm_conn_ack_or_rej(). retcode=%d\n",ret);
         break;
     case DPDK_CM_MSG_DISCONNECTION_REQUEST:
+        DPDK_DBG(FI_LOG_EP_CTRL,"received DISCONNREQ message, calling process_cm_disconnect().\n");
         ret = process_cm_disconnect(domain,eth_hdr,ip_hdr,udp_hdr,cm_hdr,cm_data);
+        DPDK_DBG(FI_LOG_EP_CTRL,"returned from process_cm_disconnect(). retcode=%d\n",ret);
         break;
     default:
-        DPDK_WARN(FI_LOG_EP_CTRL,"Skipping unknown type:%d.", cm_hdr->type);
+        DPDK_WARN(FI_LOG_EP_CTRL,"Skipping unknown type:%d.\n", cm_hdr->type);
         ret = FI_EINVAL;
     }
 
