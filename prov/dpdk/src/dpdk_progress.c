@@ -39,7 +39,7 @@ static void memcpy_mbuf_to_iov(struct iovec *restrict dst, size_t          dst_c
     }
 
     // 2. For each source chunk, copy it to the destination
-    cur_mbuf         = src;
+    cur_mbuf         = (struct ret_mbuf*)src;
     dst_bytes_copied = 0;
     for (int i = 0; i < src->nb_segs; i++) {
 
@@ -692,8 +692,7 @@ static void process_rx_packet(struct dpdk_domain *domain, struct rte_mbuf *mbuf)
     struct trp_hdr       *trp_hdr;
     uint16_t              trp_opcode;
 
-    uint32_t ip_addr   = domain->ipv4_addr;
-    uint16_t base_port = domain->udp_port;
+    uint16_t base_port = rte_be_to_cpu_16(domain->local_addr.sin_port);
 
     // TODO: We cannot discard packets absed on UDP checksum if we do not know how to compute
     // it... If some checksums are bad, we don't want to process the packet if (mbuf->ol_flags &
@@ -729,15 +728,15 @@ static void process_rx_packet(struct dpdk_domain *domain, struct rte_mbuf *mbuf)
         return;
     }
 
-    // TODO: DEBUG: We don't check the IP address for now...
-    // if (ipv4_hdr->dst_addr != rte_cpu_to_be_32(ip_addr)) {
-    //     RTE_LOG(DEBUG, USER1,
-    //             "<dev=%s> Drop packet with IPv4 dst addr %" PRIx32 "; expected %" PRIx32
-    //             "\n", domain->util_domain.name, rte_be_to_cpu_32(ipv4_hdr->dst_addr),
-    //             ip_addr);
-    //     rte_pktmbuf_free(mbuf);
-    //     return;
-    // }
+    // [Weijia]: IPv6 needs more care.
+    if (ipv4_hdr->dst_addr != domain->local_addr.sin_addr.s_addr) {
+        RTE_LOG(DEBUG, USER1,
+                "<dev=%s> Drop packet with IPv4 dst addr %" PRIx32 "; expected %" PRIx32 "\n",
+                domain->util_domain.name, rte_be_to_cpu_32(ipv4_hdr->dst_addr),
+                rte_be_to_cpu_32(domain->local_addr.sin_addr.s_addr));
+        rte_pktmbuf_free(mbuf);
+        return;
+    }
 
     // Check the UDP port. We can have three cases:
     // 1. The packet is for the base_port => This is a connection request
@@ -747,8 +746,11 @@ static void process_rx_packet(struct dpdk_domain *domain, struct rte_mbuf *mbuf)
     udp_hdr          = (struct rte_udp_hdr *)rte_pktmbuf_adj(mbuf, sizeof(*ipv4_hdr));
     uint16_t rx_port = rte_be_to_cpu_16(udp_hdr->dst_port);
     if (rx_port == base_port) {
-        // TODO: Handle connection request.
         // Probably need to insert in some ring
+        rte_pktmbuf_adj(mbuf, sizeof(*udp_hdr));
+        dpdk_cm_recv(domain,eth_hdr,ipv4_hdr,udp_hdr,mbuf);
+        rte_pktmbuf_free(mbuf);
+        return;
     } else if (rx_port > base_port && rx_port < base_port + MAX_ENDPOINTS_PER_APP) {
         // Find the EP for this port
         dst_ep = domain->udp_port_to_ep[rx_port - (base_port + 1)];
@@ -969,7 +971,7 @@ static void do_receive(struct dpdk_domain *domain) {
 
     // This causes segfault, but why?
     rte_ip_frag_free_death_row(&domain->lcore_queue_conf.death_row, PREFETCH_OFFSET);
-}
+} /* do_receive */
 
 /* Make forward progress on the queue pair. */
 static void progress_ep(struct dpdk_ep *ep) {
@@ -1064,6 +1066,13 @@ static void progress_ep(struct dpdk_ep *ep) {
 
 } /* progress_ep */
 
+
+
+/* handling connection manager outgoing packets. */
+void do_cm_send(struct dpdk_domain* domain) {
+    // TODO:
+} /* do_cm_send */
+
 // ================ Main Progress Functions =================
 struct progress_arg {
     struct dpdk_progress *progress;
@@ -1099,7 +1108,7 @@ int dpdk_start_progress(struct dpdk_progress *progress) {
 
     ret = rte_eal_remote_launch(dpdk_run_progress, &arg, progress->lcore_id);
     if (ret) {
-        FI_WARN(&dpdk_prov, FI_LOG_DOMAIN, "unable to start progress lcore thread\n");
+        DPDK_WARN(FI_LOG_DOMAIN, "unable to start progress lcore thread\n");
         ret = -ret;
     }
 
@@ -1118,7 +1127,10 @@ int dpdk_run_progress(void *arg) {
     struct dpdk_ep     *ep;
 
     while (likely(!atomic_load(&progress->stop_progress))) {
+        // outgoing control plane (connection manager)
+        dpdk_cm_send(domain);
 
+        // outgoing data plane
         ofi_genlock_lock(&domain->ep_mutex);
         slist_foreach(&domain->endpoint_list, cur, prev) {
             ep = container_of(cur, struct dpdk_ep, entry);
@@ -1142,7 +1154,8 @@ int dpdk_run_progress(void *arg) {
         }
         ofi_genlock_unlock(&domain->ep_mutex);
 
-        // Receive action
+        // handling both data and control incoming packets.
+        // TODO: we should separate the data and control plane with hardware queues.
         do_receive(domain);
     }
 

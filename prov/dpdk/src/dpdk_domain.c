@@ -11,7 +11,7 @@
 /* Many configuration parameters required to startup DPDK */
 static inline int port_init(struct rte_mempool *mempool, uint16_t port_id, uint16_t queue_id,
                             uint16_t mtu, uint64_t *dev_flags) {
-    int valid_port = rte_eth_dev_is_valid_port(0);
+    int valid_port = rte_eth_dev_is_valid_port(port_id);
     if (!valid_port)
         return -1;
 
@@ -93,6 +93,22 @@ static int dpdk_domain_close(fid_t fid) {
 
     domain = container_of(fid, struct dpdk_domain, util_domain.domain_fid.fid);
 
+    if (domain->rx_pool) {
+        rte_mempool_free(domain->rx_pool);
+    }
+
+    if (domain->cm_pool) {
+        rte_mempool_free(domain->cm_pool);
+    }
+
+    if (domain->cm_ring) {
+        rte_ring_free(domain->cm_ring);
+    }
+
+    if (domain->info) {
+        fi_freeinfo(domain->info);
+    }
+
     ret = ofi_domain_close(&domain->util_domain);
     if (ret)
         return ret;
@@ -133,15 +149,24 @@ extern struct fi_ops_mr dpdk_domain_fi_ops_mr;
 // 3. start the DPDK progress thread (as a DPDK lcore)
 int dpdk_domain_open(struct fid_fabric *fabric_fid, struct fi_info *info,
                      struct fid_domain **domain_fid, void *context) {
-    struct dpdk_fabric *fabric;
+    // struct dpdk_fabric *fabric;
     struct dpdk_domain *domain;
     int                 ret;
 
     /* 1. libfabric-specific initialization */
-    fabric = container_of(fabric_fid, struct dpdk_fabric, util_fabric.fabric_fid);
+    // fabric = container_of(fabric_fid, struct dpdk_fabric, util_fabric.fabric_fid);
     ret    = ofi_prov_check_info(&dpdk_util_prov, fabric_fid->api_version, info);
     if (ret) {
         return ret;
+    }
+
+    if (info->addr_format != FI_SOCKADDR &&
+        info->addr_format != FI_SOCKADDR_IN &&
+        info->addr_format != FI_SOCKADDR_IN6) {
+        DPDK_WARN(FI_LOG_DOMAIN, "Unsupported address format:(%d). "
+                                 "Only FI_SOCKADDR(%d), FI_SOCKADDR_IN(%d), FI_SOCK_ADDR_IN6(%d) are supported.\n",
+                  info->addr_format,FI_SOCKADDR,FI_SOCKADDR_IN,FI_SOCKADDR_IN6);
+        return -FI_EINVAL;
     }
 
     domain = calloc(1, sizeof(*domain));
@@ -158,6 +183,13 @@ int dpdk_domain_open(struct fid_fabric *fabric_fid, struct fi_info *info,
     domain->util_domain.domain_fid.mr      = &dpdk_domain_fi_ops_mr;
     *domain_fid                            = &domain->util_domain.domain_fid;
 
+    // keep a copy of domain
+    domain->info = fi_dupinfo(info);
+    if (!domain->info) {
+        DPDK_WARN(FI_LOG_DOMAIN, "Failed to allocated memory for domain->info\n");
+        ret = -FI_ENOMEM;
+        goto free;
+    }
     /* 2. DPDK-specific initialization */
 
     // Ethernet MTU. This excludes the Ethernet header and the CRC.
@@ -178,11 +210,52 @@ int dpdk_domain_open(struct fid_fabric *fabric_fid, struct fi_info *info,
     domain->rx_pool     = rte_pktmbuf_pool_create(rx_pool_name, pool_size, cache_size, private_size,
                                                   mbuf_size, rte_socket_id());
     if (domain->rx_pool == NULL) {
-        FI_WARN(&dpdk_prov, FI_LOG_CORE, "Cannot create RX mbuf pool for domain %s: %s",
+        DPDK_WARN(FI_LOG_CORE, "Cannot create RX mbuf pool for domain %s: %s\n",
                 domain->util_domain.name, rte_strerror(rte_errno));
+        ret = -FI_ENOMEM;
         goto close;
     }
-    printf("RX mempool creation OK\n");
+    DPDK_TRACE(FI_LOG_CORE, "RX mempool created.\n");
+
+    // Allocate the mempool for CM mbufs
+    char cm_pool_name[32];
+    sprintf(cm_pool_name, "cm_pool_%s", domain->util_domain.name);
+    domain->cm_pool = rte_pktmbuf_pool_create(cm_pool_name,                             // name
+                                              rte_align32pow2(MAX_ENDPOINTS_PER_APP),   // n
+                                              cache_size,                               // cache_size
+                                              0,                                        // priv_size
+                                              RTE_ETHER_HDR_LEN +
+                                              sizeof(struct rte_ipv4_hdr) +
+                                              sizeof(struct rte_udp_hdr) +
+                                              sizeof(struct dpdk_cm_msg_hdr) + 
+                                              DPDK_MAX_CM_DATA_SIZE + 
+                                              RTE_ETHER_CRC_LEN,                        // data_room_size
+                                              rte_socket_id());                         // socket_id
+    if (!domain->cm_pool) {
+        DPDK_WARN(FI_LOG_CORE, "Cannot create CM mbuf pool for domain %s: %s\n",
+                  domain->util_domain.name, rte_strerror(rte_errno));
+        ret = -FI_ENOMEM;
+        goto close;
+    }
+    DPDK_TRACE(FI_LOG_CORE, "CM mempool created.\n");
+
+    // Allocate CM ring buffer
+    char cm_ring_name[32];
+    sprintf(cm_ring_name, "cm_ring_%s", domain->util_domain.name);
+    domain->cm_ring = rte_ring_create(cm_ring_name,
+                                      rte_align32pow2(dpdk_params.cm_ring_size),
+                                      rte_socket_id(),
+                                      RING_F_MP_RTS_ENQ|RING_F_SC_DEQ);
+    if (!domain->cm_ring) {
+        DPDK_WARN(FI_LOG_CORE, "Fail to create CM ring for domain %s: %s.\n",
+                  domain->util_domain.name, rte_strerror(rte_errno));
+        ret = -FI_ENOMEM;
+        goto close;
+    }
+    DPDK_TRACE(FI_LOG_CORE, "CM ring created.\n");
+    
+    // Initialize the CM session counter
+    atomic_init(&domain->cm_session_counter, 0);
 
     // Initialize the DPDK device
     // TODO: port_id, queue_id, lcore_id, dev_flags, and mtu MUST be configurable parameters!
@@ -192,19 +265,15 @@ int dpdk_domain_open(struct fid_fabric *fabric_fid, struct fi_info *info,
     domain->port_id  = 0;
     domain->queue_id = 0;
     domain->lcore_id = 1; // lcore 0 is the main thread, so this must be > 0
-    if (port_init(domain->rx_pool, domain->port_id, domain->queue_id, domain->mtu,
-                  &domain->dev_flags) < 0)
+    if ((ret=port_init(domain->rx_pool, domain->port_id, domain->queue_id, domain->mtu,
+                  &domain->dev_flags)) < 0)
     {
-        FI_WARN(&dpdk_prov, FI_LOG_CORE, "Port Init DPDK: error\n");
+        DPDK_WARN(FI_LOG_CORE, "Port Init DPDK: error\n");
         goto free;
     };
 
     // Get the IP and UDP port info from the configuration
-    // The most significant 32 bytes of the 64-bit integer are the IP address
-    // The least significant 16 bytes of the 64-bit integer are the UDP port
-    domain->ipv4_addr = *((uint32_t *)info->src_addr);
-    domain->udp_port  = *((uint16_t *)(info->src_addr + 4));
-    domain->addrlen   = info->src_addrlen;
+    domain->local_addr = *(struct sockaddr_in*)info->src_addr; 
     rte_eth_macaddr_get(domain->port_id, &domain->eth_addr);
 
     // Initialize the list of endpoints
@@ -247,6 +316,18 @@ int dpdk_domain_open(struct fid_fabric *fabric_fid, struct fi_info *info,
 close_prog:
     dpdk_close_progress(&domain->progress);
 close:
+    if (domain->rx_pool) {
+        rte_mempool_free(domain->rx_pool);
+    }
+    if (domain->cm_pool) {
+        rte_mempool_free(domain->cm_pool);
+    }
+    if (domain->cm_ring) {
+        rte_ring_free(domain->cm_ring);
+    }
+    if (domain->info) {
+        fi_freeinfo(domain->info);
+    }
     (void)ofi_domain_close(&domain->util_domain);
 free:
     free(domain);

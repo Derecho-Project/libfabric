@@ -2,7 +2,7 @@
 
 /* If we don't have an EQ, then we're writing an event for an rdm ep.
  * That goes directly on the rdm event list.
- */
+ *
 int dpdk_eq_write(struct util_eq *eq, uint32_t event, const void *buf, size_t len, uint64_t flags) {
     return (int)fi_eq_write(&eq->eq_fid, event, buf, len, flags);
 }
@@ -11,6 +11,7 @@ static ssize_t dpdk_eq_read(struct fid_eq *eq_fid, uint32_t *event, void *buf, s
                             uint64_t flags) {
     return ofi_eq_read(eq_fid, event, buf, len, flags);
 }
+*/
 
 static int dpdk_eq_close(struct fid *fid) {
     struct dpdk_eq *eq;
@@ -29,7 +30,7 @@ static int dpdk_eq_close(struct fid *fid) {
 
 static struct fi_ops_eq dpdk_eq_ops = {
     .size     = sizeof(struct fi_ops_eq),
-    .read     = dpdk_eq_read,
+    .read     = ofi_eq_read,
     .readerr  = ofi_eq_readerr,
     .sread    = ofi_eq_sread,
     .write    = ofi_eq_write,

@@ -122,9 +122,11 @@ static int dpdk_ep_bind(struct fid *fid, struct fid *bfid, uint64_t flags) {
     return 0;
 }
 
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wunused-variable"
 static int dpdk_ep_close(struct fid *fid) {
     struct dpdk_progress *progress;
-    struct dpdk_ep       *ep;
+    struct dpdk_ep       *ep = NULL;
 
     printf("[dpdk_ep_close] UNIMPLEMENTED\n");
     // ep = container_of(fid, struct dpdk_ep, util_ep.ep_fid.fid);
@@ -146,6 +148,7 @@ static int dpdk_ep_close(struct fid *fid) {
     // free(ep);
     return 0;
 }
+#pragma GCC diagnostic pop
 
 static int dpdk_ep_ctrl(struct fid *fid, int command, void *arg) {
     struct dpdk_ep     *ep;
@@ -175,49 +178,6 @@ static int dpdk_ep_ctrl(struct fid *fid, int command, void *arg) {
     return FI_SUCCESS;
 }
 
-static int dpdk_ep_getname(fid_t fid, void *addr, size_t *addrlen) {
-    // TODO: return useful per-EP info
-    printf("[dpdk_ep_connect] UNIMPLEMENTED\n");
-    return 0;
-}
-
-static int dpdk_ep_connect(struct fid_ep *ep_fid, const void *addr, const void *param,
-                           size_t paramlen) {
-
-    // TODO: This is a placeholder to have the EP work
-    // This is for Weijia to provide the actual implementation
-    struct dpdk_ep *ep = container_of(ep_fid, struct dpdk_ep, util_ep.ep_fid);
-    eth_parse("ff:ff:ff:ff:ff:ff", &ep->remote_eth_addr);
-    ip_parse("10.0.0.212", &ep->remote_ipv4_addr);
-    ep->remote_udp_port = 2510;
-
-    atomic_store(&ep->conn_state, ep_conn_state_connected);
-
-    // TODO: IMPLEMENT THIS FUNCTION
-    printf("[dpdk_ep_connect] UNIMPLEMENTED\n");
-
-    return 0;
-}
-
-static int dpdk_ep_accept(struct fid_ep *ep, const void *param, size_t paramlen) {
-
-    // TODO: This is a placeholder to have the EP work
-    // This is for Weijia to provide the actual implementation
-    struct dpdk_ep *dpdk_ep = container_of(ep, struct dpdk_ep, util_ep.ep_fid);
-    eth_parse("ff:ff:ff:ff:ff:ff", &dpdk_ep->remote_eth_addr);
-    ip_parse("10.0.0.211", &dpdk_ep->remote_ipv4_addr);
-    dpdk_ep->remote_udp_port = 2510;
-
-    atomic_store(&dpdk_ep->conn_state, ep_conn_state_connected);
-
-    printf("[dpdk_ep_accept] UNIMPLEMENTED\n");
-    return 0;
-}
-
-// === EP MSG functions ===
-// Defined in a separate file for clarity
-extern struct fi_ops_msg dpdk_msg_ops;
-
 static struct fi_ops dpdk_ep_fi_ops = {
     .size     = sizeof(struct fi_ops),
     .close    = dpdk_ep_close,
@@ -226,25 +186,10 @@ static struct fi_ops dpdk_ep_fi_ops = {
     .ops_open = fi_no_ops_open,
 };
 
-static struct fi_ops_cm dpdk_cm_ops = {
-    .size     = sizeof(struct fi_ops_cm),
-    .setname  = fi_no_setname,
-    .getname  = dpdk_ep_getname,
-    .getpeer  = fi_no_getpeer, // TODO: Provide an implementation!
-    .connect  = dpdk_ep_connect,
-    .listen   = fi_no_listen,
-    .accept   = dpdk_ep_accept,
-    .reject   = fi_no_reject,
-    .shutdown = fi_no_shutdown, // TODO: Provide shutdown!
-    .join     = fi_no_join,
-};
-
 /* Create an endpoint. Not active until explicitly enabled */
 int dpdk_endpoint(struct fid_domain *domain, struct fi_info *info, struct fid_ep **ep_fid,
                   void *context) {
     struct dpdk_ep          *ep;
-    struct dpdk_pep         *pep;
-    struct dpdk_conn_handle *handle;
     int                      ret = 0;
 
     ep = calloc(1, sizeof(*ep));
@@ -257,35 +202,45 @@ int dpdk_endpoint(struct fid_domain *domain, struct fi_info *info, struct fid_ep
     if (ret) {
         goto err1;
     }
-    // TODO: Complete the OPS definition
+
     *ep_fid            = &ep->util_ep.ep_fid;
     (*ep_fid)->fid.ops = &dpdk_ep_fi_ops;
-    // (*ep_fid)->ops     = &dpdk_ep_ops;
-    (*ep_fid)->cm  = &dpdk_cm_ops;
-    (*ep_fid)->msg = &dpdk_msg_ops;
-    //     (*ep_fid)->rma     = &dpdk_rma_ops;
-    //     (*ep_fid)->tagged  = &dpdk_tagged_ops;
+    (*ep_fid)->cm      = &dpdk_cm_ops;
+    (*ep_fid)->msg     = &dpdk_msg_ops;
+    // TODO: Complete the OPS definition
+    // (*ep_fid)->rma     = &dpdk_rma_ops;
+    // (*ep_fid)->tagged  = &dpdk_tagged_ops;
+    // (*ep_fid)->atomic  = &dpdk_atomic_ops;
+    // (*ep_fid)->ops_collective    = &dpdk_collective_ops;
 
     /* 2. DPDK-specific initialization */
     struct dpdk_domain *dpdk_domain =
         container_of(ep->util_ep.domain, struct dpdk_domain, util_domain);
 
-    // Initialize TX and RX queues //TODO: Cleanup and memory free in case of failure
+    // Initialize TX and RX queues
+    // TODO: Cleanup and memory free in case of failure
     ret = ep_queue_init(ep, &ep->sq, dpdk_default_tx_size, DPDK_IOV_LIMIT, "send");
     if (ret) {
+        // [Weijia] ep->udp_port hasn't been initialized here, right?
         FI_WARN(&dpdk_prov, FI_LOG_EP_CTRL, "Failed to init send queue of ep%d", ep->udp_port);
         goto err6;
     }
     ret = ep_queue_init(ep, &ep->rq, dpdk_default_rx_size, DPDK_IOV_LIMIT, "recv");
     if (ret) {
+        // [Weijia] ep->udp_port hasn't been initialized here, right?
         FI_WARN(&dpdk_prov, FI_LOG_EP_CTRL, "Failed to init recv queue of ep%d", ep->udp_port);
         goto err7;
     }
 
     // TODO: Cleanup and memory free in case of failure
-    RTE_LOG(DEBUG, USER1, "Initializing the QP TXQ to contain %u structs of size %lu\n",
+    RTE_LOG(DEBUG, USER1, "Initializing the QP TXQ to contain %lu structs of size %lu\n",
             dpdk_default_tx_size, sizeof(*ep->txq));
     ep->txq     = calloc(dpdk_default_tx_size, sizeof(*ep->txq));
+    if (!ep->txq) {
+        FI_WARN(&dpdk_prov, FI_LOG_EP_CTRL, "Failed to create txq table.");
+        ret = -FI_ENOMEM;
+        goto err7;
+    }
     ep->txq_end = ep->txq;
 
     // Completion Queues are not initialized here, but in the fi_ep_bind function, as they are
@@ -303,8 +258,10 @@ int dpdk_endpoint(struct fid_domain *domain, struct fi_info *info, struct fid_ep
     ep->remote_ep.tx_pending =
         calloc(ep->remote_ep.tx_pending_size, sizeof(*ep->remote_ep.tx_pending));
     if (!ep->remote_ep.tx_pending) {
+        // [Weijia] ep->udp_port hasn't been initialized here, right?
         RTE_LOG(DEBUG, USER1, "<ep=%" PRIx16 "> Set up tx_pending failed: %s\n", ep->udp_port,
                 strerror(errno));
+        ret = -FI_ENOMEM;
         goto err4;
     }
     ep->remote_ep.tx_head             = ep->remote_ep.tx_pending;
@@ -313,15 +270,31 @@ int dpdk_endpoint(struct fid_domain *domain, struct fi_info *info, struct fid_ep
         goto err4;
     }
 
-    // Set the state of the endpoint to unbound
-    atomic_store(&ep->conn_state, ep_conn_state_unbound);
+    // Set the state of the endpoint
+    if (info->handle) {
+        switch (info->handle->fclass) {
+        case FI_CLASS_CONNREQ:
+            // In case of FI_CLASS_CONNREQ, we pass the handle to ep for fi_accept().
+            ep->conn_handle = info->handle;
+            atomic_store(&ep->conn_state, ep_conn_state_connecting);
+            break;
+        default:
+            DPDK_WARN(FI_LOG_EP_CTRL,"%s get unexpected type:%lu from fi_info::handle.",
+                      __func__, info->handle->fclass);
+            ret = -FI_EINVAL;
+            goto err5;
+        }
+    } else {
+        atomic_store(&ep->conn_state, ep_conn_state_unbound);
+    }
 
     // Initialize the acknowledgement management system
     ep->readresp_store = calloc(dpdk_max_ird, sizeof(*ep->readresp_store));
     if (!ep->readresp_store) {
+        // [Weijia] ep->udp_port hasn't been initialized here, right?
         RTE_LOG(DEBUG, USER1, "<ep=%" PRIx16 "> Set up readresp_store failed: %s\n", ep->udp_port,
                 strerror(errno));
-        goto err5;
+        goto err6;
     }
     ep->readresp_head_msn = 1;
     ep->ord_active        = 0;
@@ -362,11 +335,14 @@ int dpdk_endpoint(struct fid_domain *domain, struct fi_info *info, struct fid_ep
 
     // Add this EP to EP list of the domain, and increase the associated values
     // MUST be done while holding the EP MUTEX.
+    // [Weijia] Is it possible that num_endpoints being growing beyond MAX_ENDPOINTS_PER_APP,
+    //          leaving released udp ports unused?
     ofi_genlock_lock(&dpdk_domain->ep_mutex);
     slist_insert_tail(&ep->entry, &dpdk_domain->endpoint_list);
     dpdk_domain->udp_port_to_ep[dpdk_domain->num_endpoints] = ep;
     dpdk_domain->num_endpoints++;
-    ep->udp_port = dpdk_domain->udp_port + dpdk_domain->num_endpoints;
+    ep->udp_port = rte_be_to_cpu_16(dpdk_domain->local_addr.sin_port) +
+                   dpdk_domain->num_endpoints;
     ofi_genlock_unlock(&dpdk_domain->ep_mutex);
 
     FI_INFO(&dpdk_prov, FI_LOG_EP_CTRL, "Created EP %u", ep->udp_port);
@@ -378,8 +354,8 @@ err7:
 err6:
 err5:
 err4:
-err3:
-err2:
+// err3:
+// err2:
     ofi_endpoint_close(&ep->util_ep);
 err1:
     free(ep);
@@ -387,78 +363,35 @@ err1:
 }
 
 // ============== PASSIVE ENDPOINT ==============
-// === Helper functions ===
-static int dpdk_pep_close(struct fid *fid) {
+static int dpdk_pep_bind(struct fid* fid, struct fid *bfid, uint64_t flags) {
+    struct dpdk_pep* pep_l3 = container_of(fid, struct dpdk_pep, util_pep.pep_fid.fid);
 
-    printf("[dpdk_pep_close] UNIMPLEMENTED\n");
-    return 0;
-}
-
-static int dpdk_pep_bind(struct fid *fid, struct fid *bfid, uint64_t flags) {
-
-    printf("[dpdk_pep_bind] UNIMPLEMENTED\n");
-    return 0;
-}
-
-static int dpdk_pep_setname(fid_t fid, void *addr, size_t addrlen) {
-
-    printf("[dpdk_pep_setname] UNIMPLEMENTED\n");
-    strncpy(addr, "dummy_address", 14);
-    return 0;
-}
-
-static int dpdk_pep_getname(fid_t fid, void *addr, size_t *addrlen) {
-    struct dpdk_pep    *pep;
-    struct dpdk_domain *domain;
-
-    printf("[dpdk_pep_getname] UNIMPLEMENTED\n");
-    // TODO: The following implementation is ok, we just need to implement pep_create before!
-    // pep    = container_of(fid, struct dpdk_pep, util_pep.pep_fid.fid);
-    // domain = container_of(ep->util_ep.domain, struct dpdk_domain, util_domain);
-
-    // size_t addrlen_in = domain->addrlen;
-    // if (addrlen_in < *addrlen) {
-    //     snprintf(addr, "%d.%d.%d.%d:%u", ((domain->ipv4_addr >> 24) & 0xFF),
-    //              ((domain->ipv4_addr >> 16) & 0xFF), ((domain->ipv4_addr >> 8) & 0xFF),
-    //              (domain->ipv4_addr & 0xFF), ep->udp_port, addrlen_in);
-    // }
-    // return (addrlen_in < *addrlen) ? -FI_ETOOSMALL : FI_SUCCESS;
-    addr = "dummy_address";
-    return FI_SUCCESS;
-}
-
-static int dpdk_pep_listen(struct fid_pep *pep_fid) {
-
-    printf("[dpdk_pep_listen] UNIMPLEMENTED\n");
-    return 0;
-}
-
-static int dpdk_pep_reject(struct fid_pep *pep, fid_t fid_handle, const void *param,
-                           size_t paramlen) {
-    printf("[dpdk_pep_reject] UNIMPLEMENTED\n");
-    return 0;
+    int ret = FI_SUCCESS;
+    switch(bfid->fclass) {
+    case FI_CLASS_EQ:
+        struct util_eq* eq_l2 = container_of(bfid,struct util_eq,eq_fid.fid);
+        ret = ofi_pep_bind_eq(&pep_l3->util_pep, eq_l2, flags);
+        if (ret == FI_SUCCESS) {
+            struct dpdk_fabric* fabric_l3 = container_of(pep_l3->util_pep.fabric,struct dpdk_fabric,util_fabric);
+            fabric_l3->util_eq = eq_l2;
+        }
+        break;
+    default:
+        DPDK_WARN(FI_LOG_EP_CTRL,
+            "%s: invalid FID class %lu. Expecting FI_CLASS_EQ(%d) only.\n",
+            __func__, bfid->fclass, FI_CLASS_EQ);
+        ret = -FI_EINVAL;
+    }
+    return ret;
 }
 
 // === PEP functions ===
 static struct fi_ops dpdk_pep_fi_ops = {
     .size     = sizeof(struct fi_ops),
-    .close    = dpdk_pep_close,
+    .close    = fi_no_close,
     .bind     = dpdk_pep_bind,
     .control  = fi_no_control,
     .ops_open = fi_no_ops_open,
-};
-
-static struct fi_ops_cm dpdk_pep_cm_ops = {
-    .size     = sizeof(struct fi_ops_cm),
-    .setname  = dpdk_pep_setname,
-    .getname  = dpdk_pep_getname,
-    .getpeer  = fi_no_getpeer,
-    .connect  = fi_no_connect,
-    .listen   = dpdk_pep_listen,
-    .accept   = fi_no_accept,
-    .reject   = dpdk_pep_reject,
-    .shutdown = fi_no_shutdown,
-    .join     = fi_no_join,
 };
 
 static struct fi_ops_ep dpdk_pep_ops = {
@@ -496,38 +429,22 @@ int dpdk_passive_ep(struct fid_fabric *fabric, struct fi_info *info, struct fid_
         goto err1;
     }
 
-    // TODO: finish to implement!
-    printf("[dpdk_passive_ep ] PARTIALLY UNIMPLEMENTED\n");
-
     pep->util_pep.pep_fid.fid.ops = &dpdk_pep_fi_ops;
     pep->util_pep.pep_fid.cm      = &dpdk_pep_cm_ops;
     pep->util_pep.pep_fid.ops     = &dpdk_pep_ops;
 
-    pep->info = fi_dupinfo(info);
+    pep->state = DPDK_PEP_INIT;
+    pep->info  = fi_dupinfo(info);
     if (!pep->info) {
         ret = -FI_ENOMEM;
         goto err2;
     }
-
-    //     pep->cm_ctx.fid.fclass = DPDK_CLASS_CM;
-    //     pep->cm_ctx.hfid       = &pep->util_pep.pep_fid.fid;
-    //     pep->cm_ctx.state      = DPDK_CM_LISTENING;
-    //     pep->cm_ctx.cm_data_sz = 0;
-    //     pep->sock              = INVALID_SOCKET;
-
-    //     if (info->src_addr) {
-    //         ret = dpdk_pep_sock_create(pep);
-    //         if (ret)
-    //             goto err3;
-    //     }
 
     // TODO: Here we first set the ops to pep->util_pep, then we pass the pointer to the caller.
     // Instead, in the dpdk_endpoint(), we first pass the pointer to the caller, then we set the
     // ops to the caller. We should be consistent and choose one of the two approaches!
     *pep_fid = &pep->util_pep.pep_fid;
     return FI_SUCCESS;
-err3:
-    fi_freeinfo(pep->info);
 err2:
     ofi_pep_close(&pep->util_pep);
 err1:

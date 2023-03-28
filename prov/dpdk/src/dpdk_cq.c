@@ -45,7 +45,9 @@ static ssize_t dpdk_cq_readfrom(struct fid_cq *cq_fid, void *buf, size_t count,
     comp->op_context             = cqe[0]->wr_context;
 
     // TODO: implement according to the spec
-    src_addr = FI_ADDR_NOTAVAIL;
+    if (src_addr) {
+        *src_addr = FI_ADDR_NOTAVAIL;
+    }
 
     return ret;
 }
@@ -111,15 +113,17 @@ static struct fi_ops_cq dpdk_cq_ops = {
     .strerror  = ofi_cq_strerror,
 };
 
-static void dpdk_cq_progress(struct util_cq *util_cq) {
-    // TODO: Unimplemented?
-    printf("[dpdk_cq_progress] UNIMPLEMENTED\n");
+static void dpdk_cq_progress_noop(struct util_cq *util_cq) {
+    // Just like in the verbs provider, this should not be called.
+    assert(0);
 }
 
+/*
 static int dpdk_cq_wait_try_func(void *arg) {
     OFI_UNUSED(arg);
     return FI_SUCCESS;
 }
+*/
 
 /* Create the CQ */
 int dpdk_cq_open(struct fid_domain *domain, struct fi_cq_attr *attr, struct fid_cq **cq_fid,
@@ -142,7 +146,7 @@ int dpdk_cq_open(struct fid_domain *domain, struct fi_cq_attr *attr, struct fid_
         attr             = &cq_attr;
     }
 
-    ret = ofi_cq_init(&dpdk_prov, domain, attr, &cq->util_cq, &dpdk_cq_progress, context);
+    ret = ofi_cq_init(&dpdk_prov, domain, attr, &cq->util_cq, &dpdk_cq_progress_noop, context);
     if (ret) {
         goto free_cq;
     }
@@ -152,8 +156,8 @@ int dpdk_cq_open(struct fid_domain *domain, struct fi_cq_attr *attr, struct fid_
     (*cq_fid)->ops     = &dpdk_cq_ops;
 
     // 2. DPDK-specific initialization
-    struct dpdk_domain *dpdk_domain =
-        container_of(domain, struct dpdk_domain, util_domain.domain_fid);
+    // struct dpdk_domain *dpdk_domain =
+    //     container_of(domain, struct dpdk_domain, util_domain.domain_fid);
     atomic_init(&cq->refcnt, 1);
     cq->cq_id = 0; // TODO: Assign a unique ID to the CQ
     // Number of entries (must be a power of 2 minus 1);
