@@ -202,6 +202,7 @@ static int dpdk_ep_connect(struct fid_ep *ep_fid, const void *addr, const void *
     struct sockaddr* paddr = (struct sockaddr*) addr;
     switch (paddr->sa_family) {
     case AF_INET:
+        break;
     case AF_INET6: // TODO: [Weijia] IPv6 support to be implemented.
     default:
         DPDK_WARN(FI_LOG_EP_CTRL, "Unsupported address family:%d. Only IPv4(%d) is currently supported.\n",
@@ -414,7 +415,10 @@ static int dpdk_ep_shutdown(struct fid_ep* ep, uint64_t flags) {
                 ret = -FI_EAGAIN;
                 goto error_group_2;
             }
-        } // then, change to shutdown state
+            //// then, change to shutdown state
+            atomic_store(&dep->conn_state,ep_conn_state_shutdown);
+        }
+        break;
     case ep_conn_state_unbound:
     case ep_conn_state_connecting:
         /* TODO:
