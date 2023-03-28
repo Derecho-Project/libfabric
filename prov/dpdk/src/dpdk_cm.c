@@ -235,7 +235,7 @@ static int dpdk_ep_connect(struct fid_ep *ep_fid, const void *addr, const void *
     connreq->typed_header.connection_request.paramlen                = rte_cpu_to_be_16(paramlen);
     memcpy(connreq->payload, param, paramlen);
     //// fill it to the ring
-    if(rte_ring_enqueue(domain->cm_ring,connreq_mbuf)) {
+    if(rte_ring_mp_enqueue(domain->cm_ring,connreq_mbuf)) {
         DPDK_WARN(FI_LOG_EP_CTRL, "CM ring is full. Please try again.\n");
         ret = -FI_EAGAIN;
         goto error;
@@ -325,7 +325,7 @@ static int dpdk_ep_accept(struct fid_ep *ep, const void *param, size_t paramlen)
                             = paramlen;
     memcpy(connack->payload,param,paramlen);
     //// fill it to the ring
-    if(rte_ring_enqueue(domain->cm_ring,connack_mbuf)) {
+    if(rte_ring_mp_enqueue(domain->cm_ring,connack_mbuf)) {
         DPDK_WARN(FI_LOG_EP_CTRL, "CM ring is full. Please try again.\n");
         ret = -FI_EAGAIN;
         goto error_group_1;
@@ -372,7 +372,7 @@ static int dpdk_pep_reject(struct fid_pep* pep, fid_t handle, const void* param,
                              = conn_handle->remote_data_port;
     memcpy(connrej->payload,param,paramlen);
     //// fill it to the ring
-    if(rte_ring_enqueue(conn_handle->domain->cm_ring,connrej_mbuf)) {
+    if(rte_ring_mp_enqueue(conn_handle->domain->cm_ring,connrej_mbuf)) {
         DPDK_WARN(FI_LOG_EP_CTRL, "CM ring is full. Please try again.\n");
         ret = -FI_EAGAIN;
         goto error_group_1;
@@ -406,7 +406,7 @@ static int dpdk_ep_shutdown(struct fid_ep* ep, uint64_t flags) {
             disconnreq->typed_header.disconnection_request.remote_data_udp_port
                                     = rte_cpu_to_be_16(dep->remote_udp_port);
             //// fill it to the ring
-            if(rte_ring_enqueue(domain->cm_ring,disconnreq_mbuf)) {
+            if(rte_ring_mp_enqueue(domain->cm_ring,disconnreq_mbuf)) {
                 DPDK_WARN(FI_LOG_EP_CTRL, "CM ring is full. Please try again.\n");
                 ret = -FI_EAGAIN;
                 goto error_group_2;
