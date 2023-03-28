@@ -475,7 +475,7 @@ void do_client(const char* server_ip_and_port) {
         return;
     }
 
-    ret = fi_connect(ep, g_ctxt.pep_addr, NULL, 0);
+    ret = fi_connect(ep, svr_ai->ai_addr, NULL, 0);
     if (ret) {
         printf("fi_connect() failed: %s\n", fi_strerror(-ret));
         freeaddrinfo(svr_ai);
