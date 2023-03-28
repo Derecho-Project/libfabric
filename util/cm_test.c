@@ -414,7 +414,8 @@ void do_server() {
         return;
     }
     fi_freeinfo(entry.info);
-    printf("server connected...waiting for 1 min");
+    printf("server connected...waiting for 1 min\n");
+    fflush(stdin);
 
     sleep(60);
 
@@ -500,7 +501,8 @@ void do_client(const char* server_ip_and_port) {
         fprintf(stderr, "fi_eq_sread() got unexpected even: %d, quitting...\n", event);
         return;
     }
-    printf("client connected... sleep for 1min.");
+    printf("client connected... sleep for 1 min.\n");
+    fflush(stdin);
     sleep(60);
 
     // Now the connection is open, I can send
