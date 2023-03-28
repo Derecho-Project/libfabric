@@ -740,7 +740,7 @@ static int process_cm_disconnect(struct dpdk_domain*       domain,
     struct dpdk_ep* ep = NULL;
     // 0 - validate parameters
     int         ep_idx = rte_be_to_cpu_16(cm_hdr->typed_header.disconnection_request.remote_data_udp_port) - 
-                         rte_be_to_cpu_16(domain->local_addr.sin_port);
+                         (rte_be_to_cpu_16(domain->local_addr.sin_port) + 1);
     if (ep_idx < 0 || ep_idx > MAX_ENDPOINTS_PER_APP) {
         DPDK_WARN(FI_LOG_DOMAIN,"%s failed because endpoint is invalid: %d.",
                                 __func__, ep_idx);

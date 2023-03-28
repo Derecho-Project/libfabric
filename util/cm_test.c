@@ -510,7 +510,7 @@ void do_client(const char* server_ip_and_port) {
         fprintf(stderr, "fi_eq_sread() got unexpected even: %d, quitting...\n", event);
         return;
     }
-    printf("client connected... sleep for 1 min.\n");
+    printf("client connected... sleep for 10 secs.\n");
     fflush(stdin);
     sleep(10);
 
