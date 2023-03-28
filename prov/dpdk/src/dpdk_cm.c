@@ -370,10 +370,12 @@ static int dpdk_pep_reject(struct fid_pep* pep, fid_t handle, const void* param,
     }
     //// fill cm message
     struct dpdk_cm_msg_hdr* connrej = get_cm_header(connrej_mbuf);
-    connrej->type            = DPDK_CM_MSG_CONNECTION_REJECTION;
-    connrej->session_id      = conn_handle->session_id;
+    connrej->type            = rte_cpu_to_be_32(DPDK_CM_MSG_CONNECTION_REJECTION);
+    connrej->session_id      = rte_cpu_to_be_32(conn_handle->session_id);
     connrej->typed_header.connection_rejection.client_data_udp_port
-                             = conn_handle->remote_data_port;
+                             = rte_cpu_to_be_16(conn_handle->remote_data_port);
+    connrej->typed_header.connection_rejection.paramlen
+                             = rte_cpu_to_be_16(paramlen);
     memcpy(connrej->payload,param,paramlen);
     //// fill it to the ring
     DPDK_DBG(FI_LOG_EP_CTRL, "adding connrej to cm ring.\n");
@@ -549,7 +551,7 @@ int dpdk_cm_send(struct dpdk_domain* domain) {
                                                               sizeof(struct rte_ipv4_hdr) +
                                                               sizeof(struct rte_udp_hdr));
         DPDK_DBG(FI_LOG_EP_CTRL,"Sending dpdk cm message type(%u), session_id(%u).\n", 
-                 cm_hdr->type,cm_hdr->session_id);
+                 rte_cpu_to_be_32(cm_hdr->type),rte_cpu_to_be_32(cm_hdr->session_id));
         while(rte_eth_tx_burst(domain->port_id,domain->queue_id,&cm_mbuf,1) < 1);
         rte_pktmbuf_free(cm_mbuf);
     }
@@ -788,25 +790,15 @@ error_group_1: // nothing changed.
 /**
  * This function must only be called from a PMD thread.
  */
-int dpdk_cm_recv(struct dpdk_domain* domain, struct rte_mbuf* cm_mbuf) {
+int dpdk_cm_recv(struct dpdk_domain*    domain,
+                 struct rte_ether_hdr*  eth_hdr,
+                 struct rte_ipv4_hdr*   ip_hdr,
+                 struct rte_udp_hdr*    udp_hdr,
+                 struct rte_mbuf*       cm_mbuf) {
     int ret = FI_SUCCESS;
 
-    struct rte_ether_hdr*   eth_hdr = rte_pktmbuf_mtod_offset(cm_mbuf,
-                                                              struct rte_ether_hdr*,
-                                                              0);
-    struct rte_ipv4_hdr*    ip_hdr  = rte_pktmbuf_mtod_offset(cm_mbuf,
-                                                              struct rte_ipv4_hdr*,
-                                                              RTE_ETHER_HDR_LEN);
-    struct rte_udp_hdr*     udp_hdr = rte_pktmbuf_mtod_offset(cm_mbuf,
-                                                              struct rte_udp_hdr*,
-                                                              RTE_ETHER_HDR_LEN + sizeof(struct rte_ipv4_hdr));
-    struct dpdk_cm_msg_hdr* cm_hdr  = rte_pktmbuf_mtod_offset(cm_mbuf,
-                                                              struct dpdk_cm_msg_hdr*,
-                                                              RTE_ETHER_HDR_LEN + sizeof(struct rte_ipv4_hdr) +
-                                                              sizeof(struct rte_udp_hdr));
+    struct dpdk_cm_msg_hdr* cm_hdr  = rte_pktmbuf_mtod(cm_mbuf,struct dpdk_cm_msg_hdr*);
     void*                   cm_data = rte_pktmbuf_mtod_offset(cm_mbuf, void*,
-                                                              RTE_ETHER_HDR_LEN + sizeof(struct rte_ipv4_hdr) +
-                                                              sizeof(struct rte_udp_hdr) + 
                                                               sizeof(struct dpdk_cm_msg_hdr));
 
     DPDK_TRACE(FI_LOG_EP_CTRL,"Receiving CM Message with type:%d.", cm_hdr->type);

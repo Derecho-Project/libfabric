@@ -448,6 +448,7 @@ struct dpdk_cm_msg_hdr {
         struct {
             uint16_t                    client_data_udp_port;
             uint16_t                    rejection_code;
+	    uint16_t                    paramlen;
         } __attribute__((__packed__))   connection_rejection;
         // disconnection request
         struct {
@@ -465,7 +466,11 @@ struct dpdk_cm_msg_hdr {
 /* sending the connection management messages */
 int dpdk_cm_send(struct dpdk_domain* domain);
 /* processing the connection management messages */
-int dpdk_cm_recv(struct dpdk_domain* domain, struct rte_mbuf* cm_mbuf);
+int dpdk_cm_recv(struct dpdk_domain* 	domain,
+		 struct rte_ether_hdr* 	eth_hdr,
+		 struct rte_ipv4_hdr*	ip_hdr,
+		 struct rte_udp_hdr*    udp_hdr,
+		 struct rte_mbuf* 	cm_mbuf); // adjusted to cm msg header.
 
 // Passive Endpoint
 struct dpdk_pep {

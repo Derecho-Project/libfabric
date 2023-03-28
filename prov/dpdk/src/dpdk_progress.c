@@ -574,7 +574,8 @@ static void process_rx_packet(struct dpdk_domain *domain, struct rte_mbuf *mbuf)
     uint16_t rx_port = rte_be_to_cpu_16(udp_hdr->dst_port);
     if (rx_port == base_port) {
         // Probably need to insert in some ring
-        dpdk_cm_recv(domain,mbuf);
+        rte_pktmbuf_adj(mbuf, sizeof(*udp_hdr));
+        dpdk_cm_recv(domain,eth_hdr,ipv4_hdr,udp_hdr,mbuf);
         rte_pktmbuf_free(mbuf);
         return;
     } else if (rx_port > base_port && rx_port < base_port + MAX_ENDPOINTS_PER_APP) {
