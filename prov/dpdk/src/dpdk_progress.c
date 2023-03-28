@@ -520,7 +520,6 @@ static void process_rx_packet(struct dpdk_domain *domain, struct rte_mbuf *mbuf)
     struct trp_hdr       *trp_hdr;
     uint16_t              trp_opcode;
 
-    // uint32_t ip_addr   = domain->ipv4_addr;
     uint16_t base_port = rte_be_to_cpu_16(domain->local_addr.sin_port);
 
     // TODO: We cannot discard packets absed on UDP checksum if we do not know how to compute it...
@@ -557,14 +556,15 @@ static void process_rx_packet(struct dpdk_domain *domain, struct rte_mbuf *mbuf)
         return;
     }
 
-    // TODO: DEBUG: We don't check the IP address for now...
-    // if (ipv4_hdr->dst_addr != rte_cpu_to_be_32(ip_addr)) {
-    //     RTE_LOG(DEBUG, USER1,
-    //             "<dev=%s> Drop packet with IPv4 dst addr %" PRIx32 "; expected %" PRIx32 "\n",
-    //             domain->util_domain.name, rte_be_to_cpu_32(ipv4_hdr->dst_addr), ip_addr);
-    //     rte_pktmbuf_free(mbuf);
-    //     return;
-    // }
+    // [Weijia]: IPv6 needs more care.
+    if (ipv4_hdr->dst_addr != domain->local_addr.sin_addr.s_addr) {
+        RTE_LOG(DEBUG, USER1,
+                "<dev=%s> Drop packet with IPv4 dst addr %" PRIx32 "; expected %" PRIx32 "\n",
+                domain->util_domain.name, rte_be_to_cpu_32(ipv4_hdr->dst_addr),
+                rte_be_to_cpu_32(domain->local_addr.sin_addr.s_addr));
+        rte_pktmbuf_free(mbuf);
+        return;
+    }
 
     // Check the UDP port. We can have three cases:
     // 1. The packet is for the base_port => This is a connection request
