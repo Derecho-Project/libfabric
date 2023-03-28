@@ -396,19 +396,18 @@ void do_server() {
         exit(2);
     }
 
-    // TODO: We should get an async event from the eq, but we don't have one yet!
-    // // Synchronously read from the eq of the new endpoint
-    // n_read = fi_eq_sread(eq, &event, &entry, sizeof(entry), -1, 0);
-    // if (n_read != sizeof(entry)) {
-    //     printf("failed to connect remote. n_read=%ld.\n", n_read);
-    //     exit(2);
-    // }
-    // if (event != FI_CONNECTED || entry.fid != &(ep->fid)) {
-    //     fi_freeinfo(entry.info);
-    //     printf("Unexpected CM event: %d.\n", event);
-    //     exit(2);
-    // }
-    // fi_freeinfo(entry.info);
+    // Synchronously read from the eq of the new endpoint
+    n_read = fi_eq_sread(eq, &event, &entry, sizeof(entry), -1, 0);
+    if (n_read != sizeof(entry)) {
+        printf("failed to connect remote. n_read=%ld.\n", n_read);
+        exit(2);
+    }
+    if (event != FI_CONNECTED || entry.fid != &(ep->fid)) {
+        fi_freeinfo(entry.info);
+        printf("Unexpected CM event: %d.\n", event);
+        exit(2);
+    }
+    fi_freeinfo(entry.info);
 
     // Server loop
     struct iovec  msg_iov;
