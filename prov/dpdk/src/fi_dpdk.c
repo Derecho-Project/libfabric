@@ -1,9 +1,9 @@
 #include "fi_dpdk.h"
 
 // ================ The global variables ================
-struct dpdk_params_t dpdk_params  = {
-    .base_port      = DEFAULT_DPDK_BASE_PORT,           // FI_DPDK_BASE_PORT
-    .cm_ring_size   = DEFAULT_DPDK_CM_RING_SIZE,        // FI_DPDK_CM_RING_SIZE
+struct dpdk_params_t dpdk_params = {
+    .base_port    = DEFAULT_DPDK_BASE_PORT,    // FI_DPDK_BASE_PORT
+    .cm_ring_size = DEFAULT_DPDK_CM_RING_SIZE, // FI_DPDK_CM_RING_SIZE
 };
 
 // ================ Provider Initialization Functions =================
@@ -30,9 +30,10 @@ static void dpdk_init_env(void) {
     fi_param_define(&dpdk_prov, "base_port", FI_PARAM_INT, "define dpdk base port");
     fi_param_get_int(&dpdk_prov, "base_port", &dpdk_params.base_port);
     if (dpdk_params.base_port < 0 && dpdk_params.base_port > 65535) {
-        DPDK_WARN(FI_LOG_FABRIC, "User provided base_port %d is invalid."
-            " Falling back to default base_port:%d instead. \n",
-            dpdk_params.base_port, DEFAULT_DPDK_BASE_PORT);
+        DPDK_WARN(FI_LOG_FABRIC,
+                  "User provided base_port %d is invalid."
+                  " Falling back to default base_port:%d instead. \n",
+                  dpdk_params.base_port, DEFAULT_DPDK_BASE_PORT);
         dpdk_params.base_port = DEFAULT_DPDK_BASE_PORT;
     }
 

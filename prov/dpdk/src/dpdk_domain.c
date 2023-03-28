@@ -155,17 +155,18 @@ int dpdk_domain_open(struct fid_fabric *fabric_fid, struct fi_info *info,
 
     /* 1. libfabric-specific initialization */
     // fabric = container_of(fabric_fid, struct dpdk_fabric, util_fabric.fabric_fid);
-    ret    = ofi_prov_check_info(&dpdk_util_prov, fabric_fid->api_version, info);
+    ret = ofi_prov_check_info(&dpdk_util_prov, fabric_fid->api_version, info);
     if (ret) {
         return ret;
     }
 
-    if (info->addr_format != FI_SOCKADDR &&
-        info->addr_format != FI_SOCKADDR_IN &&
-        info->addr_format != FI_SOCKADDR_IN6) {
-        DPDK_WARN(FI_LOG_DOMAIN, "Unsupported address format:(%d). "
-                                 "Only FI_SOCKADDR(%d), FI_SOCKADDR_IN(%d), FI_SOCK_ADDR_IN6(%d) are supported.\n",
-                  info->addr_format,FI_SOCKADDR,FI_SOCKADDR_IN,FI_SOCKADDR_IN6);
+    if (info->addr_format != FI_SOCKADDR && info->addr_format != FI_SOCKADDR_IN &&
+        info->addr_format != FI_SOCKADDR_IN6)
+    {
+        DPDK_WARN(FI_LOG_DOMAIN,
+                  "Unsupported address format:(%d). "
+                  "Only FI_SOCKADDR(%d), FI_SOCKADDR_IN(%d), FI_SOCK_ADDR_IN6(%d) are supported.\n",
+                  info->addr_format, FI_SOCKADDR, FI_SOCKADDR_IN, FI_SOCKADDR_IN6);
         return -FI_EINVAL;
     }
 
@@ -211,7 +212,7 @@ int dpdk_domain_open(struct fid_fabric *fabric_fid, struct fi_info *info,
                                                   mbuf_size, rte_socket_id());
     if (domain->rx_pool == NULL) {
         DPDK_WARN(FI_LOG_CORE, "Cannot create RX mbuf pool for domain %s: %s\n",
-                domain->util_domain.name, rte_strerror(rte_errno));
+                  domain->util_domain.name, rte_strerror(rte_errno));
         ret = -FI_ENOMEM;
         goto close;
     }
@@ -220,17 +221,15 @@ int dpdk_domain_open(struct fid_fabric *fabric_fid, struct fi_info *info,
     // Allocate the mempool for CM mbufs
     char cm_pool_name[32];
     sprintf(cm_pool_name, "cm_pool_%s", domain->util_domain.name);
-    domain->cm_pool = rte_pktmbuf_pool_create(cm_pool_name,                             // name
-                                              rte_align32pow2(MAX_ENDPOINTS_PER_APP),   // n
-                                              cache_size,                               // cache_size
-                                              0,                                        // priv_size
-                                              RTE_ETHER_HDR_LEN +
-                                              sizeof(struct rte_ipv4_hdr) +
-                                              sizeof(struct rte_udp_hdr) +
-                                              sizeof(struct dpdk_cm_msg_hdr) + 
-                                              DPDK_MAX_CM_DATA_SIZE + 
-                                              RTE_ETHER_CRC_LEN,                        // data_room_size
-                                              rte_socket_id());                         // socket_id
+    domain->cm_pool =
+        rte_pktmbuf_pool_create(cm_pool_name,                           // name
+                                rte_align32pow2(MAX_ENDPOINTS_PER_APP), // n
+                                cache_size,                             // cache_size
+                                0,                                      // priv_size
+                                RTE_ETHER_HDR_LEN + sizeof(struct rte_ipv4_hdr) +
+                                    sizeof(struct rte_udp_hdr) + sizeof(struct dpdk_cm_msg_hdr) +
+                                    DPDK_MAX_CM_DATA_SIZE + RTE_ETHER_CRC_LEN, // data_room_size
+                                rte_socket_id());                              // socket_id
     if (!domain->cm_pool) {
         DPDK_WARN(FI_LOG_CORE, "Cannot create CM mbuf pool for domain %s: %s\n",
                   domain->util_domain.name, rte_strerror(rte_errno));
@@ -242,10 +241,8 @@ int dpdk_domain_open(struct fid_fabric *fabric_fid, struct fi_info *info,
     // Allocate CM ring buffer
     char cm_ring_name[32];
     sprintf(cm_ring_name, "cm_ring_%s", domain->util_domain.name);
-    domain->cm_ring = rte_ring_create(cm_ring_name,
-                                      rte_align32pow2(dpdk_params.cm_ring_size),
-                                      rte_socket_id(),
-                                      RING_F_MP_RTS_ENQ|RING_F_SC_DEQ);
+    domain->cm_ring = rte_ring_create(cm_ring_name, rte_align32pow2(dpdk_params.cm_ring_size),
+                                      rte_socket_id(), RING_F_MP_RTS_ENQ | RING_F_SC_DEQ);
     if (!domain->cm_ring) {
         DPDK_WARN(FI_LOG_CORE, "Fail to create CM ring for domain %s: %s.\n",
                   domain->util_domain.name, rte_strerror(rte_errno));
@@ -253,7 +250,7 @@ int dpdk_domain_open(struct fid_fabric *fabric_fid, struct fi_info *info,
         goto close;
     }
     DPDK_TRACE(FI_LOG_CORE, "CM ring created.\n");
-    
+
     // Initialize the CM session counter
     atomic_init(&domain->cm_session_counter, 0);
 
@@ -265,15 +262,15 @@ int dpdk_domain_open(struct fid_fabric *fabric_fid, struct fi_info *info,
     domain->port_id  = 0;
     domain->queue_id = 0;
     domain->lcore_id = 1; // lcore 0 is the main thread, so this must be > 0
-    if ((ret=port_init(domain->rx_pool, domain->port_id, domain->queue_id, domain->mtu,
-                  &domain->dev_flags)) < 0)
+    if ((ret = port_init(domain->rx_pool, domain->port_id, domain->queue_id, domain->mtu,
+                         &domain->dev_flags)) < 0)
     {
         DPDK_WARN(FI_LOG_CORE, "Port Init DPDK: error\n");
         goto free;
     };
 
     // Get the IP and UDP port info from the configuration
-    domain->local_addr = *(struct sockaddr_in*)info->src_addr; 
+    domain->local_addr = *(struct sockaddr_in *)info->src_addr;
     rte_eth_macaddr_get(domain->port_id, &domain->eth_addr);
 
     // Initialize the list of endpoints

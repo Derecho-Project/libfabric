@@ -7,10 +7,10 @@
 #include <poll.h>
 #include <sys/types.h>
 
-#include <ofi_util.h>
-#include <sys/types.h>
-#include <sys/socket.h>
 #include <netdb.h>
+#include <ofi_util.h>
+#include <sys/socket.h>
+#include <sys/types.h>
 
 // TODO: This file is copied from the TCP provider. It seems to define the capabilities of the
 // provider in a single place. Plus, it contains the declaration of the default values for the
@@ -19,7 +19,7 @@
 // name.
 
 #define DPDK_DOMAIN_CAPS (FI_REMOTE_COMM)
-#define DPDK_EP_CAPS     (FI_MSG)       // For the moment we only support MSG endpoints
+#define DPDK_EP_CAPS     (FI_MSG) // For the moment we only support MSG endpoints
 #define DPDK_TX_CAPS     (DPDK_EP_CAPS | OFI_TX_RMA_CAPS | OFI_RX_RMA_CAPS | FI_ATOMICS)
 #define DPDK_RX_CAPS     (DPDK_EP_CAPS | OFI_RX_MSG_CAPS | OFI_RX_RMA_CAPS | FI_ATOMICS)
 
@@ -35,26 +35,22 @@
 
 #define DPDK_MAX_INJECT 128
 
-static struct fi_tx_attr dpdk_tx_attr = {
-    .caps          = DPDK_EP_CAPS | DPDK_TX_CAPS,
-    .op_flags      = DPDK_TX_OP_FLAGS,
-    .comp_order    = FI_ORDER_STRICT,
-    .msg_order     = DPDK_MSG_ORDER,
-    .inject_size   = DPDK_MAX_INJECT,
-    .size          = 1024,
-    .iov_limit     = DPDK_IOV_LIMIT,
-    .rma_iov_limit = DPDK_IOV_LIMIT
-};
+static struct fi_tx_attr dpdk_tx_attr = {.caps          = DPDK_EP_CAPS | DPDK_TX_CAPS,
+                                         .op_flags      = DPDK_TX_OP_FLAGS,
+                                         .comp_order    = FI_ORDER_STRICT,
+                                         .msg_order     = DPDK_MSG_ORDER,
+                                         .inject_size   = DPDK_MAX_INJECT,
+                                         .size          = 1024,
+                                         .iov_limit     = DPDK_IOV_LIMIT,
+                                         .rma_iov_limit = DPDK_IOV_LIMIT};
 
-static struct fi_rx_attr dpdk_rx_attr = {
-    .caps                = DPDK_EP_CAPS | DPDK_RX_CAPS,
-    .op_flags            = DPDK_RX_OP_FLAGS,
-    .comp_order          = FI_ORDER_STRICT,
-    .msg_order           = DPDK_MSG_ORDER,
-    .total_buffered_recv = 0,
-    .size                = 65536,
-    .iov_limit           = DPDK_IOV_LIMIT
-};
+static struct fi_rx_attr dpdk_rx_attr = {.caps                = DPDK_EP_CAPS | DPDK_RX_CAPS,
+                                         .op_flags            = DPDK_RX_OP_FLAGS,
+                                         .comp_order          = FI_ORDER_STRICT,
+                                         .msg_order           = DPDK_MSG_ORDER,
+                                         .total_buffered_recv = 0,
+                                         .size                = 65536,
+                                         .iov_limit           = DPDK_IOV_LIMIT};
 
 static struct fi_ep_attr dpdk_ep_attr = {
     .type               = FI_EP_MSG,
@@ -149,8 +145,8 @@ int dpdk_init_info(const struct fi_info **all_infos) {
     // Iterate over the avilable DPDK devices. For each device, create a new fi_info struct and add
     // it to the info list. => We should filter this list based on the hints, but for now we just
     // ignore that
-    uint16_t port_id;
-    struct fi_info* tail = NULL;
+    uint16_t        port_id;
+    struct fi_info *tail = NULL;
     RTE_ETH_FOREACH_DEV(port_id) {
         // get DPDK device info
         struct rte_eth_dev_info dev_info;
@@ -170,32 +166,31 @@ int dpdk_init_info(const struct fi_info **all_infos) {
         // src_addr is unset.
         // dest_addr is unset.
         // handle is unset.
-        *new_info->tx_attr = dpdk_tx_attr;
-        *new_info->rx_attr = dpdk_rx_attr;
-        *new_info->ep_attr = dpdk_ep_attr;
-        *new_info->domain_attr = dpdk_domain_attr;
-        *new_info->fabric_attr = dpdk_fabric_attr;
-        new_info->fabric_attr->name = (char*)malloc(strlen(dpdk_fabric_attr.name)+1);
-        strcpy(new_info->fabric_attr->name,dpdk_fabric_attr.name);
+            *new_info->tx_attr      = dpdk_tx_attr;
+        *new_info->rx_attr          = dpdk_rx_attr;
+        *new_info->ep_attr          = dpdk_ep_attr;
+        *new_info->domain_attr      = dpdk_domain_attr;
+        *new_info->fabric_attr      = dpdk_fabric_attr;
+        new_info->fabric_attr->name = (char *)malloc(strlen(dpdk_fabric_attr.name) + 1);
+        strcpy(new_info->fabric_attr->name, dpdk_fabric_attr.name);
         // nic is unset.
 
         // 2 - fill the port name information
-        new_info->domain_attr->name = (char*)malloc(strlen(rte_dev_name(dev_info.device)) + 1);
+        new_info->domain_attr->name = (char *)malloc(strlen(rte_dev_name(dev_info.device)) + 1);
         strcpy(new_info->domain_attr->name, rte_dev_name(dev_info.device));
 
         // 3 - link it to the global info list
         new_info->next = tail;
-        tail = new_info;
+        tail           = new_info;
     }
 
     *all_infos = tail;
     return 0;
 }
 
-static int dpdk_check_hints(uint32_t version,
-                            const struct fi_info* hints,
-                            const struct fi_info* info) {
-    int ret;
+static int dpdk_check_hints(uint32_t version, const struct fi_info *hints,
+                            const struct fi_info *info) {
+    int      ret;
     uint64_t prov_mode;
 
     if (hints->caps & ~(info->caps)) {
@@ -215,21 +210,20 @@ static int dpdk_check_hints(uint32_t version,
         return -FI_ENODATA;
     }
 
-    /** [Weijia] I doubt ofi_check_fabric_attr()'s using of FI_VERSION_LT. The comparison should be reversed?
-    if (hints->fabric_attr) {
-        ret = ofi_check_fabric_attr(&dpdk_prov, info->fabric_attr, hints->fabric_attr);
-        if (ret) {
-            DPDK_INFO(FI_LOG_CORE, "fabric_attr check failed.\n");
-            return ret;
+    /** [Weijia] I doubt ofi_check_fabric_attr()'s using of FI_VERSION_LT. The comparison should be
+    reversed? if (hints->fabric_attr) { ret = ofi_check_fabric_attr(&dpdk_prov, info->fabric_attr,
+    hints->fabric_attr); if (ret) { DPDK_INFO(FI_LOG_CORE, "fabric_attr check failed.\n"); return
+    ret;
         }
     }
     **/
 
     if (hints->domain_attr) {
         if (hints->domain_attr->name &&
-            strcasecmp(hints->domain_attr->name, info->domain_attr->name)) {
-            DPDK_INFO(FI_LOG_CORE, "skipping device %s (want %s)\n",
-                      info->domain_attr->name, hints->domain_attr->name);
+            strcasecmp(hints->domain_attr->name, info->domain_attr->name))
+        {
+            DPDK_INFO(FI_LOG_CORE, "skipping device %s (want %s)\n", info->domain_attr->name,
+                      hints->domain_attr->name);
             return -FI_ENODATA;
         }
 
@@ -242,7 +236,7 @@ static int dpdk_check_hints(uint32_t version,
     }
 
     if (hints->ep_attr) {
-        ret = ofi_check_ep_attr(&dpdk_util_prov,info->fabric_attr->api_version,info,hints);
+        ret = ofi_check_ep_attr(&dpdk_util_prov, info->fabric_attr->api_version, info, hints);
         if (ret) {
             DPDK_INFO(FI_LOG_CORE, "ep_attr check failed.\n");
             return ret;
@@ -270,10 +264,10 @@ static int dpdk_check_hints(uint32_t version,
 
 int dpdk_getinfo(uint32_t version, const char *node, const char *service, uint64_t flags,
                  const struct fi_info *hints, struct fi_info **info) {
-    struct fi_info* generated_info = NULL;
-    const struct fi_info* check_info = dpdk_util_prov.info;
+    struct fi_info       *generated_info = NULL;
+    const struct fi_info *check_info     = dpdk_util_prov.info;
 
-    for (;check_info;check_info=check_info->next) {
+    for (; check_info; check_info = check_info->next) {
         // 1) match the hints, flags, info
         if (hints) {
             if (hints->ep_attr) {
@@ -292,7 +286,7 @@ int dpdk_getinfo(uint32_t version, const char *node, const char *service, uint64
         // 2) generate info
         // node:service --> dest addr
         // hints.src    --> src addr
-        struct fi_info* cur_info = fi_dupinfo(check_info);
+        struct fi_info *cur_info = fi_dupinfo(check_info);
         if (!cur_info) {
             return -FI_ENOMEM;
         }
@@ -301,10 +295,10 @@ int dpdk_getinfo(uint32_t version, const char *node, const char *service, uint64
             cur_info->src_addr = malloc(hints->src_addrlen);
             if (!cur_info->src_addr) {
                 DPDK_WARN(FI_LOG_FABRIC, "%s: failed to allocate %lu bytes for src_addr.\n",
-                          __func__,hints->src_addrlen);
+                          __func__, hints->src_addrlen);
                 return -FI_ENOMEM;
             }
-            memcpy(cur_info->src_addr,hints->src_addr,hints->src_addrlen);
+            memcpy(cur_info->src_addr, hints->src_addr, hints->src_addrlen);
             cur_info->src_addrlen = hints->src_addrlen;
         }
 
@@ -312,20 +306,20 @@ int dpdk_getinfo(uint32_t version, const char *node, const char *service, uint64
             cur_info->dest_addr = malloc(hints->dest_addrlen);
             if (!cur_info->dest_addr) {
                 DPDK_WARN(FI_LOG_FABRIC, "%s: failed to allocate %lu bytes for dest_addr.\n",
-                          __func__,hints->dest_addrlen);
+                          __func__, hints->dest_addrlen);
                 return -FI_ENOMEM;
             }
-            memcpy(cur_info->dest_addr,hints->dest_addr,hints->dest_addrlen);
+            memcpy(cur_info->dest_addr, hints->dest_addr, hints->dest_addrlen);
             cur_info->dest_addrlen = hints->dest_addrlen;
         } else if (node) {
             struct addrinfo *dest_addr;
-            if(getaddrinfo(node,service,NULL,&dest_addr)) {
+            if (getaddrinfo(node, service, NULL, &dest_addr)) {
                 DPDK_WARN(FI_LOG_FABRIC, "%s: cannot find destination address for node:%s.\n",
-                          __func__,node);
+                          __func__, node);
                 return -FI_ENODATA;
             }
             cur_info->dest_addrlen = dest_addr->ai_addrlen;
-            memcpy(cur_info->dest_addr,dest_addr->ai_addr,dest_addr->ai_addrlen);
+            memcpy(cur_info->dest_addr, dest_addr->ai_addr, dest_addr->ai_addrlen);
             freeaddrinfo(dest_addr);
         }
 

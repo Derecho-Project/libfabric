@@ -1,7 +1,11 @@
+#include <arpa/inet.h>
+#include <netdb.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <sys/socket.h>
+#include <sys/types.h>
 #include <unistd.h>
 
 #include <rdma/fabric.h>
@@ -18,10 +22,7 @@
 
 #include <ofi.h>
 
-#define PROVIDER_NAME "dpdk"         // This will become a parameter of the test
-#define DOMAIN_NAME   "0000:00:05.0" // This will become a parameter of the test
-#define DEST_IP_ADDR  "10.0.0.212"   // This will become a parameter of the test
-#define MR_SIZE       1073741824     // This will become a parameter of the test
+#define MR_SIZE 1073741824 // This will become a parameter of the test
 
 #define LF_VERSION         OFI_VERSION_LATEST
 #define MAX_LF_ADDR_SIZE   128 - sizeof(uint32_t) - 2 * sizeof(uint64_t)
@@ -96,8 +97,59 @@ static void *alloc_mem(size_t memsz, size_t pgsz, bool huge) {
     return addr;
 }
 
-static void default_context() {
+static struct addrinfo *parse_ip_port_string(const char *ip_port_str) {
+    struct addrinfo  hints;
+    struct addrinfo *res;
+    char            *node      = NULL;
+    char            *service   = NULL;
+    uint32_t         colon_pos = 0;
+    while (colon_pos < strlen(ip_port_str)) {
+        if (ip_port_str[colon_pos] == ':') {
+            break;
+        }
+        colon_pos++;
+    }
+    node = strndup(ip_port_str, colon_pos);
+    /** if we do have the port **/
+    if ((colon_pos + 1) < strlen(ip_port_str)) {
+        service = strdup(ip_port_str + colon_pos + 1);
+    }
+    bzero(&hints, sizeof(hints));
+    hints.ai_family = AF_INET;
+
+    int errcode = getaddrinfo(node, service, &hints, &res);
+    if (errcode) {
+        fprintf(stderr, "failed to get source address for %s. Error:%s\n", ip_port_str,
+                gai_strerror(errcode));
+    }
+    if (service) {
+        free(service);
+    }
+    if (node) {
+        free(node);
+    }
+    return res;
+}
+
+static void print_addrinfo(const struct addrinfo *ai) {
+    char ipbuf[32];
+    inet_ntop(AF_INET, &((struct sockaddr_in *)(ai->ai_addr))->sin_addr, ipbuf, 32);
+    printf("ai_flags:       %d\n", ai->ai_flags);
+    printf("ai_family:      %d\n", ai->ai_family);
+    printf("ai_socktype:    %d\n", ai->ai_socktype);
+    printf("ai_protocol:    %d\n", ai->ai_protocol);
+    printf("ai_addrlen:     %d\n", ai->ai_addrlen);
+    printf("ai_addr:        %s:%d\n", ipbuf,
+           ntohs(((struct sockaddr_in *)(ai->ai_addr))->sin_port));
+    printf("ai_canonname:   %s\n", ai->ai_canonname);
+}
+
+static void default_context(const char *provider_name, const char *domain_name,
+                            const char *src_ip_port) {
     memset((void *)&g_ctxt, 0, sizeof(struct lf_ctxt));
+
+    /** parse the service and port */
+    struct addrinfo *src_res = parse_ip_port_string(src_ip_port);
 
     /** Create a new empty fi_info structure */
     g_ctxt.hints = fi_allocinfo();
@@ -121,9 +173,10 @@ static void default_context() {
     g_ctxt.pep_addr_len = MAX_LF_ADDR_SIZE;
 
     /** Set the provider, can be verbs|psm|sockets|usnic */
-    g_ctxt.hints->fabric_attr->prov_name = PROVIDER_NAME;
+    g_ctxt.hints->fabric_attr->prov_name = strdup(provider_name);
+    ;
     /** Set the domain */
-    g_ctxt.hints->domain_attr->name = DOMAIN_NAME;
+    g_ctxt.hints->domain_attr->name = strdup(domain_name);
 
     /** Set the memory region mode mode bits, see fi_mr(3) for details */
     if ((strcmp(g_ctxt.hints->fabric_attr->prov_name, "sockets") == 0) ||
@@ -142,6 +195,25 @@ static void default_context() {
         g_ctxt.hints->domain_attr->mr_mode =
             FI_MR_LOCAL | FI_MR_ALLOCATED | FI_MR_PROV_KEY | FI_MR_VIRT_ADDR;
     }
+
+    /** set the address space **/
+    g_ctxt.hints->addr_format = FI_SOCKADDR_IN;
+    g_ctxt.hints->src_addrlen = src_res->ai_addrlen;
+    g_ctxt.hints->src_addr    = malloc(src_res->ai_addrlen);
+    memcpy(g_ctxt.hints->src_addr, src_res->ai_addr, src_res->ai_addrlen);
+    /** **/
+    {
+        int              cntr = 0;
+        struct addrinfo *nxt  = src_res;
+        while (nxt != NULL) {
+            print_addrinfo(nxt);
+            nxt = nxt->ai_next;
+            cntr++;
+        }
+        fprintf(stdout, "getaddrinfo: last %d entries are dropped.\n", cntr - 1);
+    }
+
+    freeaddrinfo(src_res);
 }
 
 int lf_initialize() {
@@ -293,16 +365,17 @@ void do_server() {
         printf("fi_listen() failed: %s\n", fi_strerror(-ret));
         exit(2);
     }
-    // Get the local address
-    ret = fi_getname(&(g_ctxt.pep->fid), g_ctxt.pep_addr, &(g_ctxt.pep_addr_len));
-    if (ret) {
-        printf("fi_getname() failed: %s\n", fi_strerror(-ret));
-        exit(2);
-    }
-    if (g_ctxt.pep_addr_len > MAX_LF_ADDR_SIZE) {
-        printf("local name is too big to fit in local buffer\n");
-        exit(2);
-    }
+
+    // // Get the local address
+    // ret = fi_getname(&(g_ctxt.pep->fid), g_ctxt.pep_addr, &(g_ctxt.pep_addr_len));
+    // if (ret) {
+    //     printf("fi_getname() failed: %s\n", fi_strerror(-ret));
+    //     exit(2);
+    // }
+    // if (g_ctxt.pep_addr_len > MAX_LF_ADDR_SIZE) {
+    //     printf("local name is too big to fit in local buffer\n");
+    //     exit(2);
+    // }
 
     // Synchronously read from the passive event queue, init the server ep
     struct fi_eq_cm_entry entry;
@@ -311,16 +384,15 @@ void do_server() {
     struct fid_ep        *ep;
     struct fid_eq        *eq;
 
-    // TODO: We should get an async event from the eq, but we don't have one yet!
-    // n_read = fi_eq_sread(g_ctxt.peq, &event, &entry, sizeof(entry), -1, 0);
-    // if (n_read != sizeof(entry)) {
-    //     printf("Failed to get connection from remote. n_read=%ld\n", n_read);
-    //     exit(2);
-    // }
-
-    // Instead, we simulate the async event by hand-crafting the entry
-    entry.fid  = &(g_ctxt.pep->fid);
-    entry.info = fi_dupinfo(g_ctxt.fi);
+    n_read = fi_eq_sread(g_ctxt.peq, &event, &entry, sizeof(entry), -1, 0);
+    if (n_read != sizeof(entry)) {
+        fprintf(stderr, "Failed to get connection from remote. n_read=%ld\n", n_read);
+        return;
+    }
+    if (event != FI_CONNREQ) {
+        fprintf(stderr, "fi_eq_sread got unexpected event: %u, quitting...\n", event);
+        return;
+    }
 
     // Create active ep and associate it to serve the incoming connection
     if (init_active_ep(entry.info, &ep, &eq)) {
@@ -338,19 +410,24 @@ void do_server() {
         exit(2);
     }
 
-    // TODO: We should get an async event from the eq, but we don't have one yet!
-    // // Synchronously read from the eq of the new endpoint
-    // n_read = fi_eq_sread(eq, &event, &entry, sizeof(entry), -1, 0);
-    // if (n_read != sizeof(entry)) {
-    //     printf("failed to connect remote. n_read=%ld.\n", n_read);
-    //     exit(2);
-    // }
-    // if (event != FI_CONNECTED || entry.fid != &(ep->fid)) {
-    //     fi_freeinfo(entry.info);
-    //     printf("Unexpected CM event: %d.\n", event);
-    //     exit(2);
-    // }
-    // fi_freeinfo(entry.info);
+    // Synchronously read from the eq of the new endpoint
+    n_read = fi_eq_sread(eq, &event, &entry, sizeof(entry), -1, 0);
+    if (n_read != sizeof(entry)) {
+        printf("failed to connect remote. n_read=%ld.\n", n_read);
+        return;
+    }
+    if (event != FI_CONNECTED) {
+        fi_freeinfo(entry.info);
+        printf("Unexpected CM event: %d.\n", event);
+        return;
+    }
+    if (entry.fid != &(ep->fid)) {
+        fi_freeinfo(entry.info);
+        printf("Event fid@%p does not match accepting endpoint fid@%p.\n", entry.fid, &ep->fid);
+        return;
+    }
+    fi_freeinfo(entry.info);
+    printf("Server connected!\n");
 
     // Server loop
     struct iovec  msg_iov;
@@ -400,9 +477,15 @@ void do_server() {
         }
         printf("\n");
     }
+
+    fi_close(&ep->fid);
+    fi_close(&eq->fid);
+
+    printf("Server exiting...\n");
+    return;
 }
 
-void do_client() {
+void do_client(const char *server_ip_and_port) {
     int ret;
 
     // Active endpoint and associated event queue
@@ -418,23 +501,34 @@ void do_client() {
     struct fi_eq_cm_entry entry;
     uint32_t              event;
 
-    ret = fi_connect(ep, g_ctxt.pep_addr, NULL, 0);
-    if (ret) {
-        printf("fi_connect() failed: %s\n", fi_strerror(-ret));
-        exit(2);
+    struct addrinfo *svr_ai = parse_ip_port_string(server_ip_and_port);
+    if (!svr_ai) {
+        fprintf(stderr, "%s cannot get server address from string:%s.\n", __func__,
+                server_ip_and_port);
+        return;
     }
 
-    // TODO: We should get an async event from the eq, but we don't have one yet!
+    ret = fi_connect(ep, svr_ai->ai_addr, NULL, 0);
+    if (ret) {
+        printf("fi_connect() failed: %s\n", fi_strerror(-ret));
+        freeaddrinfo(svr_ai);
+        exit(2);
+    }
+    freeaddrinfo(svr_ai);
+
     // Get connection acceptance from the server
-    // ssize_t n_read = fi_eq_sread(eq, &event, &entry, sizeof(entry), -1, 0);
-    // if (n_read != sizeof(entry)) {
-    //     printf("failed to connect remote. n_read=%ld.\n", n_read);
-    //     exit(2);
-    // }
-    // if (event != FI_CONNECTED || entry.fid != &ep->fid) {
-    //     printf("RDMC Unexpected CM event: %d.\n", event);
-    //     exit(2);
-    // }
+    ssize_t n_read = fi_eq_sread(eq, &event, &entry, sizeof(entry), -1, 0);
+    if (n_read != sizeof(entry)) {
+        fprintf(stderr, "failed to connect remote. n_read=%ld.\n", n_read);
+        return;
+    }
+    if (event != FI_CONNECTED || entry.fid != &ep->fid) {
+        fprintf(stderr, "fi_eq_sread() got unexpected even: %d, quitting...\n", event);
+        return;
+    }
+    printf("Client connected!\n");
+    // fflush(stdin);
+    // sleep(10);
 
     // Now the connection is open, I can send
     struct iovec  msg_iov;
@@ -491,17 +585,34 @@ void do_client() {
 
         printf("Insert a message size: ");
     }
+
+    fi_shutdown(ep, 0);
+
+    fi_close(&ep->fid);
+    fi_close(&eq->fid);
+
+    printf("Client disconnected, exiting...\n");
+    return;
 }
+
+#define CMD_ARG_HELP                                                                               \
+    "<info|client|server> <prov> <domain> <local_ip:local_cm_port> "                               \
+    "[remote_ip:remote_cm_port,mandatory for client]"
 
 int main(int argc, char **argv) {
     int ret;
-    if (argc < 2) {
-        printf("Usage: %s <info|client|server>\n", argv[0]);
-        exit(1);
+    if (argc < 5) {
+        printf("Usage: %s" CMD_ARG_HELP "\n", argv[0]);
+        return 1;
+    }
+
+    if (strcmp(argv[1], "client") == 0 && argc < 6) {
+        printf("Usage: %s" CMD_ARG_HELP "\n", argv[0]);
+        return 1;
     }
 
     // Initialize the Libfabric hints to ask for the right provider, fabric, domain.
-    default_context();
+    default_context(argv[2], argv[3], argv[4]);
 
     // Get the fabric info
     ret = fi_getinfo(LF_VERSION, NULL, NULL, 0, g_ctxt.hints, &g_ctxt.fi);
@@ -541,7 +652,7 @@ int main(int argc, char **argv) {
     if (strcmp(argv[1], "client") == 0) {
 
         printf("Starting Client... \n");
-        do_client();
+        do_client(argv[5]);
     } else if (strcmp(argv[1], "server") == 0) {
 
         printf("Starting Server...\n");

@@ -1,13 +1,13 @@
+#include <arpa/inet.h>
+#include <netdb.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
-#include <unistd.h>
-#include <sys/types.h>
 #include <sys/socket.h>
-#include <netdb.h>
-#include <arpa/inet.h>
+#include <sys/types.h>
 #include <time.h>
+#include <unistd.h>
 
 #include <rdma/fabric.h>
 #include <rdma/fi_cm.h>
@@ -23,7 +23,7 @@
 
 #include <ofi.h>
 
-#define MR_SIZE       1073741824     // This will become a parameter of the test
+#define MR_SIZE 1073741824 // This will become a parameter of the test
 
 #define LF_VERSION         OFI_VERSION_LATEST
 #define MAX_LF_ADDR_SIZE   128 - sizeof(uint32_t) - 2 * sizeof(uint64_t)
@@ -97,30 +97,30 @@ static void *alloc_mem(size_t memsz, size_t pgsz, bool huge) {
     return addr;
 }
 
-static struct addrinfo* parse_ip_port_string(const char* ip_port_str) {
-    struct addrinfo     hints;
-    struct addrinfo*    res;
-    char*               node    = NULL;
-    char*               service = NULL;
-    uint32_t            colon_pos = 0;
-    while(colon_pos < strlen(ip_port_str)) {
+static struct addrinfo *parse_ip_port_string(const char *ip_port_str) {
+    struct addrinfo  hints;
+    struct addrinfo *res;
+    char            *node      = NULL;
+    char            *service   = NULL;
+    uint32_t         colon_pos = 0;
+    while (colon_pos < strlen(ip_port_str)) {
         if (ip_port_str[colon_pos] == ':') {
             break;
         }
-        colon_pos ++;
+        colon_pos++;
     }
-    node = strndup(ip_port_str,colon_pos);
+    node = strndup(ip_port_str, colon_pos);
     /** if we do have the port **/
-    if ((colon_pos+1) < strlen(ip_port_str)) {
-        service = strdup(ip_port_str+colon_pos+1);
+    if ((colon_pos + 1) < strlen(ip_port_str)) {
+        service = strdup(ip_port_str + colon_pos + 1);
     }
-    bzero(&hints,sizeof(hints));
+    bzero(&hints, sizeof(hints));
     hints.ai_family = AF_INET;
-    
-    int errcode = getaddrinfo(node,service,&hints,&res);
+
+    int errcode = getaddrinfo(node, service, &hints, &res);
     if (errcode) {
-        fprintf(stderr, "failed to get source address for %s. Error:%s\n",
-                ip_port_str, gai_strerror(errcode));
+        fprintf(stderr, "failed to get source address for %s. Error:%s\n", ip_port_str,
+                gai_strerror(errcode));
     }
     if (service) {
         free(service);
@@ -131,23 +131,25 @@ static struct addrinfo* parse_ip_port_string(const char* ip_port_str) {
     return res;
 }
 
-static void print_addrinfo(const struct addrinfo* ai) {
+static void print_addrinfo(const struct addrinfo *ai) {
     char ipbuf[32];
-    inet_ntop(AF_INET,&((struct sockaddr_in*)(ai->ai_addr))->sin_addr,ipbuf,32);
-    printf("ai_flags:       %d\n",ai->ai_flags);
-    printf("ai_family:      %d\n",ai->ai_family);
-    printf("ai_socktype:    %d\n",ai->ai_socktype);
-    printf("ai_protocol:    %d\n",ai->ai_protocol);
-    printf("ai_addrlen:     %d\n",ai->ai_addrlen);
-    printf("ai_addr:        %s:%d\n",ipbuf,ntohs(((struct sockaddr_in*)(ai->ai_addr))->sin_port));
-    printf("ai_canonname:   %s\n",ai->ai_canonname);
+    inet_ntop(AF_INET, &((struct sockaddr_in *)(ai->ai_addr))->sin_addr, ipbuf, 32);
+    printf("ai_flags:       %d\n", ai->ai_flags);
+    printf("ai_family:      %d\n", ai->ai_family);
+    printf("ai_socktype:    %d\n", ai->ai_socktype);
+    printf("ai_protocol:    %d\n", ai->ai_protocol);
+    printf("ai_addrlen:     %d\n", ai->ai_addrlen);
+    printf("ai_addr:        %s:%d\n", ipbuf,
+           ntohs(((struct sockaddr_in *)(ai->ai_addr))->sin_port));
+    printf("ai_canonname:   %s\n", ai->ai_canonname);
 }
 
-static void default_context(const char* provider_name, const char* domain_name, const char* src_ip_port) {
+static void default_context(const char *provider_name, const char *domain_name,
+                            const char *src_ip_port) {
     memset((void *)&g_ctxt, 0, sizeof(struct lf_ctxt));
 
     /** parse the service and port */
-    struct addrinfo* src_res = parse_ip_port_string(src_ip_port);
+    struct addrinfo *src_res = parse_ip_port_string(src_ip_port);
 
     /** Create a new empty fi_info structure */
     g_ctxt.hints = fi_allocinfo();
@@ -197,17 +199,17 @@ static void default_context(const char* provider_name, const char* domain_name, 
     g_ctxt.hints->addr_format = FI_SOCKADDR_IN;
     g_ctxt.hints->src_addrlen = src_res->ai_addrlen;
     g_ctxt.hints->src_addr    = malloc(src_res->ai_addrlen);
-    memcpy(g_ctxt.hints->src_addr,src_res->ai_addr,src_res->ai_addrlen);
+    memcpy(g_ctxt.hints->src_addr, src_res->ai_addr, src_res->ai_addrlen);
     /** **/
     {
-        int cntr = 0;
-        struct addrinfo* nxt = src_res;
-        while (nxt!=NULL) {
+        int              cntr = 0;
+        struct addrinfo *nxt  = src_res;
+        while (nxt != NULL) {
             print_addrinfo(nxt);
             nxt = nxt->ai_next;
             cntr++;
         }
-        fprintf(stdout,"getaddrinfo: last %d entries are dropped.\n",cntr-1);
+        fprintf(stdout, "getaddrinfo: last %d entries are dropped.\n", cntr - 1);
     }
 
     freeaddrinfo(src_res);
@@ -367,11 +369,11 @@ void do_server() {
 
     n_read = fi_eq_sread(g_ctxt.peq, &event, &entry, sizeof(entry), -1, 0);
     if (n_read != sizeof(entry)) {
-        fprintf(stderr,"Failed to get connection from remote. n_read=%ld\n", n_read);
+        fprintf(stderr, "Failed to get connection from remote. n_read=%ld\n", n_read);
         return;
     }
     if (event != FI_CONNREQ) {
-        fprintf(stderr,"fi_eq_sread got unexpected event: %u, quitting...\n", event);
+        fprintf(stderr, "fi_eq_sread got unexpected event: %u, quitting...\n", event);
         return;
     }
 
@@ -469,7 +471,7 @@ void do_server() {
     return;
 }
 
-void do_client(const char* server_ip_and_port) {
+void do_client(const char *server_ip_and_port) {
     int ret;
 
     // Active endpoint and associated event queue
@@ -477,7 +479,7 @@ void do_client(const char* server_ip_and_port) {
     struct fid_eq *eq;
 
     if (init_active_ep(g_ctxt.fi, &ep, &eq)) {
-        fprintf(stderr,"failed to initialize client endpoint.\n");
+        fprintf(stderr, "failed to initialize client endpoint.\n");
         return;
     }
 
@@ -485,10 +487,10 @@ void do_client(const char* server_ip_and_port) {
     struct fi_eq_cm_entry entry;
     uint32_t              event;
 
-    struct addrinfo* svr_ai = parse_ip_port_string(server_ip_and_port);
+    struct addrinfo *svr_ai = parse_ip_port_string(server_ip_and_port);
 
     if (!svr_ai) {
-        fprintf(stderr,"%s cannot get server address from string:%s.\n", __func__,
+        fprintf(stderr, "%s cannot get server address from string:%s.\n", __func__,
                 server_ip_and_port);
         return;
     }
@@ -503,7 +505,7 @@ void do_client(const char* server_ip_and_port) {
 
     ssize_t n_read = fi_eq_sread(eq, &event, &entry, sizeof(entry), -1, 0);
     if (n_read != sizeof(entry)) {
-        fprintf(stderr,"failed to connect remote. n_read=%ld.\n", n_read);
+        fprintf(stderr, "failed to connect remote. n_read=%ld.\n", n_read);
         return;
     }
     if (event != FI_CONNECTED || entry.fid != &ep->fid) {
@@ -556,7 +558,7 @@ void do_client(const char* server_ip_and_port) {
         printf("Insert a message size: ");
     }
     */
-    fi_shutdown(ep,0);
+    fi_shutdown(ep, 0);
 
     fi_close(&ep->fid);
     fi_close(&eq->fid);
@@ -567,22 +569,24 @@ void do_client(const char* server_ip_and_port) {
     return;
 }
 
-#define CMD_ARG_HELP    "<info|client|server> <prov> <domain> <local_ip:local_cm_port> [remote_ip:remote_cm_port,mandatory for client]"
+#define CMD_ARG_HELP                                                                               \
+    "<info|client|server> <prov> <domain> <local_ip:local_cm_port> "                               \
+    "[remote_ip:remote_cm_port,mandatory for client]"
 
 int main(int argc, char **argv) {
     int ret;
     if (argc < 5) {
-        printf("Usage: %s" CMD_ARG_HELP  "\n", argv[0]);
+        printf("Usage: %s" CMD_ARG_HELP "\n", argv[0]);
         return 1;
     }
 
-    if (strcmp(argv[1],"client") == 0 && argc < 6) {
+    if (strcmp(argv[1], "client") == 0 && argc < 6) {
         printf("Usage: %s" CMD_ARG_HELP "\n", argv[0]);
         return 1;
     }
 
     // Initialize the Libfabric hints to ask for the right provider, fabric, domain.
-    default_context(argv[2],argv[3],argv[4]);
+    default_context(argv[2], argv[3], argv[4]);
 
     // Get the fabric info
     ret = fi_getinfo(LF_VERSION, NULL, NULL, 0, g_ctxt.hints, &g_ctxt.fi);

@@ -245,54 +245,54 @@ struct lcore_queue_conf {
 // Represents a DPDK domain (=> a DPDK device)
 struct dpdk_domain {
     // Utility domain
-    struct util_domain      util_domain;
+    struct util_domain util_domain;
     // we keep a copy of the fi_info.
-    struct fi_info*         info;
+    struct fi_info *info;
 
     // TODO: The following fields could be grouped in a "dev" struct,
     // which could be passed also to the child EPs for faster access.
     // Port ID of the DPDK device
-    uint16_t                port_id;
+    uint16_t port_id;
     // Queue ID of the DPDK device
-    uint16_t                queue_id;
+    uint16_t queue_id;
     // Device flags
-    uint64_t                dev_flags;
+    uint64_t dev_flags;
     // MTU
-    uint32_t                mtu;
+    uint32_t mtu;
     // DPDK core id
-    uint16_t                lcore_id;
+    uint16_t lcore_id;
 
     // Local Ethernet Address
-    struct rte_ether_addr   eth_addr;
+    struct rte_ether_addr eth_addr;
     // IPv4 Address and Port
-    struct sockaddr_in      local_addr;
+    struct sockaddr_in local_addr;
 
     // List of EP associated with this domain
-    struct slist            endpoint_list;
+    struct slist endpoint_list;
     // Number of EP in the list
-    size_t                  num_endpoints;
+    size_t num_endpoints;
     // Array of EP accessed by UDP port
-    struct dpdk_ep*         udp_port_to_ep[MAX_ENDPOINTS_PER_APP];
+    struct dpdk_ep *udp_port_to_ep[MAX_ENDPOINTS_PER_APP];
     // Mutex to access the list of EP
-    struct ofi_genlock      ep_mutex;
+    struct ofi_genlock ep_mutex;
 
     // Progress thread data
-    struct dpdk_progress    progress;
+    struct dpdk_progress progress;
 
     // Mempool for incoming packets
-    struct rte_mempool*     rx_pool;
+    struct rte_mempool *rx_pool;
 
     // Receive TLB to track incoming fragmented packet
     // TODO: Potentially, this could span multiple hardware queues.
     struct lcore_queue_conf lcore_queue_conf;
 
     // [Weijia] Connection management members
-    struct rte_mempool*     cm_pool;
-    struct rte_ring*        cm_ring;
-    atomic_uint             cm_session_counter;
+    struct rte_mempool *cm_pool;
+    struct rte_ring    *cm_ring;
+    atomic_uint         cm_session_counter;
 };
 
-#define DPDK_MAX_CM_DATA_SIZE   256
+#define DPDK_MAX_CM_DATA_SIZE 256
 
 // DPDK endpoint connection state
 enum ep_conn_state {
@@ -307,7 +307,7 @@ enum ep_conn_state {
 // The ip address are in the cpu endian.
 struct dpdk_conn_handle {
     struct fid          fid;
-    struct dpdk_domain* domain;
+    struct dpdk_domain *domain;
     uint32_t            session_id;
     uint32_t            remote_ip_addr;
     uint16_t            remote_ctrl_port;
@@ -323,10 +323,10 @@ struct dpdk_ep {
 
     // Remote connection endpoint information
     // All are in host/cpu byte order
-    struct rte_ether_addr   remote_eth_addr;
-    uint32_t                remote_ipv4_addr;
-    uint16_t                remote_udp_port;
-    uint16_t                remote_cm_udp_port; // the connection manager port.
+    struct rte_ether_addr remote_eth_addr;
+    uint32_t              remote_ipv4_addr;
+    uint16_t              remote_udp_port;
+    uint16_t              remote_cm_udp_port; // the connection manager port.
 
     // Receive and Transmit queues (= indeed, a "queue pair")
     struct dpdk_xfer_queue sq;
@@ -386,11 +386,7 @@ void dpdk_handle_event_list(struct dpdk_progress *progress);
 
 // ======= Passive Endpoint and Connection Management (CM)  =======
 // CM states
-enum dpdk_pep_state {
-    DPDK_PEP_INIT,
-    DPDK_PEP_LISTENING,
-    DPDK_PEP_SHUTDOWN
-};
+enum dpdk_pep_state { DPDK_PEP_INIT, DPDK_PEP_LISTENING, DPDK_PEP_SHUTDOWN };
 
 // FID classes, specific for the DPDK provider
 #define OFI_PROV_SPECIFIC_DPDK (0x888 << 16)
@@ -402,7 +398,7 @@ enum {
 // ======= Fabric, Domain, Endpoint and Threads  =======
 // Represents a DPDK fabric
 struct dpdk_fabric {
-    struct util_fabric  util_fabric;
+    struct util_fabric util_fabric;
     /*** [Weijia]
      TODO: This is a suboptimal design we should fix later.
 
@@ -416,9 +412,9 @@ struct dpdk_fabric {
      dedicated connection management thread. This also separate the control and
      data planes.
      ***/
-    struct util_eq*     util_eq;
+    struct util_eq *util_eq;
 };
- 
+
 // ======= Passive Endpoint and Connection Management (CM)  =======
 enum dpdk_cm_msg_type {
     DPDK_CM_MSG_CONNECTION_REQUEST,
@@ -430,53 +426,51 @@ enum dpdk_cm_msg_type {
 
 // We are using network order/big endian for header fields
 struct dpdk_cm_msg_hdr {
-    uint32_t type;          // dpdk_cm_msg_type
-    uint32_t session_id;    // a number picked by the connecting client to identify a session.
+    uint32_t type;       // dpdk_cm_msg_type
+    uint32_t session_id; // a number picked by the connecting client to identify a session.
     union {
         // connection request
         struct {
-            uint16_t                    client_data_udp_port;
-            uint16_t                    paramlen;
-        } __attribute__((__packed__))   connection_request;
+            uint16_t client_data_udp_port;
+            uint16_t paramlen;
+        } __attribute__((__packed__)) connection_request;
         // connection acknowledgement
         struct {
-            uint16_t                    client_data_udp_port;
-            uint16_t                    server_data_udp_port;
-            uint16_t                    paramlen;
-        } __attribute__((__packed__))   connection_acknowledgement;
+            uint16_t client_data_udp_port;
+            uint16_t server_data_udp_port;
+            uint16_t paramlen;
+        } __attribute__((__packed__)) connection_acknowledgement;
         // connection rejection
         struct {
-            uint16_t                    client_data_udp_port;
-            uint16_t                    rejection_code;
-	    uint16_t                    paramlen;
-        } __attribute__((__packed__))   connection_rejection;
+            uint16_t client_data_udp_port;
+            uint16_t rejection_code;
+            uint16_t paramlen;
+        } __attribute__((__packed__)) connection_rejection;
         // disconnection request
         struct {
-            uint16_t                    local_data_udp_port;
-            uint16_t                    remote_data_udp_port;
-        } __attribute__((__packed__))   disconnection_request;
+            uint16_t local_data_udp_port;
+            uint16_t remote_data_udp_port;
+        } __attribute__((__packed__)) disconnection_request;
         // space padding
         struct {
-            uint8_t                     bytes[56];
-        } __attribute__((__packed__))   _padding;
-    } __attribute__((__packed__))   typed_header;
+            uint8_t bytes[56];
+        } __attribute__((__packed__)) _padding;
+    } __attribute__((__packed__)) typed_header;
     uint8_t payload[];
 };
 
 /* sending the connection management messages */
-int dpdk_cm_send(struct dpdk_domain* domain);
+int dpdk_cm_send(struct dpdk_domain *domain);
 /* processing the connection management messages */
-int dpdk_cm_recv(struct dpdk_domain* 	domain,
-		 struct rte_ether_hdr* 	eth_hdr,
-		 struct rte_ipv4_hdr*	ip_hdr,
-		 struct rte_udp_hdr*    udp_hdr,
-		 struct rte_mbuf* 	cm_mbuf); // adjusted to cm msg header.
+int dpdk_cm_recv(struct dpdk_domain *domain, struct rte_ether_hdr *eth_hdr,
+                 struct rte_ipv4_hdr *ip_hdr, struct rte_udp_hdr *udp_hdr,
+                 struct rte_mbuf *cm_mbuf); // adjusted to cm msg header.
 
 // Passive Endpoint
 struct dpdk_pep {
-    struct util_pep         util_pep;
-    struct fi_info          *info;
-    enum dpdk_pep_state      state;
+    struct util_pep     util_pep;
+    struct fi_info     *info;
+    enum dpdk_pep_state state;
 };
 
 int dpdk_passive_ep(struct fid_fabric *fabric, struct fi_info *info, struct fid_pep **pep,
@@ -606,24 +600,22 @@ int  dpdk_eq_open(struct fid_fabric *fabric_fid, struct fi_eq_attr *attr, struct
                   void *context);
 void dpdk_tx_queue_insert(struct dpdk_ep *ep, struct dpdk_xfer_entry *tx_entry);
 
-
 //===================== DPDK Parameters ================
 struct dpdk_params_t {
-    // dpdk base port
-    #define DEFAULT_DPDK_BASE_PORT          (2509)
-    int     base_port;
-    // connection manager ring size
-    #define DEFAULT_DPDK_CM_RING_SIZE       (16)
-    size_t  cm_ring_size;
+// dpdk base port
+#define DEFAULT_DPDK_BASE_PORT (2509)
+    int base_port;
+// connection manager ring size
+#define DEFAULT_DPDK_CM_RING_SIZE (16)
+    size_t cm_ring_size;
 };
 
 extern struct dpdk_params_t dpdk_params;
 
 //===================== Log infrastructure ================
 #define DPDK_TRACE(subsys, ...) FI_TRACE(&dpdk_prov, subsys, __VA_ARGS__)
-#define DPDK_DBG(subsys, ...)   FI_DBG  (&dpdk_prov, subsys, __VA_ARGS__)
-#define DPDK_INFO(subsys, ...)  FI_INFO (&dpdk_prov, subsys, __VA_ARGS__)
-#define DPDK_WARN(subsys, ...)  FI_WARN (&dpdk_prov, subsys, __VA_ARGS__)
-
+#define DPDK_DBG(subsys, ...)   FI_DBG(&dpdk_prov, subsys, __VA_ARGS__)
+#define DPDK_INFO(subsys, ...)  FI_INFO(&dpdk_prov, subsys, __VA_ARGS__)
+#define DPDK_WARN(subsys, ...)  FI_WARN(&dpdk_prov, subsys, __VA_ARGS__)
 
 #endif /* _DPDK_H_ */

@@ -124,7 +124,7 @@ static int dpdk_ep_bind(struct fid *fid, struct fid *bfid, uint64_t flags) {
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wunused-variable"
-static int dpdk_ep_close(struct fid *fid) {
+static int             dpdk_ep_close(struct fid *fid) {
     struct dpdk_progress *progress;
     struct dpdk_ep       *ep = NULL;
 
@@ -189,8 +189,8 @@ static struct fi_ops dpdk_ep_fi_ops = {
 /* Create an endpoint. Not active until explicitly enabled */
 int dpdk_endpoint(struct fid_domain *domain, struct fi_info *info, struct fid_ep **ep_fid,
                   void *context) {
-    struct dpdk_ep          *ep;
-    int                      ret = 0;
+    struct dpdk_ep *ep;
+    int             ret = 0;
 
     ep = calloc(1, sizeof(*ep));
     if (!ep) {
@@ -235,7 +235,7 @@ int dpdk_endpoint(struct fid_domain *domain, struct fi_info *info, struct fid_ep
     // TODO: Cleanup and memory free in case of failure
     RTE_LOG(DEBUG, USER1, "Initializing the QP TXQ to contain %lu structs of size %lu\n",
             dpdk_default_tx_size, sizeof(*ep->txq));
-    ep->txq     = calloc(dpdk_default_tx_size, sizeof(*ep->txq));
+    ep->txq = calloc(dpdk_default_tx_size, sizeof(*ep->txq));
     if (!ep->txq) {
         FI_WARN(&dpdk_prov, FI_LOG_EP_CTRL, "Failed to create txq table.");
         ret = -FI_ENOMEM;
@@ -279,8 +279,8 @@ int dpdk_endpoint(struct fid_domain *domain, struct fi_info *info, struct fid_ep
             atomic_store(&ep->conn_state, ep_conn_state_connecting);
             break;
         default:
-            DPDK_WARN(FI_LOG_EP_CTRL,"%s get unexpected type:%lu from fi_info::handle.",
-                      __func__, info->handle->fclass);
+            DPDK_WARN(FI_LOG_EP_CTRL, "%s get unexpected type:%lu from fi_info::handle.", __func__,
+                      info->handle->fclass);
             ret = -FI_EINVAL;
             goto err5;
         }
@@ -341,8 +341,7 @@ int dpdk_endpoint(struct fid_domain *domain, struct fi_info *info, struct fid_ep
     slist_insert_tail(&ep->entry, &dpdk_domain->endpoint_list);
     dpdk_domain->udp_port_to_ep[dpdk_domain->num_endpoints] = ep;
     dpdk_domain->num_endpoints++;
-    ep->udp_port = rte_be_to_cpu_16(dpdk_domain->local_addr.sin_port) +
-                   dpdk_domain->num_endpoints;
+    ep->udp_port = rte_be_to_cpu_16(dpdk_domain->local_addr.sin_port) + dpdk_domain->num_endpoints;
     ofi_genlock_unlock(&dpdk_domain->ep_mutex);
 
     FI_INFO(&dpdk_prov, FI_LOG_EP_CTRL, "Created EP %u", ep->udp_port);
@@ -354,8 +353,8 @@ err7:
 err6:
 err5:
 err4:
-// err3:
-// err2:
+    // err3:
+    // err2:
     ofi_endpoint_close(&ep->util_ep);
 err1:
     free(ep);
@@ -363,23 +362,23 @@ err1:
 }
 
 // ============== PASSIVE ENDPOINT ==============
-static int dpdk_pep_bind(struct fid* fid, struct fid *bfid, uint64_t flags) {
-    struct dpdk_pep* pep_l3 = container_of(fid, struct dpdk_pep, util_pep.pep_fid.fid);
+static int dpdk_pep_bind(struct fid *fid, struct fid *bfid, uint64_t flags) {
+    struct dpdk_pep *pep_l3 = container_of(fid, struct dpdk_pep, util_pep.pep_fid.fid);
 
     int ret = FI_SUCCESS;
-    switch(bfid->fclass) {
+    switch (bfid->fclass) {
     case FI_CLASS_EQ:
-        struct util_eq* eq_l2 = container_of(bfid,struct util_eq,eq_fid.fid);
-        ret = ofi_pep_bind_eq(&pep_l3->util_pep, eq_l2, flags);
+        struct util_eq *eq_l2 = container_of(bfid, struct util_eq, eq_fid.fid);
+        ret                   = ofi_pep_bind_eq(&pep_l3->util_pep, eq_l2, flags);
         if (ret == FI_SUCCESS) {
-            struct dpdk_fabric* fabric_l3 = container_of(pep_l3->util_pep.fabric,struct dpdk_fabric,util_fabric);
+            struct dpdk_fabric *fabric_l3 =
+                container_of(pep_l3->util_pep.fabric, struct dpdk_fabric, util_fabric);
             fabric_l3->util_eq = eq_l2;
         }
         break;
     default:
-        DPDK_WARN(FI_LOG_EP_CTRL,
-            "%s: invalid FID class %lu. Expecting FI_CLASS_EQ(%d) only.\n",
-            __func__, bfid->fclass, FI_CLASS_EQ);
+        DPDK_WARN(FI_LOG_EP_CTRL, "%s: invalid FID class %lu. Expecting FI_CLASS_EQ(%d) only.\n",
+                  __func__, bfid->fclass, FI_CLASS_EQ);
         ret = -FI_EINVAL;
     }
     return ret;

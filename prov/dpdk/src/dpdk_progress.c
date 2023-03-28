@@ -39,7 +39,7 @@ static void memcpy_mbuf_to_iov(struct iovec *restrict dst, size_t          dst_c
     }
 
     // 2. For each source chunk, copy it to the destination
-    cur_mbuf         = (struct ret_mbuf*)src;
+    cur_mbuf         = (struct ret_mbuf *)src;
     dst_bytes_copied = 0;
     for (int i = 0; i < src->nb_segs; i++) {
 
@@ -748,7 +748,7 @@ static void process_rx_packet(struct dpdk_domain *domain, struct rte_mbuf *mbuf)
     if (rx_port == base_port) {
         // Probably need to insert in some ring
         rte_pktmbuf_adj(mbuf, sizeof(*udp_hdr));
-        dpdk_cm_recv(domain,eth_hdr,ipv4_hdr,udp_hdr,mbuf);
+        dpdk_cm_recv(domain, eth_hdr, ipv4_hdr, udp_hdr, mbuf);
         rte_pktmbuf_free(mbuf);
         return;
     } else if (rx_port > base_port && rx_port < base_port + MAX_ENDPOINTS_PER_APP) {
@@ -1066,10 +1066,8 @@ static void progress_ep(struct dpdk_ep *ep) {
 
 } /* progress_ep */
 
-
-
 /* handling connection manager outgoing packets. */
-void do_cm_send(struct dpdk_domain* domain) {
+void do_cm_send(struct dpdk_domain *domain) {
     // TODO:
 } /* do_cm_send */
 
