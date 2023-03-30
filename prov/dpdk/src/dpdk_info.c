@@ -331,7 +331,7 @@ int dpdk_getinfo(uint32_t version, const char *node, const char *service, uint64
                     return -FI_ENOMEM;
                 }
                 memcpy(cur_info->src_addr, &addr, sizeof(addr));
-                cur_info->src_addrlen = hints->src_addrlen;
+                cur_info->src_addrlen =  sizeof(addr);
             }
         }
 
