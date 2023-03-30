@@ -241,7 +241,16 @@ int dpdk_domain_open(struct fid_fabric *fabric_fid, struct fi_info *info,
     // Allocate CM ring buffer
     char cm_ring_name[32];
     sprintf(cm_ring_name, "cm_ring_%s", domain->util_domain.name);
-    domain->cm_ring = rte_ring_create(cm_ring_name, rte_align32pow2(dpdk_params.cm_ring_size),
+    // get cm ring size
+    size_t  cm_ring_size = cfg_getint(dpdk_config,CFG_OPT_DEFAULT_CM_RING_SIZE);
+    for (int i=0;i<cfg_size(dpdk_config,CFG_OPT_DOMAIN);i++) {
+        cfg_t* domain_config = cfg_getnsec(dpdk_config,CFG_OPT_DOMAIN,i);
+        if (strcmp(cfg_title(domain_config),domain->util_domain.name) == 0) {
+            cm_ring_size = cfg_getint(domain_config,CFG_OPT_DOMAIN_CM_RING_SIZE);
+            break;
+        }
+    }
+    domain->cm_ring = rte_ring_create(cm_ring_name, rte_align32pow2(cm_ring_size),
                                       rte_socket_id(), RING_F_MP_RTS_ENQ | RING_F_SC_DEQ);
     if (!domain->cm_ring) {
         DPDK_WARN(FI_LOG_CORE, "Fail to create CM ring for domain %s: %s.\n",

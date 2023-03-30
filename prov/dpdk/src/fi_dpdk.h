@@ -45,6 +45,8 @@
 #include <rte_malloc.h>
 #include <rte_udp.h>
 
+#include <confuse.h>
+
 #include "util.h"
 
 // TODO: This represents the maximum number of endpoints (EPs) that can be created by a single
@@ -598,14 +600,15 @@ int  dpdk_eq_open(struct fid_fabric *fabric_fid, struct fi_eq_attr *attr, struct
                   void *context);
 void dpdk_tx_queue_insert(struct dpdk_ep *ep, struct dpdk_xfer_entry *tx_entry);
 
-//===================== DPDK Parameters ================
-struct dpdk_params_t {
-    char*   dpdk_args;
-    long    cm_port;
-    long    cm_ring_size;
-};
-
-extern struct dpdk_params_t dpdk_params;
+//===================== DPDK Configurations ================
+extern struct cfg_t* dpdk_config;
+#define CFG_OPT_DPDK_ARGS               "dpdk_args"
+#define CFG_OPT_DEFAULT_CM_PORT         "default_cm_port"
+#define CFG_OPT_DEFAULT_CM_RING_SIZE    "default_cm_ring_size"
+#define CFG_OPT_DOMAIN                  "domain"
+#define CFG_OPT_DOMAIN_IP               "ip"
+#define CFG_OPT_DOMAIN_CM_PORT          "port"
+#define CFG_OPT_DOMAIN_CM_RING_SIZE     "cm_ring_size"
 
 //===================== Log infrastructure ================
 #define DPDK_TRACE(subsys, ...) FI_TRACE(&dpdk_prov, subsys, __VA_ARGS__)
