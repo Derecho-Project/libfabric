@@ -302,6 +302,39 @@ int dpdk_getinfo(uint32_t version, const char *node, const char *service, uint64
             cur_info->src_addrlen = hints->src_addrlen;
         }
 
+        // test domain configuration
+        if (!cur_info->src_addr) {
+            cfg_t* domain_config = dpdk_domain_config(cur_info->domain_attr->name);
+            if (domain_config) {
+                struct sockaddr_in addr;
+                addr.sin_family = AF_INET;
+                ssize_t cm_port = cfg_getint(domain_config,CFG_OPT_DOMAIN_CM_PORT);
+                if (cm_port < 0 || cm_port > 65535) {
+                    DPDK_WARN(FI_LOG_DOMAIN, "Invalid CM port(%ld) configured for domain:%s\n",
+                              cm_port,cur_info->domain_attr->name);
+                    fi_freeinfo(cur_info);
+                    return -FI_EINVAL;
+                }
+                addr.sin_port = htons((uint16_t)cm_port);
+                char *ip = cfg_getstr(domain_config,CFG_OPT_DOMAIN_IP);
+                if(!inet_pton(AF_INET,ip,&addr.sin_addr)) {
+                    DPDK_WARN(FI_LOG_DOMAIN, "Invalid ip address(%s) configured for domain:%s\n",
+                              ip,cur_info->domain_attr->name);
+                    fi_freeinfo(cur_info);
+                    return -FI_EINVAL;
+                }
+                cur_info->src_addr = malloc(sizeof(addr));
+                if (!cur_info->src_addr) {
+                    DPDK_WARN(FI_LOG_DOMAIN, "%s: failed to allocate %lu bytes for src_addr.\n",
+                              __func__, sizeof(addr));
+                    fi_freeinfo(cur_info);
+                    return -FI_ENOMEM;
+                }
+                memcpy(cur_info->src_addr, &addr, sizeof(addr));
+                cur_info->src_addrlen = hints->src_addrlen;
+            }
+        }
+
         if (hints && hints->dest_addr) {
             cur_info->dest_addr = malloc(hints->dest_addrlen);
             if (!cur_info->dest_addr) {
