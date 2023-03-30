@@ -4,6 +4,17 @@
 // ================ The global configuration ================
 struct cfg_t* dpdk_config = NULL; 
 
+cfg_t* dpdk_domain_config(const char* domain_name) {
+    int ndom = cfg_size(dpdk_config,CFG_OPT_DOMAIN);
+    for (int i=0;i<ndom;i++) {
+        cfg_t* domain_config = cfg_getnsec(dpdk_config,CFG_OPT_DOMAIN,i);
+        if (strcmp(cfg_title(domain_config),domain_name) == 0) {
+            return domain_config;
+        }
+    }
+    return NULL;
+}
+
 // ================ Provider Initialization Functions =================
 static void fi_dpdk_fini(void) {
 
@@ -42,23 +53,6 @@ static void dpdk_init_env(void) {
     if(!cfg_file) {
         cfg_file = default_dpdk_cfg_file;
     }
-    
-    /* set the dpdk base port
-    fi_param_define(&dpdk_prov, "base_port", FI_PARAM_INT, "define dpdk base port");
-    fi_param_get_int(&dpdk_prov, "base_port", &dpdk_params.base_port);
-    if (dpdk_params.base_port < 0 && dpdk_params.base_port > 65535) {
-        DPDK_WARN(FI_LOG_FABRIC,
-                  "User provided base_port %d is invalid."
-                  " Falling back to default base_port:%d instead. \n",
-                  dpdk_params.base_port, DEFAULT_DPDK_BASE_PORT);
-        dpdk_params.base_port = DEFAULT_DPDK_BASE_PORT;
-    }
-    */
-
-    /* set the dpdk cm ring size
-    fi_param_define(&dpdk_prov, "cm_ring_size", FI_PARAM_SIZE_T, "define dpdk cm ring size");
-    fi_param_get_size_t(&dpdk_prov, "cm_ring_size", &dpdk_params.cm_ring_size);
-    */
 }
 
 static void dpdk_load_cfg() {

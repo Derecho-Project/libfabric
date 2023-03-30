@@ -191,7 +191,37 @@ int dpdk_domain_open(struct fid_fabric *fabric_fid, struct fi_info *info,
         ret = -FI_ENOMEM;
         goto free;
     }
+
     /* 2. DPDK-specific initialization */
+    cfg_t* domain_config = dpdk_domain_config(domain->util_domain.name);
+    // Get the IP and UDP port info from the configuration
+    if (info->src_addrlen > 0) {
+        // argument specified:
+        domain->local_addr = *(struct sockaddr_in *)info->src_addr;
+    } else if (domain_config){
+        // local from configuration
+        domain->local_addr.sin_family = AF_INET;
+        ssize_t cm_port = cfg_getint(domain_config,CFG_OPT_DOMAIN_CM_PORT);
+        if (cm_port < 0 || cm_port > 65535) {
+            DPDK_WARN(FI_LOG_DOMAIN, "Invalid CM port(%ld) configured for domain:%s\n",
+                      cm_port,domain->util_domain.name);
+            ret = -FI_EINVAL;
+            goto free;
+        }
+        domain->local_addr.sin_port = htons((uint16_t)cm_port);
+        char* ip = cfg_getstr(domain_config,CFG_OPT_DOMAIN_IP);
+        if(!inet_pton(AF_INET,ip,&domain->local_addr.sin_addr)) {
+            DPDK_WARN(FI_LOG_DOMAIN, "Invalid ip address(%s) configured for domain:%s\n",
+                      ip,domain->util_domain.name);
+            ret = -FI_EINVAL;
+            goto free;
+        }
+    } else {
+        DPDK_WARN(FI_LOG_DOMAIN, "Failed to determine the ip address for domain:%s\n",
+                  domain->util_domain.name);
+        ret = -FI_ENODATA;
+        goto free;
+    }
 
     // Ethernet MTU. This excludes the Ethernet header and the CRC.
     // TODO: Support for VLAN or VXLAN is not yet implemented
@@ -243,12 +273,8 @@ int dpdk_domain_open(struct fid_fabric *fabric_fid, struct fi_info *info,
     sprintf(cm_ring_name, "cm_ring_%s", domain->util_domain.name);
     // get cm ring size
     size_t  cm_ring_size = cfg_getint(dpdk_config,CFG_OPT_DEFAULT_CM_RING_SIZE);
-    for (int i=0;i<cfg_size(dpdk_config,CFG_OPT_DOMAIN);i++) {
-        cfg_t* domain_config = cfg_getnsec(dpdk_config,CFG_OPT_DOMAIN,i);
-        if (strcmp(cfg_title(domain_config),domain->util_domain.name) == 0) {
-            cm_ring_size = cfg_getint(domain_config,CFG_OPT_DOMAIN_CM_RING_SIZE);
-            break;
-        }
+    if (domain_config) {
+        cm_ring_size = cfg_getint(domain_config,CFG_OPT_DOMAIN_CM_RING_SIZE);
     }
     domain->cm_ring = rte_ring_create(cm_ring_name, rte_align32pow2(cm_ring_size),
                                       rte_socket_id(), RING_F_MP_RTS_ENQ | RING_F_SC_DEQ);
@@ -278,8 +304,6 @@ int dpdk_domain_open(struct fid_fabric *fabric_fid, struct fi_info *info,
         goto free;
     };
 
-    // Get the IP and UDP port info from the configuration
-    domain->local_addr = *(struct sockaddr_in *)info->src_addr;
     rte_eth_macaddr_get(domain->port_id, &domain->eth_addr);
 
     // Initialize the list of endpoints

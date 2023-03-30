@@ -609,6 +609,7 @@ extern struct cfg_t* dpdk_config;
 #define CFG_OPT_DOMAIN_IP               "ip"
 #define CFG_OPT_DOMAIN_CM_PORT          "port"
 #define CFG_OPT_DOMAIN_CM_RING_SIZE     "cm_ring_size"
+struct cfg_t* dpdk_domain_config(const char* domain_name);
 
 //===================== Log infrastructure ================
 #define DPDK_TRACE(subsys, ...) FI_TRACE(&dpdk_prov, subsys, __VA_ARGS__)
