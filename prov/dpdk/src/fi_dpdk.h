@@ -600,12 +600,9 @@ void dpdk_tx_queue_insert(struct dpdk_ep *ep, struct dpdk_xfer_entry *tx_entry);
 
 //===================== DPDK Parameters ================
 struct dpdk_params_t {
-// dpdk base port
-#define DEFAULT_DPDK_BASE_PORT (2509)
-    int base_port;
-// connection manager ring size
-#define DEFAULT_DPDK_CM_RING_SIZE (16)
-    size_t cm_ring_size;
+    char*   dpdk_args;
+    long    cm_port;
+    long    cm_ring_size;
 };
 
 extern struct dpdk_params_t dpdk_params;

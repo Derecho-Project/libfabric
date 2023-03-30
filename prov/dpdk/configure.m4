@@ -18,15 +18,29 @@ AC_DEFUN([FI_DPDK_CONFIGURE],[
 
     # Set the DPDK environments
     AS_IF([test $dpdk_happy -eq 1],
-          [FI_PKG_CHECK_MODULES([dpdk], [libdpdk >= 22.11.0], [], [AC_MSG_ERROR([Cannot find libdpdk>=22.11.0, or pkg-config is not found.])])],
+          [
+           FI_PKG_CHECK_MODULES([dpdk],
+                                [libdpdk >= 22.11.0],
+                                [],
+                                [AC_MSG_ERROR([Cannot find libdpdk>=22.11.0, or pkg-config is not found.])])
+           FI_PKG_CHECK_MODULES([confuse],
+                                [libconfuse >= 3.3],
+                                [],
+                                [AC_MSG_ERROR([Cannot find libconfuse>=3.3, or pkg-config is not found.])])
+          ],
           [])
 
     # Set the flags for DPDK
     dpdk_CPPFLAGS=${dpdk_CFLAGS}
+    confuse_CPPFLAGS=${confuse_CPPFLAGS}
 
     AC_SUBST(dpdk_CFLAGS)
   	AC_SUBST(dpdk_CPPFLAGS)
 	AC_SUBST(dpdk_LIBS)
+
+    AC_SUBST(confuse_CFLAGS)
+    AC_SUBST(confuse_CPPFLAGS)
+    AC_SUBST(confuse_LIBS)
 
     AS_IF([test $dpdk_happy -eq 1], [$1], [$2])
 ])
