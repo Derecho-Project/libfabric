@@ -619,7 +619,7 @@ int main(int argc, char **argv) {
     if (strcmp(argv[1], "client") == 0) {
 
         printf("Starting Client... \n");
-        do_client(argv[5]);
+        do_client(argv[4]);
     } else if (strcmp(argv[1], "server") == 0) {
 
         printf("Starting Server...\n");
