@@ -131,25 +131,8 @@ static struct addrinfo *parse_ip_port_string(const char *ip_port_str) {
     return res;
 }
 
-static void print_addrinfo(const struct addrinfo *ai) {
-    char ipbuf[32];
-    inet_ntop(AF_INET, &((struct sockaddr_in *)(ai->ai_addr))->sin_addr, ipbuf, 32);
-    printf("ai_flags:       %d\n", ai->ai_flags);
-    printf("ai_family:      %d\n", ai->ai_family);
-    printf("ai_socktype:    %d\n", ai->ai_socktype);
-    printf("ai_protocol:    %d\n", ai->ai_protocol);
-    printf("ai_addrlen:     %d\n", ai->ai_addrlen);
-    printf("ai_addr:        %s:%d\n", ipbuf,
-           ntohs(((struct sockaddr_in *)(ai->ai_addr))->sin_port));
-    printf("ai_canonname:   %s\n", ai->ai_canonname);
-}
-
-static void default_context(const char *provider_name, const char *domain_name,
-                            const char *src_ip_port) {
+static void default_context(const char *provider_name, const char *domain_name) {
     memset((void *)&g_ctxt, 0, sizeof(struct lf_ctxt));
-
-    /** parse the service and port */
-    struct addrinfo *src_res = parse_ip_port_string(src_ip_port);
 
     /** Create a new empty fi_info structure */
     g_ctxt.hints = fi_allocinfo();
@@ -198,22 +181,6 @@ static void default_context(const char *provider_name, const char *domain_name,
 
     /** set the address space **/
     g_ctxt.hints->addr_format = FI_SOCKADDR_IN;
-    g_ctxt.hints->src_addrlen = src_res->ai_addrlen;
-    g_ctxt.hints->src_addr    = malloc(src_res->ai_addrlen);
-    memcpy(g_ctxt.hints->src_addr, src_res->ai_addr, src_res->ai_addrlen);
-    /** **/
-    {
-        int              cntr = 0;
-        struct addrinfo *nxt  = src_res;
-        while (nxt != NULL) {
-            print_addrinfo(nxt);
-            nxt = nxt->ai_next;
-            cntr++;
-        }
-        fprintf(stdout, "getaddrinfo: last %d entries are dropped.\n", cntr - 1);
-    }
-
-    freeaddrinfo(src_res);
 }
 
 int lf_initialize() {
@@ -595,24 +562,24 @@ void do_client(const char *server_ip_and_port) {
     return;
 }
 
-#define CMD_ARG_HELP                                                                               \
-    "<info|client|server> <prov> <domain> <local_ip:local_cm_port> "                               \
-    "[remote_ip:remote_cm_port,mandatory for client]"
+#define CMD_ARG_HELP                        \
+    "<info|client|server> <prov> <domain> " \
+    "[remote_ip:remote_cm_port, mandatory client option]"
 
 int main(int argc, char **argv) {
     int ret;
-    if (argc < 5) {
+    if (argc < 3) {
         printf("Usage: %s" CMD_ARG_HELP "\n", argv[0]);
         return 1;
     }
 
-    if (strcmp(argv[1], "client") == 0 && argc < 6) {
+    if (strcmp(argv[1], "client") == 0 && argc < 4) {
         printf("Usage: %s" CMD_ARG_HELP "\n", argv[0]);
         return 1;
     }
 
     // Initialize the Libfabric hints to ask for the right provider, fabric, domain.
-    default_context(argv[2], argv[3], argv[4]);
+    default_context(argv[2], argv[3]);
 
     // Get the fabric info
     ret = fi_getinfo(LF_VERSION, NULL, NULL, 0, g_ctxt.hints, &g_ctxt.fi);
