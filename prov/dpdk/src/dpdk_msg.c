@@ -43,23 +43,6 @@ static int32_t ep_connected(struct dpdk_ep *ep) {
 } /* qp_connected */
 
 ///////////////////////// OPS
-static ssize_t dpdk_recv(struct fid_ep *ep_fid, void *buf, size_t len, void *desc,
-                         fi_addr_t src_addr, void *context) {
-
-    // Here I should access the RX queue of the endpoint
-    // and see if there are events I can deliver
-    printf("[dpdk_recv] UNIMPLEMENTED\n");
-    return 0;
-}
-
-static ssize_t dpdk_recvv(struct fid_ep *ep_fid, const struct iovec *iov, void **desc, size_t count,
-                          fi_addr_t src_addr, void *context) {
-    // Here I should access the RX queue of the endpoint
-    // and see if there are events I can deliver
-    printf("[dpdk_recv] UNIMPLEMENTED\n");
-    return 0;
-}
-
 static ssize_t dpdk_recvmsg(struct fid_ep *ep_fid, const struct fi_msg *msg, uint64_t flags) {
     // This function posts a receive request to the RX queue of the endpoint
     struct dpdk_ep         *ep = container_of(ep_fid, struct dpdk_ep, util_ep.ep_fid);
@@ -113,12 +96,46 @@ errout:
     return ret;
 }
 
+static ssize_t dpdk_recv(struct fid_ep *ep_fid, void *buf, size_t len, void *desc,
+                         fi_addr_t src_addr, void *context) {
+
+    // [Weijia]: A suboptimal implementation
+    struct fi_msg   msg;
+    struct iovec    msg_iov;
+
+    msg_iov.iov_base    = buf;
+    msg_iov.iov_len     = len;
+    msg.msg_iov         = &msg_iov;
+    msg.iov_count       = 1;
+    msg.desc            = &desc;
+    msg.addr            = src_addr; // this is ignored in the currendly DPDK impl.
+    msg.context         = context;
+
+    return dpdk_recvmsg(ep_fid,&msg,0);
+}
+
+static ssize_t dpdk_recvv(struct fid_ep *ep_fid, const struct iovec *iov, void **desc, size_t count,
+                          fi_addr_t src_addr, void *context) {
+    // [Weijia]: A suboptimal implementation
+    struct fi_msg msg;
+
+    msg.msg_iov         = iov;
+    msg.iov_count       = count;
+    msg.desc            = desc;
+    msg.addr            = src_addr; // this is ignored in the currendly DPDK impl.
+    msg.context         = context;
+
+    return dpdk_recvmsg(ep_fid,&msg,0);
+}
+
+
 static ssize_t dpdk_send(struct fid_ep *ep_fid, const void *buf, size_t len, void *desc,
                          fi_addr_t dest_addr, void *context) {
 
     // Here I should access the TX queue of the endpoint
     // insert the message and return
     printf("[dpdk_send] UNIMPLEMENTED\n");
+
     return len;
 }
 
