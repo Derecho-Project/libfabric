@@ -773,7 +773,7 @@ static int process_cm_disconnect(struct dpdk_domain *domain, struct rte_ether_hd
     case ep_conn_state_error:
     default:
         DPDK_WARN(FI_LOG_EP_CTRL,
-                  "%s ignores unexpected disconnection message because endpoint is in %d state.",
+                  "%s ignores unexpected disconnection message because endpoint is in %d state.\n",
                   __func__, ep_state);
         goto error_group_1;
     }
@@ -796,7 +796,7 @@ int dpdk_cm_recv(struct dpdk_domain *domain, struct rte_ether_hdr *eth_hdr,
     struct dpdk_cm_msg_hdr *cm_hdr = rte_pktmbuf_mtod(cm_mbuf, struct dpdk_cm_msg_hdr *);
     void *cm_data = rte_pktmbuf_mtod_offset(cm_mbuf, void *, sizeof(struct dpdk_cm_msg_hdr));
 
-    DPDK_TRACE(FI_LOG_EP_CTRL, "Receiving CM Message with type:%d.", cm_hdr->type);
+    DPDK_TRACE(FI_LOG_EP_CTRL, "Receiving CM Message with type:%d.\n", cm_hdr->type);
 
     switch (rte_be_to_cpu_32(cm_hdr->type)) {
     case DPDK_CM_MSG_CONNECTION_REQUEST:
