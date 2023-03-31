@@ -1137,7 +1137,6 @@ int dpdk_run_progress(void *arg) {
                 /* code */
                 break;
             case ep_conn_state_connected:
-                FI_DBG(&dpdk_prov, FI_LOG_DOMAIN, "Progress loop: progress EP %p\n", ep);
                 progress_ep(ep);
                 break;
             case ep_conn_state_shutdown:
