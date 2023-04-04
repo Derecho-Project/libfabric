@@ -730,8 +730,7 @@ static void process_rx_packet(struct dpdk_domain *domain, struct rte_mbuf *mbuf)
                 "<dev=%s> Drop packet with IPv4 dst addr %" PRIx32 "; expected %" PRIx32 "\n",
                 domain->util_domain.name, rte_be_to_cpu_32(ipv4_hdr->dst_addr),
                 rte_be_to_cpu_32(domain->local_addr.sin_addr.s_addr));
-        rte_pktmbuf_free(mbuf);
-        return;
+        goto free_and_exit;
     }
 
     // Check the UDP port. We can have three cases:
@@ -745,8 +744,7 @@ static void process_rx_packet(struct dpdk_domain *domain, struct rte_mbuf *mbuf)
         // Probably need to insert in some ring
         rte_pktmbuf_adj(mbuf, sizeof(*udp_hdr));
         dpdk_cm_recv(domain, eth_hdr, ipv4_hdr, udp_hdr, mbuf);
-        rte_pktmbuf_free(mbuf);
-        return;
+        goto free_and_exit;
     } else if (rx_port > base_port && rx_port < base_port + MAX_ENDPOINTS_PER_APP) {
         // Find the EP for this port
         dst_ep = domain->udp_port_to_ep[rx_port - (base_port + 1)];
@@ -913,7 +911,6 @@ static void process_rx_packet(struct dpdk_domain *domain, struct rte_mbuf *mbuf)
     //     process_rdma_read_request(dst_ep, &ctx);
     //     break;
     case rdmap_opcode_terminate:
-        // TODO: In this function, should we call rte_pktmbuf_free?
         process_terminate(dst_ep, &ctx);
         break;
     // case rdmap_opcode_atomic_request:

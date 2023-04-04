@@ -548,7 +548,6 @@ int dpdk_cm_send(struct dpdk_domain *domain) {
                  rte_cpu_to_be_32(cm_hdr->type), rte_cpu_to_be_32(cm_hdr->session_id));
         while (rte_eth_tx_burst(domain->port_id, domain->queue_id, &cm_mbuf, 1) < 1)
             ;
-        rte_pktmbuf_free(cm_mbuf);
     }
 
     return ret;
