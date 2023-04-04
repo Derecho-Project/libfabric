@@ -234,10 +234,10 @@ int dpdk_domain_open(struct fid_fabric *fabric_fid, struct fi_info *info,
     size_t pool_size = rte_align32pow2(2 * MAX_ENDPOINTS_PER_APP * dpdk_default_rx_size);
     // Dimension of the mbufs in the TX mempools. Must contain at least an Ethernet frame + private
     // DPDK data (see documentation)
-    size_t mbuf_size = RTE_PKTMBUF_HEADROOM + RTE_ETHER_HDR_LEN + domain->mtu + RTE_ETHER_CRC_LEN;
+    size_t mbuf_size = RTE_MBUF_DEFAULT_DATAROOM;
     // Other parameters
     size_t cache_size   = 64;
-    size_t private_size = RTE_PKTMBUF_HEADROOM;
+    size_t private_size = 0;
     domain->rx_pool     = rte_pktmbuf_pool_create(rx_pool_name, pool_size, cache_size, private_size,
                                                   mbuf_size, rte_socket_id());
     if (domain->rx_pool == NULL) {

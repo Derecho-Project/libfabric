@@ -83,8 +83,6 @@ DPDK_INI {
     dpdk_init_env();
     dpdk_load_cfg();
 
-    // TODO: Limit the number of cores to dedicate to DPDK!
-
     // Initialize the EAL
     int     argc = cfg_size(dpdk_config, CFG_OPT_DPDK_ARGS) + 1;
     char    appname[64];
