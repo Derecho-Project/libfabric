@@ -30,7 +30,7 @@ static int dpdk_ep_getname(fid_t fid, void *addr, size_t *addrlen) {
                       "%s failed because address buffer len(%lu) is smaller than the endpoint "
                       "address size(%lu).",
                       __func__, *addrlen, domain->info->src_addrlen);
-            ret = -FI_ETOOSMALL;
+            ret      = -FI_ETOOSMALL;
             *addrlen = domain->info->src_addrlen;
             goto error_group_1;
         }

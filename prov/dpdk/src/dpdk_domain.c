@@ -193,26 +193,26 @@ int dpdk_domain_open(struct fid_fabric *fabric_fid, struct fi_info *info,
     }
 
     /* 2. DPDK-specific initialization */
-    cfg_t* domain_config = dpdk_domain_config(domain->util_domain.name);
+    cfg_t *domain_config = dpdk_domain_config(domain->util_domain.name);
     // Get the IP and UDP port info from the configuration
     if (info->src_addrlen > 0) {
         // argument specified:
         domain->local_addr = *(struct sockaddr_in *)info->src_addr;
-    } else if (domain_config){
+    } else if (domain_config) {
         // local from configuration
         domain->local_addr.sin_family = AF_INET;
-        ssize_t cm_port = cfg_getint(domain_config,CFG_OPT_DOMAIN_CM_PORT);
+        ssize_t cm_port               = cfg_getint(domain_config, CFG_OPT_DOMAIN_CM_PORT);
         if (cm_port < 0 || cm_port > 65535) {
-            DPDK_WARN(FI_LOG_DOMAIN, "Invalid CM port(%ld) configured for domain:%s\n",
-                      cm_port,domain->util_domain.name);
+            DPDK_WARN(FI_LOG_DOMAIN, "Invalid CM port(%ld) configured for domain:%s\n", cm_port,
+                      domain->util_domain.name);
             ret = -FI_EINVAL;
             goto free;
         }
         domain->local_addr.sin_port = htons((uint16_t)cm_port);
-        char* ip = cfg_getstr(domain_config,CFG_OPT_DOMAIN_IP);
-        if(!inet_pton(AF_INET,ip,&domain->local_addr.sin_addr)) {
-            DPDK_WARN(FI_LOG_DOMAIN, "Invalid ip address(%s) configured for domain:%s\n",
-                      ip,domain->util_domain.name);
+        char *ip                    = cfg_getstr(domain_config, CFG_OPT_DOMAIN_IP);
+        if (!inet_pton(AF_INET, ip, &domain->local_addr.sin_addr)) {
+            DPDK_WARN(FI_LOG_DOMAIN, "Invalid ip address(%s) configured for domain:%s\n", ip,
+                      domain->util_domain.name);
             ret = -FI_EINVAL;
             goto free;
         }
@@ -272,12 +272,12 @@ int dpdk_domain_open(struct fid_fabric *fabric_fid, struct fi_info *info,
     char cm_ring_name[32];
     sprintf(cm_ring_name, "cm_ring_%s", domain->util_domain.name);
     // get cm ring size
-    size_t  cm_ring_size = cfg_getint(dpdk_config,CFG_OPT_DEFAULT_CM_RING_SIZE);
+    size_t cm_ring_size = cfg_getint(dpdk_config, CFG_OPT_DEFAULT_CM_RING_SIZE);
     if (domain_config) {
-        cm_ring_size = cfg_getint(domain_config,CFG_OPT_DOMAIN_CM_RING_SIZE);
+        cm_ring_size = cfg_getint(domain_config, CFG_OPT_DOMAIN_CM_RING_SIZE);
     }
-    domain->cm_ring = rte_ring_create(cm_ring_name, rte_align32pow2(cm_ring_size),
-                                      rte_socket_id(), RING_F_MP_RTS_ENQ | RING_F_SC_DEQ);
+    domain->cm_ring = rte_ring_create(cm_ring_name, rte_align32pow2(cm_ring_size), rte_socket_id(),
+                                      RING_F_MP_RTS_ENQ | RING_F_SC_DEQ);
     if (!domain->cm_ring) {
         DPDK_WARN(FI_LOG_CORE, "Fail to create CM ring for domain %s: %s.\n",
                   domain->util_domain.name, rte_strerror(rte_errno));

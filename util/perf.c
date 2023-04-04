@@ -529,7 +529,7 @@ static struct addrinfo *parse_ip_port_string(const char *ip_port_str) {
 void do_server(test_config_t *params) {
     int ret;
 
-// Create passive EP (=> similar to server socket)
+    // Create passive EP (=> similar to server socket)
     ret = fi_passive_ep(g_ctxt.fabric, g_ctxt.fi, &(g_ctxt.pep), NULL);
     if (ret) {
         printf("fi_passive_ep() failed: %s\n", fi_strerror(-ret));
