@@ -601,15 +601,15 @@ int  dpdk_eq_open(struct fid_fabric *fabric_fid, struct fi_eq_attr *attr, struct
 void dpdk_tx_queue_insert(struct dpdk_ep *ep, struct dpdk_xfer_entry *tx_entry);
 
 //===================== DPDK Configurations ================
-extern struct cfg_t* dpdk_config;
-#define CFG_OPT_DPDK_ARGS               "dpdk_args"
-#define CFG_OPT_DEFAULT_CM_PORT         "default_cm_port"
-#define CFG_OPT_DEFAULT_CM_RING_SIZE    "default_cm_ring_size"
-#define CFG_OPT_DOMAIN                  "domain"
-#define CFG_OPT_DOMAIN_IP               "ip"
-#define CFG_OPT_DOMAIN_CM_PORT          "port"
-#define CFG_OPT_DOMAIN_CM_RING_SIZE     "cm_ring_size"
-struct cfg_t* dpdk_domain_config(const char* domain_name);
+extern struct cfg_t *dpdk_config;
+#define CFG_OPT_DPDK_ARGS            "dpdk_args"
+#define CFG_OPT_DEFAULT_CM_PORT      "default_cm_port"
+#define CFG_OPT_DEFAULT_CM_RING_SIZE "default_cm_ring_size"
+#define CFG_OPT_DOMAIN               "domain"
+#define CFG_OPT_DOMAIN_IP            "ip"
+#define CFG_OPT_DOMAIN_CM_PORT       "port"
+#define CFG_OPT_DOMAIN_CM_RING_SIZE  "cm_ring_size"
+struct cfg_t *dpdk_domain_config(const char *domain_name);
 
 //===================== Log infrastructure ================
 #define DPDK_TRACE(subsys, ...) FI_TRACE(&dpdk_prov, subsys, __VA_ARGS__)

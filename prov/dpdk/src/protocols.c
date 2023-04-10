@@ -33,20 +33,11 @@ void enqueue_ether_frame(struct rte_mbuf *sendmsg, unsigned int ether_type, stru
             return;
         }
 
-        printf("Fragmentation produced %d fragments\n", used_mbufs);
-
         // Prepend a new Ethernet header to each fragment
         struct rte_mbuf      *m;
         struct rte_ether_hdr *hdr_frag;
         for (int j = 0; j < used_mbufs; j++) {
             m = pkts_out[j];
-
-            // Tell the system this is a fragment, i.e., it can be freed immediately after
-            // transmission
-            // TODO: Maybe it would be smarter to "cache" the fragments and free them only when the
-            // message is acked
-            struct pending_datagram_info *pending = (struct pending_datagram_info *)(m + 1);
-            pending->is_fragment                  = 1;
 
             hdr_frag = (struct rte_ether_hdr *)rte_pktmbuf_prepend(m, RTE_ETHER_HDR_LEN);
             if (!hdr_frag) {
@@ -62,8 +53,6 @@ void enqueue_ether_frame(struct rte_mbuf *sendmsg, unsigned int ether_type, stru
             m->l2_len            = sizeof(*hdr_frag);
 
             // Append the fragment to the transmission queue
-            // which is needed by the ack subsystem to "clear" the fragments belonging to the same
-            // RDMAP message to the queue (all at once)
             *(ep->txq_end++) = m;
 
             if (ep->txq_end == ep->txq + dpdk_default_tx_burst_size) {
@@ -72,8 +61,11 @@ void enqueue_ether_frame(struct rte_mbuf *sendmsg, unsigned int ether_type, stru
             }
         }
 
+        // Free the clone of the original packet: we will send the fragments, not this one
+        rte_pktmbuf_free(sendmsg);
+
     } else {
-        // Append the mbuf chain to transmission queue
+        // Append the mbuf chain to the transmission queue
         *(ep->txq_end++) = sendmsg;
         if (ep->txq_end == ep->txq + dpdk_default_tx_burst_size) {
             RTE_LOG(DEBUG, USER1, "TX queue filled; early flush forced\n");
@@ -435,8 +427,9 @@ int resend_ddp_segment(struct dpdk_ep *ep, struct rte_mbuf *sendmsg, struct ee_s
         return -EIO;
     }
 
-    // [Lorenzo] Removed the clone: it is unclear how it should be used in our case
-    // with a mix of direct/indirect buffers.
+    // Clone. The clone is necessary because the rte_eth_tx_burst function will free the mbufs,
+    // but we need to keep them until they have been acknowledged
+    sendmsg = rte_pktmbuf_clone(sendmsg, sendmsg->pool);
 
     // Prepare the TRP header
     // TODO: Should this be a sort of "prepend TRP header" as well? Why in a function called DDP?
@@ -481,7 +474,6 @@ int send_ddp_segment(struct dpdk_ep *ep, struct rte_mbuf *sendmsg,
     pending->psn = psn;
 
     // Insert this message into the list of messages sent but unacked
-    // TODO: As an optimization we could cache the fragments of the message?
     assert(*tx_pending_entry(&ep->remote_ep, psn) == NULL);
     *tx_pending_entry(&ep->remote_ep, psn) = sendmsg;
 

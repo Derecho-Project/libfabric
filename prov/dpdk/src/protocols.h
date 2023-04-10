@@ -160,8 +160,6 @@ struct pending_datagram_info {
     uint16_t                           ddp_length;
     uint32_t                           ddp_raw_cksum;
     uint32_t                           psn;
-    // This is used in TX to track fragmented packets and free them immediately after send
-    bool is_fragment;
 };
 #define PENDING_DATAGRAM_INFO_SIZE sizeof(struct pending_datagram_info)
 

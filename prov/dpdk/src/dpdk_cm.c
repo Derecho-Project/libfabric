@@ -30,7 +30,7 @@ static int dpdk_ep_getname(fid_t fid, void *addr, size_t *addrlen) {
                       "%s failed because address buffer len(%lu) is smaller than the endpoint "
                       "address size(%lu).",
                       __func__, *addrlen, domain->info->src_addrlen);
-            ret = -FI_ETOOSMALL;
+            ret      = -FI_ETOOSMALL;
             *addrlen = domain->info->src_addrlen;
             goto error_group_1;
         }
@@ -548,7 +548,6 @@ int dpdk_cm_send(struct dpdk_domain *domain) {
                  rte_cpu_to_be_32(cm_hdr->type), rte_cpu_to_be_32(cm_hdr->session_id));
         while (rte_eth_tx_burst(domain->port_id, domain->queue_id, &cm_mbuf, 1) < 1)
             ;
-        rte_pktmbuf_free(cm_mbuf);
     }
 
     return ret;

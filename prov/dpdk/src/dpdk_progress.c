@@ -394,23 +394,19 @@ void flush_tx_queue(struct dpdk_ep *ep) {
 
     domain = container_of(ep->util_ep.domain, struct dpdk_domain, util_domain);
 
-    begin = ep->txq;
-    do {
-        ret = rte_eth_tx_burst(domain->port_id, domain->queue_id, begin, ep->txq_end - begin);
+    begin            = ep->txq;
+    uint32_t nb_segs = ep->txq_end - begin;
+
+    /* Transmit the enqueued packets. It is the responsibility of the rte_eth_tx_burst() function to
+     * transparently free the memory buffers of packets previously sent. So we should clone those
+     * that we do not want to free */
+    while (begin != ep->txq_end) {
+        ret = rte_eth_tx_burst(domain->port_id, domain->queue_id, begin, nb_segs);
         if (ret > 0) {
             RTE_LOG(DEBUG, USER1, "Transmitted %d packets\n", ret);
         }
-
-        // If we sent some fragment, immediately free the buffer. The non-fragmented original
-        // packets are freed only when acked.
-        for (int i = 0; i < ret; i++) {
-            struct pending_datagram_info *info = (struct pending_datagram_info *)((*begin) + 1);
-            if (info->is_fragment) {
-                rte_pktmbuf_free(*begin);
-            }
-            begin++;
-        }
-    } while (begin != ep->txq_end);
+        begin += ret;
+    }
 
     ep->txq_end = ep->txq;
 
@@ -570,6 +566,7 @@ static void sweep_unacked_packets(struct dpdk_ep *ep) {
                 do_process_ack(ep, pending->wqe, pending);
             }
             pending->psn = UINT32_MAX;
+            /* We free the original copy of the packet that we hold */
             rte_pktmbuf_free(sendmsg);
             *ee->tx_head = NULL;
             if (++ee->tx_head == end) {
@@ -583,7 +580,6 @@ static void sweep_unacked_packets(struct dpdk_ep *ep) {
     // Get current time
     uint64_t now = rte_get_timer_cycles();
 
-    // TODO: Should we free the mbufs here?
     p = ee->tx_head;
     while (count < ee->tx_pending_size && (sendmsg = *p) != NULL) {
         int ret, cstatus;
@@ -619,6 +615,7 @@ static void sweep_unacked_packets(struct dpdk_ep *ep) {
             }
             RTE_LOG(ERR, USER1, "Shutdown EP %u\n", ep->udp_port);
             // TODO: Handle the shutdown
+            // Should we free the mbuf here?
             atomic_store(&ep->conn_state, ep_conn_state_error);
             if (p == ee->tx_head) {
                 *ee->tx_head = NULL;
@@ -724,8 +721,7 @@ static void process_rx_packet(struct dpdk_domain *domain, struct rte_mbuf *mbuf)
     if (ipv4_hdr->next_proto_id != IP_UDP) {
         RTE_LOG(DEBUG, USER1, "<dev=%s> Drop packet with IPv4 next header %" PRIu8 " not UDP\n",
                 domain->util_domain.name, ipv4_hdr->next_proto_id);
-        rte_pktmbuf_free(mbuf);
-        return;
+        goto free_and_exit;
     }
 
     // [Weijia]: IPv6 needs more care.
@@ -734,8 +730,7 @@ static void process_rx_packet(struct dpdk_domain *domain, struct rte_mbuf *mbuf)
                 "<dev=%s> Drop packet with IPv4 dst addr %" PRIx32 "; expected %" PRIx32 "\n",
                 domain->util_domain.name, rte_be_to_cpu_32(ipv4_hdr->dst_addr),
                 rte_be_to_cpu_32(domain->local_addr.sin_addr.s_addr));
-        rte_pktmbuf_free(mbuf);
-        return;
+        goto free_and_exit;
     }
 
     // Check the UDP port. We can have three cases:
@@ -749,22 +744,19 @@ static void process_rx_packet(struct dpdk_domain *domain, struct rte_mbuf *mbuf)
         // Probably need to insert in some ring
         rte_pktmbuf_adj(mbuf, sizeof(*udp_hdr));
         dpdk_cm_recv(domain, eth_hdr, ipv4_hdr, udp_hdr, mbuf);
-        rte_pktmbuf_free(mbuf);
-        return;
+        goto free_and_exit;
     } else if (rx_port > base_port && rx_port < base_port + MAX_ENDPOINTS_PER_APP) {
         // Find the EP for this port
         dst_ep = domain->udp_port_to_ep[rx_port - (base_port + 1)];
         if (!dst_ep) {
             RTE_LOG(NOTICE, USER1, "<dev=%s> Drop packet with UDP dst port %u;\n",
                     domain->util_domain.name, rx_port);
-            rte_pktmbuf_free(mbuf);
-            return;
+            goto free_and_exit;
         }
     } else {
         RTE_LOG(NOTICE, USER1, "<dev=%s> Drop packet with UDP dst port %u;\n",
                 domain->util_domain.name, rx_port);
-        rte_pktmbuf_free(mbuf);
-        return;
+        goto free_and_exit;
     }
 
     // If we got here, we have a valid packet for a valid EP
@@ -774,8 +766,7 @@ static void process_rx_packet(struct dpdk_domain *domain, struct rte_mbuf *mbuf)
     ctx.src_ep = &dst_ep->remote_ep;
     if (!ctx.src_ep) {
         /* Drop the packet; do not send TERMINATE */
-        rte_pktmbuf_free(mbuf);
-        return;
+        goto free_and_exit;
     }
 
     trp_hdr    = (struct trp_hdr *)rte_pktmbuf_adj(mbuf, sizeof(*udp_hdr));
@@ -794,16 +785,16 @@ static void process_rx_packet(struct dpdk_domain *domain, struct rte_mbuf *mbuf)
         // dst_ep->stats.recv_sack_count++; //TODO: stats not implemented yet
         process_trp_sack(ctx.src_ep, rte_be_to_cpu_32(trp_hdr->psn),
                          rte_be_to_cpu_32(trp_hdr->ack_psn));
-        return;
+        goto free_and_exit;
     case trp_fin:
         /* This is a finalize packet */
         // TODO: Handle communication shutdown
         dst_ep->util_ep.ep_fid.fid.ops->close(&dst_ep->util_ep.ep_fid.fid);
-        return;
+        goto free_and_exit;
     default:
         RTE_LOG(NOTICE, USER1, "<dev=%s ep=%u> receive unexpected opcode %" PRIu16 "; dropping\n",
                 domain->util_domain.name, dst_ep->udp_port, trp_opcode >> trp_opcode_shift);
-        return;
+        goto free_and_exit;
     }
 
     /* Update sender state based on received ack_psn */
@@ -818,7 +809,7 @@ static void process_rx_packet(struct dpdk_domain *domain, struct rte_mbuf *mbuf)
                 domain->util_domain.name, dst_ep->udp_port, ctx.psn,
                 ctx.src_ep->send_last_acked_psn, ctx.src_ep->send_next_psn,
                 ctx.src_ep->send_max_psn);
-        return;
+        goto free_and_exit;
     }
 
     /* Now take care of ordered delivery */
@@ -864,11 +855,11 @@ static void process_rx_packet(struct dpdk_domain *domain, struct rte_mbuf *mbuf)
                         domain->util_domain.name, dst_ep->udp_port, ctx.psn,
                         ctx.src_ep->recv_ack_psn, ctx.src_ep->recv_sack_psn.min,
                         ctx.src_ep->recv_sack_psn.max);
-                return;
+                goto free_and_exit;
             } else {
                 /* This segment has been handled; drop the
                  * duplicate. */
-                return;
+                goto free_and_exit;
             }
         } else {
             ctx.src_ep->trp_flags |= trp_recv_missing | trp_ack_update;
@@ -878,11 +869,12 @@ static void process_rx_packet(struct dpdk_domain *domain, struct rte_mbuf *mbuf)
     } else {
         /* This is a retransmission of a packet which we have already
          * acknowledged; throw it away. */
+        // TODO: Check this!!
         RTE_LOG(DEBUG, USER1,
                 "<dev=%s ep=%u> got retransmission psn %u; expected psn %" PRIu32 "\n",
                 domain->util_domain.name, dst_ep->udp_port, ctx.psn, ctx.src_ep->recv_ack_psn);
         // dst_ep->stats.recv_retransmit_count++; //TODO: stats not implemented yet
-        return;
+        goto free_and_exit;
     }
 
     // Now process the DDP and RDMAP headers
@@ -894,12 +886,12 @@ static void process_rx_packet(struct dpdk_domain *domain, struct rte_mbuf *mbuf)
         do_rdmap_terminate(dst_ep, &ctx,
                            DDP_GET_T(ctx.rdmap->ddp_flags) ? ddp_error_tagged_version_invalid
                                                            : ddp_error_untagged_version_invalid);
-        return;
+        goto free_and_exit;
     }
 
     if (RDMAP_GET_RV(ctx.rdmap->rdmap_info) != 0x1) {
         do_rdmap_terminate(dst_ep, &ctx, rdmap_error_version_invalid);
-        return;
+        goto free_and_exit;
     }
 
     // TODO: Is "tagged data" supported? I guess not!! => See capabilities
@@ -919,7 +911,6 @@ static void process_rx_packet(struct dpdk_domain *domain, struct rte_mbuf *mbuf)
     //     process_rdma_read_request(dst_ep, &ctx);
     //     break;
     case rdmap_opcode_terminate:
-        // TODO: In this function, should we call rte_pktmbuf_free?
         process_terminate(dst_ep, &ctx);
         break;
     // case rdmap_opcode_atomic_request:
@@ -930,8 +921,12 @@ static void process_rx_packet(struct dpdk_domain *domain, struct rte_mbuf *mbuf)
     //     break;
     default:
         do_rdmap_terminate(dst_ep, &ctx, rdmap_error_opcode_unexpected);
-        return;
+        break;
     }
+
+free_and_exit:
+    rte_pktmbuf_free(mbuf);
+    return;
 } /* process_rx_packet */
 
 /* Receive action on the network. Takes care of IPv4 defragmentation, and foreach reassembled
@@ -969,7 +964,6 @@ static void do_receive(struct dpdk_domain *domain) {
         }
     }
 
-    // This causes segfault, but why?
     rte_ip_frag_free_death_row(&domain->lcore_queue_conf.death_row, PREFETCH_OFFSET);
 } /* do_receive */
 

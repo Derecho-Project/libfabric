@@ -89,3 +89,6 @@ prov/efa/docs/doxygen/html
 prov/efa/docs/doxygen/latex
 
 .clang-format
+util/fi_cm_test
+util/fi_perf
+libfabric.dpdk.cfg

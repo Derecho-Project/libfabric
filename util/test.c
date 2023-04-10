@@ -434,15 +434,20 @@ void do_server() {
         } while (ret == -FI_EAGAIN);
 
         printf("Received a new message [size = %lu]: ", comp.len);
+
+        // Integrity check
+        uint8_t content_ok = 1;
         for (int i = 0; i < comp.len; i++) {
             char c = ((char *)g_mr.buffer)[i];
-            if (c == 'a') {
-                putc(c, stdout);
-            } else {
-                putc('.', stdout);
+            if (c != 'a') {
+                content_ok = 0;
+                printf("[ERROR] Wrong byte at index %d\n", i);
+                break;
             }
         }
-        printf("\n");
+        if (content_ok) {
+            printf("Content OK\n");
+        }
     }
 
     fi_close(&ep->fid);
@@ -511,12 +516,17 @@ void do_client(const char *server_ip_and_port) {
     msg.msg_iov      = &msg_iov;
 
     // Send message
-    char input[8];
+    char input[32];
     printf("Insert a message size: ");
-    while (fgets((char *restrict)&input, 8, stdin) != NULL) {
+    while (fgets((char *restrict)&input, 32, stdin) != NULL) {
         msg_iov.iov_len = atol(input);
         if (msg_iov.iov_len > g_mr.size) {
-            printf("Size too big. Max is %ld, inserted size is %ld\n", g_mr.size, msg_iov.iov_len);
+            printf("Size too big. Max is %ld, inserted size is %lu\n", g_mr.size, msg_iov.iov_len);
+            printf("Insert a message size: ");
+            continue;
+        }
+        if (msg_iov.iov_len <= 0) {
+            printf("Size too small. Min is 1, inserted size is %lu\n", msg_iov.iov_len);
             printf("Insert a message size: ");
             continue;
         }
@@ -562,8 +572,8 @@ void do_client(const char *server_ip_and_port) {
     return;
 }
 
-#define CMD_ARG_HELP                        \
-    "<info|client|server> <prov> <domain> " \
+#define CMD_ARG_HELP                                                                               \
+    "<info|client|server> <prov> <domain> "                                                        \
     "[remote_ip:remote_cm_port, mandatory client option]"
 
 int main(int argc, char **argv) {
