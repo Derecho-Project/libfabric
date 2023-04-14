@@ -156,8 +156,12 @@ static void* connection_manager(void* arg) {
         DPDK_DBG(FI_LOG_EP_CTRL,"connection manager thread looping...\n");
         ofi_mutex_lock(&fabric->domain_res_list_lock);
         struct dpdk_domain_resources* res = fabric->domain_res_list.next;
+        DPDK_DBG(FI_LOG_EP_CTRL,"connection manager starts with res=%p.\n",
+                 res);
         bool is_busy = false;
         while (res) {
+            DPDK_DBG(FI_LOG_EP_CTRL,"connection manager is processing res=%p.\n",
+                     res);
             struct rte_mbuf* pkts[8];
             uint16_t npkts;
             // incoming
