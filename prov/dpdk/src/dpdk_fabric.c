@@ -151,7 +151,9 @@ static int release_res_list(struct dpdk_domain_resources* res_list) {
 
 static void* connection_manager(void* arg) {
     struct dpdk_fabric* fabric = (struct dpdk_fabric*)arg;
+    DPDK_DBG(FI_LOG_EP_CTRL,"connection manager thread started.\n");
     while (atomic_load(&fabric->active)) {
+        DPDK_DBG(FI_LOG_EP_CTRL,"connection manager thread looping...\n");
         ofi_mutex_lock(&fabric->domain_res_list_lock);
         struct dpdk_domain_resources* res = fabric->domain_res_list.next;
         bool is_busy = false;
@@ -160,6 +162,8 @@ static void* connection_manager(void* arg) {
             uint16_t npkts;
             // incoming
             while ((npkts = rte_eth_rx_burst(res->port_id,res->cm_rxq_id,pkts,8)) > 0) {
+                DPDK_DBG(FI_LOG_EP_CTRL,"connection manager detected %u incoming packets.\n",
+                         npkts);
                 is_busy = true;
                 for(uint16_t i=0;i<npkts;i++) {
                     dpdk_cm_recv(pkts[i],res);
@@ -168,6 +172,8 @@ static void* connection_manager(void* arg) {
             }
             // outgoing
             while((npkts = rte_ring_sc_dequeue_bulk(res->cm_tx_ring,(void**)pkts,8,NULL)) > 0) {
+                DPDK_DBG(FI_LOG_EP_CTRL,"connection manager detected %u outgoing packets.\n",
+                         npkts);
                 is_busy = true;
                 uint16_t nsent = 0;
                 while(nsent<npkts) {
@@ -178,9 +184,11 @@ static void* connection_manager(void* arg) {
         }
         ofi_mutex_unlock(&fabric->domain_res_list_lock);
         if (!is_busy) {
-            usleep(100000); // sleep for 100 ms
+            // usleep(100000); // sleep for 100 ms
+            usleep(5000000); // sleep for 100 ms
         }
     }
+    DPDK_DBG(FI_LOG_EP_CTRL,"connection manager thread stopped.\n");
     return NULL;
 }
 
