@@ -170,7 +170,7 @@ int dpdk_domain_open(struct fid_fabric *fabric_fid, struct fi_info *info,
     // Initialize the rx TLB table
     domain->lcore_queue_conf.n_rx_queue = 1;
     setup_queue_tbl(&domain->lcore_queue_conf.rx_queue_list[0], 0, 0, res->mtu); // pool and tbl
-    domain->lcore_queue_conf.rx_queue_list[0].portid = domain->res->port_id;
+    domain->lcore_queue_conf.rx_queue_list[0].portid = res->port_id;
 
     // bind domain and res
     res->domain = domain;
