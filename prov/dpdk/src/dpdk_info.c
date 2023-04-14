@@ -166,7 +166,7 @@ int dpdk_init_info(const struct fi_info **all_infos) {
         // src_addr is unset.
         // dest_addr is unset.
         // handle is unset.
-            *new_info->tx_attr      = dpdk_tx_attr;
+        *new_info->tx_attr          = dpdk_tx_attr;
         *new_info->rx_attr          = dpdk_rx_attr;
         *new_info->ep_attr          = dpdk_ep_attr;
         *new_info->domain_attr      = dpdk_domain_attr;

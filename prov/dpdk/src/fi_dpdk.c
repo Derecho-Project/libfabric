@@ -58,8 +58,6 @@ static void dpdk_init_env(void) {
 static void dpdk_load_cfg() {
     static struct cfg_opt_t domain_opts[] = {
         CFG_STR(CFG_OPT_DOMAIN_IP, NULL, CFGF_NODEFAULT),
-        CFG_INT(CFG_OPT_DOMAIN_CM_PORT, 2509, CFGF_NONE),
-        CFG_INT(CFG_OPT_DOMAIN_CM_RING_SIZE, 16, CFGF_NONE),
     };
     static struct cfg_opt_t ops[] = {CFG_STR_LIST(CFG_OPT_DPDK_ARGS, "{libfabric}", CFGF_NONE),
                                      CFG_INT(CFG_OPT_DEFAULT_CM_PORT, 2509, CFGF_NONE),

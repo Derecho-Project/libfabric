@@ -8,83 +8,6 @@
 
 /// Helper functions
 
-/* Many configuration parameters required to startup DPDK */
-static inline int port_init(struct rte_mempool *mempool, uint16_t port_id, uint16_t queue_id,
-                            uint16_t mtu, uint64_t *dev_flags) {
-    int valid_port = rte_eth_dev_is_valid_port(port_id);
-    if (!valid_port)
-        return -1;
-
-    struct rte_eth_dev_info dev_info;
-    int                     retval = rte_eth_dev_info_get(port_id, &dev_info);
-    if (retval != 0) {
-        fprintf(stderr, "[error] cannot get device (port %u) info: %s\n", 0, strerror(-retval));
-        return retval;
-    }
-
-    // Derive the actual MTU we can use based on device capabilities and user request
-    uint16_t actual_mtu = RTE_MIN(mtu, dev_info.max_mtu);
-
-    // Configure the device
-    struct rte_eth_conf port_conf;
-    memset(&port_conf, 0, sizeof(port_conf));
-    port_conf.rxmode.mtu = actual_mtu;
-    port_conf.rxmode.offloads |= (RTE_ETH_RX_OFFLOAD_CHECKSUM | RTE_ETH_RX_OFFLOAD_SCATTER);
-    port_conf.txmode.mq_mode = RTE_ETH_MQ_TX_NONE;
-    port_conf.txmode.offloads |= (RTE_ETH_TX_OFFLOAD_IPV4_CKSUM | RTE_ETH_TX_OFFLOAD_MULTI_SEGS);
-    if (dev_info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE)
-        port_conf.txmode.offloads |= RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE;
-    const uint16_t rx_rings = 1, tx_rings = 1;
-    retval = rte_eth_dev_configure(port_id, rx_rings, tx_rings, &port_conf);
-    if (retval != 0)
-        return retval;
-
-    // TODO: Here I should retrieve a set of device flags for each function and make it available
-    // in the dpdk_domain struct in order to retrieve it when needed (in the progress thread).
-    // In particular the current code would need to know: port_checksum_offload, port_fdir
-    *dev_flags = 0;
-
-    // Set the MTU explicitly
-    retval = rte_eth_dev_set_mtu(port_id, actual_mtu);
-    if (retval != 0) {
-        printf("Error setting up the MTU (%d)\n", retval);
-        return retval;
-    }
-
-    uint16_t nb_rxd = 1024;
-    uint16_t nb_txd = 1024;
-    retval          = rte_eth_dev_adjust_nb_rx_tx_desc(port_id, &nb_rxd, &nb_txd);
-    if (retval != 0)
-        return retval;
-
-    int socket_id = rte_eth_dev_socket_id(port_id);
-
-    for (uint16_t q = 0; q < rx_rings; q++) {
-        retval = rte_eth_rx_queue_setup(port_id, q, nb_rxd, socket_id, NULL, mempool);
-        if (retval != 0)
-            return retval;
-    }
-
-    struct rte_eth_txconf txconf = dev_info.default_txconf;
-    txconf.offloads              = port_conf.txmode.offloads;
-    for (uint16_t q = 0; q < tx_rings; q++) {
-        retval = rte_eth_tx_queue_setup(port_id, q, nb_txd, socket_id, &txconf);
-        if (retval != 0)
-            return retval;
-    }
-
-    retval = rte_eth_dev_start(port_id);
-    if (retval != 0) {
-        return retval;
-    }
-
-    retval = rte_eth_promiscuous_enable(port_id);
-    if (retval != 0)
-        return retval;
-
-    return 0;
-}
-
 /// Domain creation functions
 
 static int dpdk_domain_close(fid_t fid) {
@@ -97,14 +20,6 @@ static int dpdk_domain_close(fid_t fid) {
         rte_mempool_free(domain->rx_pool);
     }
 
-    if (domain->cm_pool) {
-        rte_mempool_free(domain->cm_pool);
-    }
-
-    if (domain->cm_ring) {
-        rte_ring_free(domain->cm_ring);
-    }
-
     if (domain->info) {
         fi_freeinfo(domain->info);
     }
@@ -112,6 +27,8 @@ static int dpdk_domain_close(fid_t fid) {
     ret = ofi_domain_close(&domain->util_domain);
     if (ret)
         return ret;
+
+    release_dpdk_domain_resources(domain->res);
 
     free(domain);
     return FI_SUCCESS;
@@ -153,8 +70,16 @@ int dpdk_domain_open(struct fid_fabric *fabric_fid, struct fi_info *info,
     struct dpdk_domain *domain;
     int                 ret;
 
+    /* 0. find the domain resources in the fabric */
+    struct dpdk_fabric* fabric = container_of(fabric_fid, struct dpdk_fabric, util_fabric.fabric_fid);
+    struct dpdk_domain_resources* res = NULL;
+    ret = get_or_create_dpdk_domain_resources(fabric,info,&res);
+    if (ret) {
+        DPDK_WARN(FI_LOG_DOMAIN, "Failed to get domain resources.\n");
+        return ret;
+    }
+
     /* 1. libfabric-specific initialization */
-    // fabric = container_of(fabric_fid, struct dpdk_fabric, util_fabric.fabric_fid);
     ret = ofi_prov_check_info(&dpdk_util_prov, fabric_fid->api_version, info);
     if (ret) {
         return ret;
@@ -193,40 +118,21 @@ int dpdk_domain_open(struct fid_fabric *fabric_fid, struct fi_info *info,
     }
 
     /* 2. DPDK-specific initialization */
-    cfg_t *domain_config = dpdk_domain_config(domain->util_domain.name);
-    // Get the IP and UDP port info from the configuration
-    if (info->src_addrlen > 0) {
-        // argument specified:
-        domain->local_addr = *(struct sockaddr_in *)info->src_addr;
-    } else if (domain_config) {
-        // local from configuration
-        domain->local_addr.sin_family = AF_INET;
-        ssize_t cm_port               = cfg_getint(domain_config, CFG_OPT_DOMAIN_CM_PORT);
-        if (cm_port < 0 || cm_port > 65535) {
-            DPDK_WARN(FI_LOG_DOMAIN, "Invalid CM port(%ld) configured for domain:%s\n", cm_port,
-                      domain->util_domain.name);
-            ret = -FI_EINVAL;
-            goto free;
-        }
-        domain->local_addr.sin_port = htons((uint16_t)cm_port);
-        char *ip                    = cfg_getstr(domain_config, CFG_OPT_DOMAIN_IP);
-        if (!inet_pton(AF_INET, ip, &domain->local_addr.sin_addr)) {
-            DPDK_WARN(FI_LOG_DOMAIN, "Invalid ip address(%s) configured for domain:%s\n", ip,
-                      domain->util_domain.name);
-            ret = -FI_EINVAL;
-            goto free;
-        }
-    } else {
-        DPDK_WARN(FI_LOG_DOMAIN, "Failed to determine the ip address for domain:%s\n",
-                  domain->util_domain.name);
-        ret = -FI_ENODATA;
+    ofi_mutex_lock(&res->domain_lock);
+    if (res->domain) {
+        ofi_mutex_unlock(&res->domain_lock);
+        DPDK_WARN(FI_LOG_DOMAIN, "Failed to create domain on %s.\n",res->domain_name);
+        ret = -FI_EBUSY;
         goto free;
     }
 
-    // Ethernet MTU. This excludes the Ethernet header and the CRC.
-    // TODO: Support for VLAN or VXLAN is not yet implemented
-    domain->mtu = MTU;
-
+    // TODO: these should move to res.
+    // TODO: Here I should retrieve a set of device flags for each function and make it available
+    // in the dpdk_domain struct in order to retrieve it when needed (in the progress thread).
+    // In particular the current code would need to know: port_checksum_offload, port_fdir
+    domain->dev_flags = 0x0;
+    domain->lcore_id  = 0x1;
+    
     // Allocate the mempool for RX mbufs
     char rx_pool_name[32];
     sprintf(rx_pool_name, "rx_pool_%s", domain->util_domain.name);
@@ -239,73 +145,16 @@ int dpdk_domain_open(struct fid_fabric *fabric_fid, struct fi_info *info,
     size_t cache_size   = 64;
     size_t private_size = 0;
     domain->rx_pool     = rte_pktmbuf_pool_create(rx_pool_name, pool_size, cache_size, private_size,
-                                                  mbuf_size, rte_socket_id());
+                                                  mbuf_size, rte_eth_dev_socket_id(res->port_id));
     if (domain->rx_pool == NULL) {
+        ofi_mutex_unlock(&res->domain_lock);
         DPDK_WARN(FI_LOG_CORE, "Cannot create RX mbuf pool for domain %s: %s\n",
                   domain->util_domain.name, rte_strerror(rte_errno));
         ret = -FI_ENOMEM;
         goto close;
     }
     DPDK_TRACE(FI_LOG_CORE, "RX mempool created.\n");
-
-    // Allocate the mempool for CM mbufs
-    char cm_pool_name[32];
-    sprintf(cm_pool_name, "cm_pool_%s", domain->util_domain.name);
-    domain->cm_pool =
-        rte_pktmbuf_pool_create(cm_pool_name,                           // name
-                                rte_align32pow2(MAX_ENDPOINTS_PER_APP), // n
-                                cache_size,                             // cache_size
-                                0,                                      // priv_size
-                                RTE_ETHER_HDR_LEN + sizeof(struct rte_ipv4_hdr) +
-                                    sizeof(struct rte_udp_hdr) + sizeof(struct dpdk_cm_msg_hdr) +
-                                    DPDK_MAX_CM_DATA_SIZE + RTE_ETHER_CRC_LEN, // data_room_size
-                                rte_socket_id());                              // socket_id
-    if (!domain->cm_pool) {
-        DPDK_WARN(FI_LOG_CORE, "Cannot create CM mbuf pool for domain %s: %s\n",
-                  domain->util_domain.name, rte_strerror(rte_errno));
-        ret = -FI_ENOMEM;
-        goto close;
-    }
-    DPDK_TRACE(FI_LOG_CORE, "CM mempool created.\n");
-
-    // Allocate CM ring buffer
-    char cm_ring_name[32];
-    sprintf(cm_ring_name, "cm_ring_%s", domain->util_domain.name);
-    // get cm ring size
-    size_t cm_ring_size = cfg_getint(dpdk_config, CFG_OPT_DEFAULT_CM_RING_SIZE);
-    if (domain_config) {
-        cm_ring_size = cfg_getint(domain_config, CFG_OPT_DOMAIN_CM_RING_SIZE);
-    }
-    domain->cm_ring = rte_ring_create(cm_ring_name, rte_align32pow2(cm_ring_size), rte_socket_id(),
-                                      RING_F_MP_RTS_ENQ | RING_F_SC_DEQ);
-    if (!domain->cm_ring) {
-        DPDK_WARN(FI_LOG_CORE, "Fail to create CM ring for domain %s: %s.\n",
-                  domain->util_domain.name, rte_strerror(rte_errno));
-        ret = -FI_ENOMEM;
-        goto close;
-    }
-    DPDK_TRACE(FI_LOG_CORE, "CM ring created.\n");
-
-    // Initialize the CM session counter
-    atomic_init(&domain->cm_session_counter, 0);
-
-    // Initialize the DPDK device
-    // TODO: port_id, queue_id, lcore_id, dev_flags, and mtu MUST be configurable parameters!
-    // More generally, I think many of the parameter passed to and retrieved from
-    // the port_init function must be kept in a struct device_info that is part of
-    // the dpdk_domain struct.
-    domain->port_id  = 0;
-    domain->queue_id = 0;
-    domain->lcore_id = 1; // lcore 0 is the main thread, so this must be > 0
-    if ((ret = port_init(domain->rx_pool, domain->port_id, domain->queue_id, domain->mtu,
-                         &domain->dev_flags)) < 0)
-    {
-        DPDK_WARN(FI_LOG_CORE, "Port Init DPDK: error\n");
-        goto free;
-    };
-
-    rte_eth_macaddr_get(domain->port_id, &domain->eth_addr);
-
+    
     // Initialize the list of endpoints
     slist_init(&domain->endpoint_list);
     domain->num_endpoints = 0;
@@ -315,25 +164,19 @@ int dpdk_domain_open(struct fid_fabric *fabric_fid, struct fi_info *info,
     // Initialize the progress thread structure for this domain
     ret = dpdk_init_progress(&domain->progress, info, domain->lcore_id);
     if (ret) {
+        ofi_mutex_unlock(&res->domain_lock);
         goto close;
     }
-
-    // Allocate the mempool for descriptors of externally allocated data
-    // domain->ext_pool_name = malloc(13);
-    // sprintf(domain->ext_pool_name, "ext_pool_%s", domain->util_domain.name);
-    // domain->ext_pool =
-    //     rte_pktmbuf_pool_create(domain->ext_pool_name, 128, 64, 0, 0, rte_socket_id());
-    // if (domain->ext_pool == NULL) {
-    //     FI_WARN(&dpdk_prov, FI_LOG_CORE, "Cannot create external mbuf pool for domain %s: %s",
-    //             domain->util_domain.name, rte_strerror(rte_errno));
-    //     goto close;
-    // }
-    // printf("External mempool creation OK\n");
-
     // Initialize the rx TLB table
     domain->lcore_queue_conf.n_rx_queue = 1;
-    setup_queue_tbl(&domain->lcore_queue_conf.rx_queue_list[0], 0, 0, domain->mtu); // pool and tbl
-    domain->lcore_queue_conf.rx_queue_list[0].portid = domain->port_id;
+    setup_queue_tbl(&domain->lcore_queue_conf.rx_queue_list[0], 0, 0, res->mtu); // pool and tbl
+    domain->lcore_queue_conf.rx_queue_list[0].portid = domain->res->port_id;
+
+    // bind domain and res
+    res->domain = domain;
+    domain->res = res;
+
+    ofi_mutex_unlock(&res->domain_lock);
 
     /* 3. Start the progress thread for this domain */
     ret = dpdk_start_progress(&domain->progress);
@@ -349,17 +192,12 @@ close:
     if (domain->rx_pool) {
         rte_mempool_free(domain->rx_pool);
     }
-    if (domain->cm_pool) {
-        rte_mempool_free(domain->cm_pool);
-    }
-    if (domain->cm_ring) {
-        rte_ring_free(domain->cm_ring);
-    }
     if (domain->info) {
         fi_freeinfo(domain->info);
     }
     (void)ofi_domain_close(&domain->util_domain);
 free:
     free(domain);
+    release_dpdk_domain_resources(res);
     return ret;
 }

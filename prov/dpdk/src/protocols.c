@@ -9,17 +9,18 @@ void enqueue_ether_frame(struct rte_mbuf *sendmsg, unsigned int ether_type, stru
                          struct rte_ether_addr *dst_addr) {
 
     struct dpdk_domain *domain = container_of(ep->util_ep.domain, struct dpdk_domain, util_domain);
+    assert(domain->res);
 
     struct rte_ether_hdr *eth =
         rte_pktmbuf_mtod_offset(sendmsg, struct rte_ether_hdr *, ETHERNET_HDR_OFFSET);
 
     rte_ether_addr_copy(dst_addr, &eth->dst_addr);
-    rte_ether_addr_copy(&domain->eth_addr, &eth->src_addr);
+    rte_ether_addr_copy(&domain->res->local_eth_addr, &eth->src_addr);
     eth->ether_type = rte_cpu_to_be_16(ether_type);
     sendmsg->l2_len = RTE_ETHER_HDR_LEN;
 
     // Now, if necessary, fragment the packet
-    if (sendmsg->pkt_len > (domain->mtu + RTE_ETHER_HDR_LEN)) {
+    if (sendmsg->pkt_len > (domain->res->mtu + RTE_ETHER_HDR_LEN)) {
         /* Mbufs for the fragmentation */
         struct rte_mbuf *pkts_out[MAX_FRAG_NUM];
         int              used_mbufs = 0;
@@ -27,7 +28,7 @@ void enqueue_ether_frame(struct rte_mbuf *sendmsg, unsigned int ether_type, stru
         rte_pktmbuf_adj(sendmsg, RTE_ETHER_HDR_LEN);
         if ((used_mbufs =
                  rte_ipv4_fragment_packet(sendmsg, (struct rte_mbuf **)pkts_out, MAX_FRAG_NUM,
-                                          domain->mtu, ep->tx_hdr_mempool, ep->tx_ddp_mempool)) < 0)
+                                          domain->res->mtu, ep->tx_hdr_mempool, ep->tx_ddp_mempool)) < 0)
         {
             RTE_LOG(ERR, USER1, "Error while fragmenting packets: %s\n", rte_strerror(-used_mbufs));
             return;
@@ -48,7 +49,7 @@ void enqueue_ether_frame(struct rte_mbuf *sendmsg, unsigned int ether_type, stru
             }
 
             rte_ether_addr_copy(dst_addr, &hdr_frag->dst_addr);
-            rte_ether_addr_copy(&domain->eth_addr, &hdr_frag->src_addr);
+            rte_ether_addr_copy(&domain->res->local_eth_addr, &hdr_frag->src_addr);
             hdr_frag->ether_type = rte_cpu_to_be_16(ether_type);
             m->l2_len            = sizeof(*hdr_frag);
 
@@ -300,6 +301,7 @@ void send_udp_dgram(struct dpdk_ep *ep, struct rte_mbuf *sendmsg, uint32_t raw_c
     struct rte_udp_hdr  *udp;
     struct rte_ipv4_hdr *ip;
     struct dpdk_domain  *domain = container_of(ep->util_ep.domain, struct dpdk_domain, util_domain);
+    assert(domain->res);
 
     if (domain->dev_flags & port_checksum_offload) {
         sendmsg->ol_flags |= RTE_MBUF_F_TX_UDP_CKSUM | RTE_MBUF_F_TX_IPV4 | RTE_MBUF_F_TX_IP_CKSUM;
@@ -310,7 +312,7 @@ void send_udp_dgram(struct dpdk_ep *ep, struct rte_mbuf *sendmsg, uint32_t raw_c
     // ep->remote_ipv4_addr,
     //                                        ddp_length + UDP_HDR_LEN);
     udp = prepend_udp_header(sendmsg, ep->udp_port, ep->remote_udp_port, ddp_length);
-    ip  = prepend_ipv4_header(sendmsg, IP_UDP, rte_be_to_cpu_16(domain->local_addr.sin_addr.s_addr),
+    ip  = prepend_ipv4_header(sendmsg, IP_UDP, rte_be_to_cpu_16(domain->res->local_cm_addr.sin_addr.s_addr),
                               ep->remote_ipv4_addr, ddp_length + UDP_HDR_LEN);
     udp->dgram_cksum = rte_ipv4_phdr_cksum(ip, sendmsg->ol_flags);
 
@@ -330,6 +332,7 @@ void send_udp_dgram(struct dpdk_ep *ep, struct rte_mbuf *sendmsg, uint32_t raw_c
 /* TRP */
 void send_trp_ack(struct dpdk_ep *ep) {
     struct dpdk_domain *domain = container_of(ep->util_ep.domain, struct dpdk_domain, util_domain);
+    assert(domain->res);
     struct ee_state    *ee     = &ep->remote_ep;
     struct rte_mbuf    *sendmsg;
     struct trp_hdr     *trp;

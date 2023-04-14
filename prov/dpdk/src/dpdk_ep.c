@@ -339,7 +339,7 @@ int dpdk_endpoint(struct fid_domain *domain, struct fi_info *info, struct fid_ep
     slist_insert_tail(&ep->entry, &dpdk_domain->endpoint_list);
     dpdk_domain->udp_port_to_ep[dpdk_domain->num_endpoints] = ep;
     dpdk_domain->num_endpoints++;
-    ep->udp_port = rte_be_to_cpu_16(dpdk_domain->local_addr.sin_port) + dpdk_domain->num_endpoints;
+    ep->udp_port = rte_be_to_cpu_16(dpdk_domain->res->local_cm_addr.sin_port) + dpdk_domain->num_endpoints;
     ofi_genlock_unlock(&dpdk_domain->ep_mutex);
 
     FI_INFO(&dpdk_prov, FI_LOG_EP_CTRL, "Created EP at udp port(%u)\n", ep->udp_port);
@@ -368,11 +368,6 @@ static int dpdk_pep_bind(struct fid *fid, struct fid *bfid, uint64_t flags) {
     case FI_CLASS_EQ:
         struct util_eq *eq_l2 = container_of(bfid, struct util_eq, eq_fid.fid);
         ret                   = ofi_pep_bind_eq(&pep_l3->util_pep, eq_l2, flags);
-        if (ret == FI_SUCCESS) {
-            struct dpdk_fabric *fabric_l3 =
-                container_of(pep_l3->util_pep.fabric, struct dpdk_fabric, util_fabric);
-            fabric_l3->util_eq = eq_l2;
-        }
         break;
     default:
         DPDK_WARN(FI_LOG_EP_CTRL, "%s: invalid FID class %lu. Expecting FI_CLASS_EQ(%d) only.\n",
@@ -431,17 +426,47 @@ int dpdk_passive_ep(struct fid_fabric *fabric, struct fi_info *info, struct fid_
     pep->util_pep.pep_fid.ops     = &dpdk_pep_ops;
 
     pep->state = DPDK_PEP_INIT;
+
+    if (!info->domain_attr || !info->domain_attr->name) {
+        DPDK_WARN(FI_LOG_EP_CTRL,"failed to create passive endpoint, domain is"
+                                 "not specified in 'struct fi_info'.\n");
+        goto err2;
+    }
+
     pep->info  = fi_dupinfo(info);
     if (!pep->info) {
         ret = -FI_ENOMEM;
         goto err2;
     }
 
-    // TODO: Here we first set the ops to pep->util_pep, then we pass the pointer to the caller.
-    // Instead, in the dpdk_endpoint(), we first pass the pointer to the caller, then we set the
-    // ops to the caller. We should be consistent and choose one of the two approaches!
+    // step 1 - check/allocate domain resource
+    struct dpdk_fabric* _f = container_of(fabric,struct dpdk_fabric,util_fabric.fabric_fid);
+    struct dpdk_domain_resources* res = NULL;
+    ret = get_or_create_dpdk_domain_resources(_f,info,&res);
+    if (ret) {
+        DPDK_WARN(FI_LOG_EP_CTRL,"Failed to get or create passive endpoint.\n");
+        goto err2;
+    }
+    // step 2 - setup res
+    ofi_mutex_lock(&res->pep_lock);
+    if (res->pep) {
+        ofi_mutex_unlock(&res->pep_lock);
+        DPDK_WARN(FI_LOG_EP_CTRL,"failed to create passive endpoint because passive endpoint"
+                                 "on the same domain(%s) already exists.\n",
+                                 res->domain_name);
+        ret = -FI_EBUSY;
+        goto err3;
+    }
+    res->pep = pep;
+    ofi_mutex_unlock(&res->pep_lock);
+
     *pep_fid = &pep->util_pep.pep_fid;
+
+    release_dpdk_domain_resources(res);
     return FI_SUCCESS;
+err3:
+    fi_freeinfo(pep->info);
+    release_dpdk_domain_resources(res);
 err2:
     ofi_pep_close(&pep->util_pep);
 err1:

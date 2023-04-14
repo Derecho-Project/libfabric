@@ -39,7 +39,7 @@ static void memcpy_mbuf_to_iov(struct iovec *restrict dst, size_t          dst_c
     }
 
     // 2. For each source chunk, copy it to the destination
-    cur_mbuf         = (struct ret_mbuf *)src;
+    cur_mbuf         = (struct rte_mbuf *)src;
     dst_bytes_copied = 0;
     for (int i = 0; i < src->nb_segs; i++) {
 
@@ -393,6 +393,7 @@ void flush_tx_queue(struct dpdk_ep *ep) {
     int                 ret;
 
     domain = container_of(ep->util_ep.domain, struct dpdk_domain, util_domain);
+    assert(domain->res);
 
     begin            = ep->txq;
     uint32_t nb_segs = ep->txq_end - begin;
@@ -401,7 +402,7 @@ void flush_tx_queue(struct dpdk_ep *ep) {
      * transparently free the memory buffers of packets previously sent. So we should clone those
      * that we do not want to free */
     while (begin != ep->txq_end) {
-        ret = rte_eth_tx_burst(domain->port_id, domain->queue_id, begin, nb_segs);
+        ret = rte_eth_tx_burst(domain->res->port_id, domain->res->data_txq_id, begin, nb_segs);
         if (ret > 0) {
             RTE_LOG(DEBUG, USER1, "Transmitted %d packets\n", ret);
         }
@@ -689,7 +690,7 @@ static void process_rx_packet(struct dpdk_domain *domain, struct rte_mbuf *mbuf)
     struct trp_hdr       *trp_hdr;
     uint16_t              trp_opcode;
 
-    uint16_t base_port = rte_be_to_cpu_16(domain->local_addr.sin_port);
+    uint16_t base_port = rte_be_to_cpu_16(domain->res->local_cm_addr.sin_port);
 
     // TODO: We cannot discard packets absed on UDP checksum if we do not know how to compute
     // it... If some checksums are bad, we don't want to process the packet if (mbuf->ol_flags &
@@ -725,11 +726,11 @@ static void process_rx_packet(struct dpdk_domain *domain, struct rte_mbuf *mbuf)
     }
 
     // [Weijia]: IPv6 needs more care.
-    if (ipv4_hdr->dst_addr != domain->local_addr.sin_addr.s_addr) {
+    if (ipv4_hdr->dst_addr != domain->res->local_cm_addr.sin_addr.s_addr) {
         RTE_LOG(DEBUG, USER1,
                 "<dev=%s> Drop packet with IPv4 dst addr %" PRIx32 "; expected %" PRIx32 "\n",
                 domain->util_domain.name, rte_be_to_cpu_32(ipv4_hdr->dst_addr),
-                rte_be_to_cpu_32(domain->local_addr.sin_addr.s_addr));
+                rte_be_to_cpu_32(domain->res->local_cm_addr.sin_addr.s_addr));
         goto free_and_exit;
     }
 
@@ -740,12 +741,7 @@ static void process_rx_packet(struct dpdk_domain *domain, struct rte_mbuf *mbuf)
     // 3. The packet is for another port => Not for us, drop it
     udp_hdr          = (struct rte_udp_hdr *)rte_pktmbuf_adj(mbuf, sizeof(*ipv4_hdr));
     uint16_t rx_port = rte_be_to_cpu_16(udp_hdr->dst_port);
-    if (rx_port == base_port) {
-        // Probably need to insert in some ring
-        rte_pktmbuf_adj(mbuf, sizeof(*udp_hdr));
-        dpdk_cm_recv(domain, eth_hdr, ipv4_hdr, udp_hdr, mbuf);
-        goto free_and_exit;
-    } else if (rx_port > base_port && rx_port < base_port + MAX_ENDPOINTS_PER_APP) {
+    if (rx_port > base_port && rx_port < base_port + MAX_ENDPOINTS_PER_APP) {
         // Find the EP for this port
         dst_ep = domain->udp_port_to_ep[rx_port - (base_port + 1)];
         if (!dst_ep) {
@@ -940,7 +936,7 @@ static void do_receive(struct dpdk_domain *domain) {
 
     /* RX packets */
     rx_count =
-        rte_eth_rx_burst(domain->port_id, domain->queue_id, pkts_burst, dpdk_default_rx_burst_size);
+        rte_eth_rx_burst(domain->res->port_id, domain->res->data_rxq_id, pkts_burst, dpdk_default_rx_burst_size);
 
     /* Prefetch first packets */
     for (j = 0; j < PREFETCH_OFFSET && j < rx_count; j++) {
@@ -1119,9 +1115,6 @@ int dpdk_run_progress(void *arg) {
     struct dpdk_ep     *ep;
 
     while (likely(!atomic_load(&progress->stop_progress))) {
-        // outgoing control plane (connection manager)
-        dpdk_cm_send(domain);
-
         // outgoing data plane
         ofi_genlock_lock(&domain->ep_mutex);
         slist_foreach(&domain->endpoint_list, cur, prev) {
