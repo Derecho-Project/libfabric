@@ -175,6 +175,7 @@ static void* connection_manager(void* arg) {
                 }
             }
             // outgoing
+            /*
             while((npkts = rte_ring_sc_dequeue_bulk(res->cm_tx_ring,(void**)pkts,8,NULL)) > 0) {
                 DPDK_DBG(FI_LOG_EP_CTRL,"connection manager detected %u outgoing packets.\n",
                          npkts);
@@ -182,6 +183,18 @@ static void* connection_manager(void* arg) {
                 uint16_t nsent = 0;
                 while(nsent<npkts) {
                     nsent += rte_eth_tx_burst(res->port_id,res->cm_txq_id,&pkts[nsent],npkts-nsent);
+                }
+            }*/
+
+            struct rte_mbuf* opkt;
+            while(true) {
+                if (rte_ring_sc_dequeue(res->cm_tx_ring,(void**)&opkt) != 0) {
+                    break;
+                }
+                DPDK_DBG(FI_LOG_EP_CTRL,"connection manager detected an outgoing packet.\n");
+                uint16_t nsent = 0;
+                while(nsent<1) {
+                    nsent += rte_eth_tx_burst(res->port_id,res->cm_txq_id,&opkt,1);
                 }
             }
             res = res->next;
