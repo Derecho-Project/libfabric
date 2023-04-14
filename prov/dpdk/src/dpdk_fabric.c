@@ -414,14 +414,15 @@ int get_or_create_dpdk_domain_resources(struct dpdk_fabric* fabric,
         if (err != FI_SUCCESS) {
             DPDK_WARN(FI_LOG_FABRIC, "Failed to create domain resources for %s.\n",
                       info->domain_attr->name);
+        } else {
+            res->next = fabric->domain_res_list.next;
+            fabric->domain_res_list.next = res;
         }
-        res->next = fabric->domain_res_list.next;
-        fabric->domain_res_list.next = res;
     }
     if (err == FI_SUCCESS) {
         acquire_dpdk_domain_resources(res);
+        *pres = res;
     }
-    *pres = res;
     ofi_mutex_unlock(&fabric->domain_res_list_lock);
 
     return err;
