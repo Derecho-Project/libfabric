@@ -586,11 +586,7 @@ static int process_cm_connreq(struct dpdk_domain_resources*             res,
 
     // 3 - insert an event to event queue
     struct dpdk_cm_entry cm_entry;
-    /* [Weijia]: Generally, cm_entry.fid should point to the passive endpoint. But in DPDK design,
-     * we didn't track the pep point in the domain or fabric (the passive endpoint and domain is
-     * 1-1 though). Therefore we leave it a null pointer.
-     */
-    cm_entry.fid      = NULL;
+    cm_entry.fid      = &res->pep->util_pep.pep_fid.fid;
     cm_entry.info     = info;
     uint16_t paramlen = rte_be_to_cpu_16(cm_hdr->typed_header.connection_request.paramlen);
     if (paramlen > DPDK_MAX_CM_DATA_SIZE) {
