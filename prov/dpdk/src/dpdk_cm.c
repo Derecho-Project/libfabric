@@ -574,7 +574,6 @@ static int process_cm_connreq(struct dpdk_domain_resources*             res,
     handle->remote_data_port =
         rte_be_to_cpu_16(cm_hdr->typed_header.connection_request.client_data_udp_port);
 
-    // create a hints to get an info for creating domain and endpoint.
     struct fi_info* info = fi_dupinfo(res->pep->info);
     if (!info) {
         DPDK_WARN(FI_LOG_EP_CTRL, "%s failed to duplicate a struct fi_info object.\n",
@@ -605,8 +604,6 @@ static int process_cm_connreq(struct dpdk_domain_resources*             res,
                   ret);
         goto error_group_2;
     }
-
-    fi_freeinfo(info);
 
     ofi_mutex_unlock(&res->pep_lock);
 
