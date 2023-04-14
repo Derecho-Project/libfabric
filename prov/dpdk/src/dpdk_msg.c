@@ -129,22 +129,6 @@ static ssize_t dpdk_recvv(struct fid_ep *ep_fid, const struct iovec *iov, void *
 }
 
 
-static ssize_t dpdk_send(struct fid_ep *ep_fid, const void *buf, size_t len, void *desc,
-                         fi_addr_t dest_addr, void *context) {
-
-    // Here I should access the TX queue of the endpoint
-    // insert the message and return
-    printf("[dpdk_send] UNIMPLEMENTED\n");
-
-    return len;
-}
-
-static ssize_t dpdk_sendv(struct fid_ep *ep_fid, const struct iovec *iov, void **desc, size_t count,
-                          fi_addr_t dest_addr, void *context) {
-    printf("[dpdk_sendv] UNIMPLEMENTED\n");
-    return iov->iov_len;
-}
-
 static ssize_t dpdk_sendmsg(struct fid_ep *ep_fid, const struct fi_msg *msg, uint64_t flags) {
     struct dpdk_ep         *ep;
     struct dpdk_xfer_entry *tx_entry;
@@ -196,6 +180,38 @@ static ssize_t dpdk_sendmsg(struct fid_ep *ep_fid, const struct fi_msg *msg, uin
     ret                   = rte_ring_enqueue(ep->sq.ring, tx_entry);
 
     return ret;
+}
+
+static ssize_t dpdk_send(struct fid_ep *ep_fid, const void *buf, size_t len, void *desc,
+                         fi_addr_t dest_addr, void *context) {
+
+    // Here I should access the TX queue of the endpoint
+    // insert the message and return
+    // Weijia's draft implementation
+    struct fi_msg msg;
+    struct iovec  msg_iov;
+    msg_iov.iov_base    = buf;
+    msg_iov.iov_len     = len;
+    msg.msg_iov         = &msg_iov;
+    msg.iov_count       = 1;
+    msg.desc            = &desc;
+    msg.addr            = dest_addr; // this is ignored in the currendly DPDK impl.
+    msg.context         = context;
+
+    return dpdk_sendmsg(ep_fid,&msg,0);
+}
+
+static ssize_t dpdk_sendv(struct fid_ep *ep_fid, const struct iovec *iov, void **desc, size_t count,
+                          fi_addr_t dest_addr, void *context) {
+    // Weijia's draft implementation
+    struct fi_msg msg;
+    msg.msg_iov     = iov;
+    msg.iov_count   = count;
+    msg.desc        = desc;
+    msg.addr        = dest_addr;
+    msg.context     = context;
+
+    return dpdk_sendmsg(ep_fid,&msg,0);
 }
 
 static ssize_t dpdk_inject(struct fid_ep *ep_fid, const void *buf, size_t len,
