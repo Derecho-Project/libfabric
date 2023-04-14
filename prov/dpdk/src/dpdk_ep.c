@@ -442,7 +442,7 @@ int dpdk_passive_ep(struct fid_fabric *fabric, struct fi_info *info, struct fid_
     // step 1 - check/allocate domain resource
     struct dpdk_fabric* _f = container_of(fabric,struct dpdk_fabric,util_fabric.fabric_fid);
     struct dpdk_domain_resources* res = NULL;
-    ret = get_or_create_dpdk_domain_resources(_f,info,&res);
+    ret = get_or_create_dpdk_domain_resources(_f,pep->info,&res);
     if (ret) {
         DPDK_WARN(FI_LOG_EP_CTRL,"Failed to get or create passive endpoint.\n");
         goto err2;

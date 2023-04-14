@@ -250,7 +250,7 @@ int create_dpdk_domain_resources(struct fi_info* info,
     if (info->src_addrlen == sizeof(struct sockaddr_in)) {
         // source address specified
         res->local_cm_addr = *(struct sockaddr_in*)info->src_addr;
-    } else if (res->domain_config){
+    } else if (info->src_addrlen == 0 && res->domain_config){
         res->local_cm_addr.sin_family = AF_INET;
         res->local_cm_addr.sin_port = rte_cpu_to_be_16((uint16_t)cfg_getint(res->domain_config,CFG_OPT_DOMAIN_CM_PORT));
         char* ipstr = cfg_getstr(res->domain_config,CFG_OPT_DOMAIN_IP);
@@ -260,6 +260,14 @@ int create_dpdk_domain_resources(struct fi_info* info,
             err = -FI_EINVAL;
             goto error_group_2;
         }
+        info->src_addr = calloc(1,sizeof(struct sockaddr_in));
+        if (!info->src_addr) {
+            DPDK_WARN(FI_LOG_FABRIC, "failed to allocate space for info->src_addr \n");
+            err = -FI_ENOMEM;
+            goto error_group_2;
+        }
+        *(struct sockaddr_in*)info->src_addr = res->local_cm_addr;
+        info->src_addrlen = sizeof(struct sockaddr_in);
     } else {
         DPDK_WARN(FI_LOG_FABRIC, "failed to create domain resources because ip and port are not specified.\n");
         err = -FI_EINVAL;

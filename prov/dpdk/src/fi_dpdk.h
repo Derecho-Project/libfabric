@@ -474,7 +474,8 @@ struct dpdk_fabric {
  * finishes using the object.
  *
  * @param fabric    pointer to the fabric
- * @param info      pointer to the info structure
+ * @param info      pointer to the info structure. Src address may be filled from
+ *                  the configuration, if absent
  * @param res       filled with created object, left unchanged if error happens.
  *
  * @returns         FI_SUCCESS or an error.
