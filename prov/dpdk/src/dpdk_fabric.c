@@ -64,7 +64,7 @@ static struct rte_flow* generate_cm_flow(uint16_t port_id,
     bzero(&ipv4_spec,sizeof(ipv4_spec));
     ipv4_spec.hdr.next_proto_id = 0x11; // UDP
     ipv4_spec.hdr.dst_addr      = ip;
-    bzero(&ipv4_spec,sizeof(ipv4_mask));
+    bzero(&ipv4_mask,sizeof(ipv4_mask));
     ipv4_mask.hdr.next_proto_id = 0xff; // UDP Mask
     ipv4_mask.hdr.dst_addr      = 0xffffffff;
     pattern[1].type = RTE_FLOW_ITEM_TYPE_IPV4;
