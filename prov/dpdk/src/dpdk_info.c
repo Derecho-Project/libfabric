@@ -33,7 +33,9 @@
 
 #define DPDK_RX_OP_FLAGS (FI_COMPLETION)
 
-#define DPDK_MAX_INJECT 128
+// #define DPDK_MAX_INJECT 128
+// disable inject temporarily
+#define DPDK_MAX_INJECT 0 
 
 static struct fi_tx_attr dpdk_tx_attr = {.caps          = DPDK_EP_CAPS | DPDK_TX_CAPS,
                                          .op_flags      = DPDK_TX_OP_FLAGS,
