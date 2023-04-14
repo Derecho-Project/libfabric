@@ -266,7 +266,7 @@ int create_dpdk_domain_resources(struct fi_info* info,
     if (res->domain_config) {
         cfg_cm_ring_size = (uint16_t)cfg_getint(res->domain_config,CFG_OPT_DOMAIN_CM_RING_SIZE);
     }
-    sprintf(name,"libfabric.%s.cm_tx_ring",res->domain_name);
+    sprintf(name,"lf.%s.cmxr",res->domain_name);
     res->cm_tx_ring      = rte_ring_create(name,cfg_cm_ring_size,rte_eth_dev_socket_id(port_id),RING_F_MP_RTS_ENQ|RING_F_SC_DEQ);
     if (!res->cm_tx_ring) {
         DPDK_WARN(FI_LOG_FABRIC, "failed to create cm_tx_ring, error:%s.\n",
@@ -274,7 +274,7 @@ int create_dpdk_domain_resources(struct fi_info* info,
         err = -FI_EFAULT;
         goto error_group_2;
     }
-    sprintf(name,"libfabric.%s.cm_pool",   res->domain_name);
+    sprintf(name,"lf.%s.cmp",   res->domain_name);
     res->cm_pool            = rte_pktmbuf_pool_create(name,1024,64,0,
                                                   RTE_ETHER_HDR_LEN + 
                                                   sizeof(struct rte_ipv4_hdr) + 
@@ -454,7 +454,7 @@ int dpdk_create_fabric(struct fi_fabric_attr *attr, struct fid_fabric **fabric_f
     atomic_store(&fabric->active,true);
 
     // STEP 3: start connection manager control-thread
-    if ((ret = rte_ctrl_thread_create(&fabric->cm_thread,"libfabric.cm",NULL,connection_manager,fabric)) != 0) {
+    if ((ret = rte_ctrl_thread_create(&fabric->cm_thread,"lf.cm",NULL,connection_manager,fabric)) != 0) {
         DPDK_WARN(FI_LOG_FABRIC, "failed to create cm thread. error:%s.\n", rte_strerror(rte_errno));
         goto error_group_1;
     }
