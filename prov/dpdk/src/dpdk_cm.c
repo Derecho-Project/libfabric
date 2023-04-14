@@ -582,6 +582,7 @@ static int process_cm_connreq(struct dpdk_domain_resources*             res,
         ret = -FI_ENOMEM;
         goto error_group_1;
     }
+    info->handle = &handle->fid;
 
     // 3 - insert an event to event queue
     struct dpdk_cm_entry cm_entry;

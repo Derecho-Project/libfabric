@@ -188,8 +188,7 @@ static void* connection_manager(void* arg) {
         }
         ofi_mutex_unlock(&fabric->domain_res_list_lock);
         if (!is_busy) {
-            // usleep(100000); // sleep for 100 ms
-            usleep(5000000); // sleep for 100 ms
+            usleep(100000); // sleep for 100 ms
         }
     }
     DPDK_DBG(FI_LOG_EP_CTRL,"connection manager thread stopped.\n");
