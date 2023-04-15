@@ -370,8 +370,10 @@ static int dpdk_pep_bind(struct fid *fid, struct fid *bfid, uint64_t flags) {
     int ret = FI_SUCCESS;
     switch (bfid->fclass) {
     case FI_CLASS_EQ:
-        struct util_eq *eq_l2 = container_of(bfid, struct util_eq, eq_fid.fid);
-        ret                   = ofi_pep_bind_eq(&pep_l3->util_pep, eq_l2, flags);
+        {
+            struct util_eq *eq_l2 = container_of(bfid, struct util_eq, eq_fid.fid);
+            ret                   = ofi_pep_bind_eq(&pep_l3->util_pep, eq_l2, flags);
+        }
         break;
     default:
         DPDK_WARN(FI_LOG_EP_CTRL, "%s: invalid FID class %lu. Expecting FI_CLASS_EQ(%d) only.\n",
