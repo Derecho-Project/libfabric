@@ -1372,7 +1372,7 @@ static int pp_alloc_msgs(struct ct_pingpong *ct)
 	}
 	*/
 	ct->buf = mmap(NULL,ct->buf_size, PROT_READ|PROT_WRITE, MAP_ANONYMOUS|MAP_PRIVATE|MAP_HUGETLB|MAP_HUGE_2MB, -1,0);
-	if (!ct->buf) {
+	if (ct->buf == MAP_FAILED) {
 		PP_PRINTERR("mmap",errno);
 		return errno;
 	}
