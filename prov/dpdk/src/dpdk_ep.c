@@ -80,12 +80,14 @@ static int dpdk_ep_bind(struct fid *fid, struct fid *bfid, uint64_t flags) {
 
     switch (bfid->fclass) {
     case FI_CLASS_CQ:
-        struct dpdk_cq *cq = container_of(bfid, struct dpdk_cq, util_cq.cq_fid.fid);
-        ret                = ofi_ep_bind_cq(&ep->util_ep, &cq->util_cq, flags);
-        if (ret < 0) {
-            printf("ofi_ep_bind_cq failed\n");
-            FI_WARN(&dpdk_prov, FI_LOG_EP_CTRL, "ofi_ep_bind_cq failed");
-            return ret;
+        {
+            struct dpdk_cq *cq = container_of(bfid, struct dpdk_cq, util_cq.cq_fid.fid);
+            ret                = ofi_ep_bind_cq(&ep->util_ep, &cq->util_cq, flags);
+            if (ret < 0) {
+                printf("ofi_ep_bind_cq failed\n");
+                FI_WARN(&dpdk_prov, FI_LOG_EP_CTRL, "ofi_ep_bind_cq failed");
+                return ret;
+            }
         }
         break;
 
@@ -93,12 +95,14 @@ static int dpdk_ep_bind(struct fid *fid, struct fid *bfid, uint64_t flags) {
         // The rest of the function is unimplemented
 
     case FI_CLASS_EQ:
-        struct dpdk_eq *eq = container_of(bfid, struct dpdk_eq, util_eq.eq_fid.fid);
-        ret                = ofi_ep_bind_eq(&ep->util_ep, &eq->util_eq);
-        if (ret < 0) {
-            printf("ofi_ep_bind_eq failed\n");
-            FI_WARN(&dpdk_prov, FI_LOG_EP_CTRL, "ofi_ep_bind_eq failed");
-            return ret;
+        {
+            struct dpdk_eq *eq = container_of(bfid, struct dpdk_eq, util_eq.eq_fid.fid);
+            ret                = ofi_ep_bind_eq(&ep->util_ep, &eq->util_eq);
+            if (ret < 0) {
+                printf("ofi_ep_bind_eq failed\n");
+                FI_WARN(&dpdk_prov, FI_LOG_EP_CTRL, "ofi_ep_bind_eq failed");
+                return ret;
+            }
         }
         break;
     // case FI_CLASS_SRX_CTX:

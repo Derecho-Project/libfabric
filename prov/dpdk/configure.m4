@@ -24,7 +24,7 @@ AC_DEFUN([FI_DPDK_CONFIGURE],[
                                 [],
                                 [AC_MSG_ERROR([Cannot find libdpdk>=22.11.0, or pkg-config is not found.])])
            FI_PKG_CHECK_MODULES([confuse],
-                                [libconfuse >= 3.3],
+                                [libconfuse >= 3.2],
                                 [],
                                 [AC_MSG_ERROR([Cannot find libconfuse>=3.3, or pkg-config is not found.])])
           ],

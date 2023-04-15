@@ -433,6 +433,7 @@ static int dpdk_ep_shutdown(struct fid_ep *ep, uint64_t flags) {
     case ep_conn_state_error:
     default:
         // nothing to do.
+        break;
     }
     return FI_SUCCESS;
 error_group_2: // disconnreq_mbuf may need to be freed.
