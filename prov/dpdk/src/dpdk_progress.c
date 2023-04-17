@@ -268,11 +268,12 @@ static void try_complete_wqe(struct dpdk_ep *ep, struct dpdk_xfer_entry *wqe) {
      * completed. */
     if (wqe == container_of(ep->sq.active_head.next, struct dpdk_xfer_entry, entry)) {
         rte_spinlock_lock(&ep->sq.lock);
-        if (wqe->flags & FI_COMPLETION) {
+        if (!(ep->util_ep.tx_cq->flags & FI_SELECTIVE_COMPLETION) || (wqe->flags & FI_COMPLETION)) {
             post_send_cqe(ep, wqe, FI_WC_SUCCESS);
         } else {
             FI_INFO(&dpdk_prov, FI_LOG_EP_CTRL,
-                    "<ep=%u> Dropping TX completion, as FI_COMPLETION flag is not set\n",
+                    "<ep=%u> Dropping TX completion, as FI_SELECTIVE_COMPLETION is set and "
+                    "FI_COMPLETION flag is not set on this specific operation\n",
                     ep->udp_port);
             ep_free_send_wqe(ep, wqe, true);
         }
