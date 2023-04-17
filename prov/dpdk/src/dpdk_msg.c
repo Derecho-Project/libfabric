@@ -100,18 +100,18 @@ static ssize_t dpdk_recv(struct fid_ep *ep_fid, void *buf, size_t len, void *des
                          fi_addr_t src_addr, void *context) {
 
     // [Weijia]: A suboptimal implementation
-    struct fi_msg   msg;
-    struct iovec    msg_iov;
+    struct fi_msg msg;
+    struct iovec  msg_iov;
 
-    msg_iov.iov_base    = buf;
-    msg_iov.iov_len     = len;
-    msg.msg_iov         = &msg_iov;
-    msg.iov_count       = 1;
-    msg.desc            = &desc;
-    msg.addr            = src_addr; // this is ignored in the currendly DPDK impl.
-    msg.context         = context;
+    msg_iov.iov_base = buf;
+    msg_iov.iov_len  = len;
+    msg.msg_iov      = &msg_iov;
+    msg.iov_count    = 1;
+    msg.desc         = &desc;
+    msg.addr         = src_addr; // this is ignored in the currendly DPDK impl.
+    msg.context      = context;
 
-    return dpdk_recvmsg(ep_fid,&msg,0);
+    return dpdk_recvmsg(ep_fid, &msg, 0);
 }
 
 static ssize_t dpdk_recvv(struct fid_ep *ep_fid, const struct iovec *iov, void **desc, size_t count,
@@ -119,15 +119,14 @@ static ssize_t dpdk_recvv(struct fid_ep *ep_fid, const struct iovec *iov, void *
     // [Weijia]: A suboptimal implementation
     struct fi_msg msg;
 
-    msg.msg_iov         = iov;
-    msg.iov_count       = count;
-    msg.desc            = desc;
-    msg.addr            = src_addr; // this is ignored in the currendly DPDK impl.
-    msg.context         = context;
+    msg.msg_iov   = iov;
+    msg.iov_count = count;
+    msg.desc      = desc;
+    msg.addr      = src_addr; // this is ignored in the currendly DPDK impl.
+    msg.context   = context;
 
-    return dpdk_recvmsg(ep_fid,&msg,0);
+    return dpdk_recvmsg(ep_fid, &msg, 0);
 }
-
 
 static ssize_t dpdk_sendmsg(struct fid_ep *ep_fid, const struct fi_msg *msg, uint64_t flags) {
     struct dpdk_ep         *ep;
@@ -190,28 +189,28 @@ static ssize_t dpdk_send(struct fid_ep *ep_fid, const void *buf, size_t len, voi
     // Weijia's draft implementation
     struct fi_msg msg;
     struct iovec  msg_iov;
-    msg_iov.iov_base    = buf;
-    msg_iov.iov_len     = len;
-    msg.msg_iov         = &msg_iov;
-    msg.iov_count       = 1;
-    msg.desc            = &desc;
-    msg.addr            = dest_addr; // this is ignored in the currendly DPDK impl.
-    msg.context         = context;
+    msg_iov.iov_base = buf;
+    msg_iov.iov_len  = len;
+    msg.msg_iov      = &msg_iov;
+    msg.iov_count    = 1;
+    msg.desc         = &desc;
+    msg.addr         = dest_addr; // this is ignored in the currendly DPDK impl.
+    msg.context      = context;
 
-    return dpdk_sendmsg(ep_fid,&msg,0);
+    return dpdk_sendmsg(ep_fid, &msg, 0);
 }
 
 static ssize_t dpdk_sendv(struct fid_ep *ep_fid, const struct iovec *iov, void **desc, size_t count,
                           fi_addr_t dest_addr, void *context) {
     // Weijia's draft implementation
     struct fi_msg msg;
-    msg.msg_iov     = iov;
-    msg.iov_count   = count;
-    msg.desc        = desc;
-    msg.addr        = dest_addr;
-    msg.context     = context;
+    msg.msg_iov   = iov;
+    msg.iov_count = count;
+    msg.desc      = desc;
+    msg.addr      = dest_addr;
+    msg.context   = context;
 
-    return dpdk_sendmsg(ep_fid,&msg,0);
+    return dpdk_sendmsg(ep_fid, &msg, 0);
 }
 
 static ssize_t dpdk_inject(struct fid_ep *ep_fid, const void *buf, size_t len,

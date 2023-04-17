@@ -71,9 +71,10 @@ int dpdk_domain_open(struct fid_fabric *fabric_fid, struct fi_info *info,
     int                 ret;
 
     /* 0. find the domain resources in the fabric */
-    struct dpdk_fabric* fabric = container_of(fabric_fid, struct dpdk_fabric, util_fabric.fabric_fid);
-    struct dpdk_domain_resources* res = NULL;
-    ret = get_or_create_dpdk_domain_resources(fabric,info,&res);
+    struct dpdk_fabric *fabric =
+        container_of(fabric_fid, struct dpdk_fabric, util_fabric.fabric_fid);
+    struct dpdk_domain_resources *res = NULL;
+    ret                               = get_or_create_dpdk_domain_resources(fabric, info, &res);
     if (ret) {
         DPDK_WARN(FI_LOG_DOMAIN, "Failed to get domain resources.\n");
         return ret;
@@ -121,7 +122,7 @@ int dpdk_domain_open(struct fid_fabric *fabric_fid, struct fi_info *info,
     ofi_mutex_lock(&res->domain_lock);
     if (res->domain) {
         ofi_mutex_unlock(&res->domain_lock);
-        DPDK_WARN(FI_LOG_DOMAIN, "Failed to create domain on %s.\n",res->domain_name);
+        DPDK_WARN(FI_LOG_DOMAIN, "Failed to create domain on %s.\n", res->domain_name);
         ret = -FI_EBUSY;
         goto free;
     }
@@ -132,7 +133,7 @@ int dpdk_domain_open(struct fid_fabric *fabric_fid, struct fi_info *info,
     // In particular the current code would need to know: port_checksum_offload, port_fdir
     domain->dev_flags = 0x0;
     domain->lcore_id  = 0x1;
-    
+
     // Allocate the mempool for RX mbufs
     char rx_pool_name[32];
     sprintf(rx_pool_name, "rx_pool_%s", domain->util_domain.name);
@@ -154,7 +155,7 @@ int dpdk_domain_open(struct fid_fabric *fabric_fid, struct fi_info *info,
         goto close;
     }
     DPDK_TRACE(FI_LOG_CORE, "RX mempool created.\n");
-    
+
     // Initialize the list of endpoints
     slist_init(&domain->endpoint_list);
     domain->num_endpoints = 0;

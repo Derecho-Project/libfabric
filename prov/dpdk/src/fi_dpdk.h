@@ -27,13 +27,13 @@
 #include <ofi.h>
 #include <ofi_enosys.h>
 #include <ofi_list.h>
+#include <ofi_lock.h>
 #include <ofi_net.h>
 #include <ofi_proto.h>
 #include <ofi_prov.h>
 #include <ofi_rbuf.h>
 #include <ofi_signal.h>
 #include <ofi_util.h>
-#include <ofi_lock.h>
 
 #include <rdma/fabric.h>
 
@@ -252,7 +252,7 @@ struct dpdk_domain {
     // we keep a copy of the fi_info.
     struct fi_info *info;
 
-    struct dpdk_domain_resources* res;
+    struct dpdk_domain_resources *res;
     // TODO: The following fields could be grouped in a "dev" struct,
     // which could be passed also to the child EPs for faster access.
     // Port ID of the DPDK device: moved to connection manager
@@ -301,13 +301,12 @@ enum ep_conn_state {
 // The ip address are in the cpu endian.
 struct dpdk_domain_resources;
 struct dpdk_conn_handle {
-    struct fid          fid;
-    struct dpdk_domain_resources*
-                        res;
-    uint32_t            session_id;
-    uint32_t            remote_ip_addr;
-    uint16_t            remote_ctrl_port;
-    uint16_t            remote_data_port;
+    struct fid                    fid;
+    struct dpdk_domain_resources *res;
+    uint32_t                      session_id;
+    uint32_t                      remote_ip_addr;
+    uint16_t                      remote_ctrl_port;
+    uint16_t                      remote_data_port;
 };
 
 // DPDK endpoint: represents an open connection
@@ -394,35 +393,35 @@ enum {
 // ======= Fabric, Domain, Endpoint and Threads  =======
 // Represents a DPDK fabric
 struct dpdk_domain_resources {
-    /* The following members are initialized and fixed during the object's 
+    /* The following members are initialized and fixed during the object's
      * life cycle. Therefore, we don't need a lock on it.
      */
-    struct dpdk_domain_resources*           next;
-    char                                    domain_name[32];
-    cfg_t*                                  domain_config;
+    struct dpdk_domain_resources *next;
+    char                          domain_name[32];
+    cfg_t                        *domain_config;
     // domain resources
-    uint16_t                                port_id;
-    uint16_t                                mtu;
+    uint16_t port_id;
+    uint16_t mtu;
     // Local Ethernet Address
-    struct rte_ether_addr                   local_eth_addr;
+    struct rte_ether_addr local_eth_addr;
     // IPv4 Address and cm port
-    struct sockaddr_in                      local_cm_addr;
+    struct sockaddr_in local_cm_addr;
     // data rx queue id <- 0
-    uint16_t                                data_rxq_id;
+    uint16_t data_rxq_id;
     // data tx queue id <- 0
-    uint16_t                                data_txq_id;
+    uint16_t data_txq_id;
     // cm rx queue id <- 1
-    uint16_t                                cm_rxq_id;
+    uint16_t cm_rxq_id;
     // cm tx queue id <- 1
-    uint16_t                                cm_txq_id;
+    uint16_t cm_txq_id;
     // cm tx ring
-    struct rte_ring*                        cm_tx_ring;
+    struct rte_ring *cm_tx_ring;
     // cm pktmbuf pool
-    struct rte_mempool*                     cm_pool;
+    struct rte_mempool *cm_pool;
     // cm flow
-    struct rte_flow*                        cm_flow;
+    struct rte_flow *cm_flow;
     // cm session counter
-    atomic_uint                             cm_session_counter;
+    atomic_uint cm_session_counter;
     /* The passive endpoint and domain are set during fi_passive_ep() and
      * fi_domain(), accessed by the singleton connection manager thread and
      * user threads calling fi_cm(3) APIs functions, released by user threads
@@ -430,13 +429,13 @@ struct dpdk_domain_resources {
      * we need locks to protect them.
      */
     // passive endpoint's event queue
-    ofi_mutex_t                             pep_lock;
-    struct dpdk_pep*                        pep;
+    ofi_mutex_t      pep_lock;
+    struct dpdk_pep *pep;
     // pointer to the domain
-    ofi_mutex_t                             domain_lock;
-    struct dpdk_domain*                     domain;
+    ofi_mutex_t         domain_lock;
+    struct dpdk_domain *domain;
     // refcnt
-    atomic_uint                             refcnt;
+    atomic_uint refcnt;
 };
 
 /*
@@ -446,24 +445,23 @@ struct dpdk_domain_resources {
  *
  * @returns         FI_SUCCESS or an error.
  */
-extern int create_dpdk_domain_resources(struct fi_info* info,
-                                        struct dpdk_domain_resources** pres);
-static inline void acquire_dpdk_domain_resources(struct dpdk_domain_resources* res) {
+extern int create_dpdk_domain_resources(struct fi_info *info, struct dpdk_domain_resources **pres);
+static inline void acquire_dpdk_domain_resources(struct dpdk_domain_resources *res) {
     assert(res);
-    atomic_fetch_add(&res->refcnt,1);
+    atomic_fetch_add(&res->refcnt, 1);
 }
 
-static inline void release_dpdk_domain_resources(struct dpdk_domain_resources* res) {
+static inline void release_dpdk_domain_resources(struct dpdk_domain_resources *res) {
     assert(res);
-    atomic_fetch_sub(&res->refcnt,1);
+    atomic_fetch_sub(&res->refcnt, 1);
 }
 
 struct dpdk_fabric {
-    struct util_fabric                      util_fabric;
-    ofi_mutex_t                             domain_res_list_lock;
-    struct dpdk_domain_resources            domain_res_list;
-    atomic_bool                             active;
-    pthread_t                               cm_thread;
+    struct util_fabric           util_fabric;
+    ofi_mutex_t                  domain_res_list_lock;
+    struct dpdk_domain_resources domain_res_list;
+    atomic_bool                  active;
+    pthread_t                    cm_thread;
 };
 
 /*
@@ -480,9 +478,8 @@ struct dpdk_fabric {
  *
  * @returns         FI_SUCCESS or an error.
  */
-extern int get_or_create_dpdk_domain_resources(struct dpdk_fabric* fabric,
-                                               struct fi_info* info,
-                                               struct dpdk_domain_resources** pres);
+extern int get_or_create_dpdk_domain_resources(struct dpdk_fabric *fabric, struct fi_info *info,
+                                               struct dpdk_domain_resources **pres);
 
 // ======= Passive Endpoint and Connection Management (CM)  =======
 enum dpdk_cm_msg_type {
@@ -529,7 +526,7 @@ struct dpdk_cm_msg_hdr {
 };
 
 /* processing the connection management messages */
-int dpdk_cm_recv(struct rte_mbuf* pkt, struct dpdk_domain_resources* res);
+int dpdk_cm_recv(struct rte_mbuf *pkt, struct dpdk_domain_resources *res);
 
 // Passive Endpoint
 struct dpdk_pep {
@@ -665,19 +662,19 @@ void dpdk_tx_queue_insert(struct dpdk_ep *ep, struct dpdk_xfer_entry *tx_entry);
 
 //===================== DPDK Configurations ================
 extern struct cfg_t *dpdk_config;
-#define CFG_OPT_DPDK_ARGS               "dpdk_args"
-#define CFG_OPT_DEFAULT_CM_PORT         "default_cm_port"
-#define CFG_OPT_DEFAULT_CM_RING_SIZE    "default_cm_ring_size"
-#define CFG_OPT_DOMAIN                  "domain"
-#define CFG_OPT_DOMAIN_IP               "ip"
-#define CFG_OPT_DOMAIN_CM_PORT          "port"
-#define CFG_OPT_DOMAIN_CM_RING_SIZE     "cm_ring_size"
+#define CFG_OPT_DPDK_ARGS            "dpdk_args"
+#define CFG_OPT_DEFAULT_CM_PORT      "default_cm_port"
+#define CFG_OPT_DEFAULT_CM_RING_SIZE "default_cm_ring_size"
+#define CFG_OPT_DOMAIN               "domain"
+#define CFG_OPT_DOMAIN_IP            "ip"
+#define CFG_OPT_DOMAIN_CM_PORT       "port"
+#define CFG_OPT_DOMAIN_CM_RING_SIZE  "cm_ring_size"
 struct cfg_t *dpdk_domain_config(const char *domain_name);
 
-#define FOREACH_DPDK_DOMAIN_START(domain_config) \
-    for (int i = 0; i < cfg_size(dpdk_config, CFG_OPT_DOMAIN); i++) { \
-        cfg_t* domain_config = cfg_getnsec(dpdk_config,CFG_OPT_DOMAIN,i);
-        
+#define FOREACH_DPDK_DOMAIN_START(domain_config)                                                   \
+    for (int i = 0; i < cfg_size(dpdk_config, CFG_OPT_DOMAIN); i++) {                              \
+        cfg_t *domain_config = cfg_getnsec(dpdk_config, CFG_OPT_DOMAIN, i);
+
 #define FOREACH_DPDK_DOMAIN_END(domain_config) }
 
 //===================== Log infrastructure ================

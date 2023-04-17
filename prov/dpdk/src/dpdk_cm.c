@@ -113,7 +113,7 @@ error_group_1: // nothing changed.
                             sizeof(struct rte_ether_hdr) + sizeof(struct rte_ipv4_hdr) +           \
                                 sizeof(struct rte_udp_hdr))
 
-static int create_cm_mbuf(struct dpdk_domain_resources* res, uint32_t remote_ip_addr,
+static int create_cm_mbuf(struct dpdk_domain_resources *res, uint32_t remote_ip_addr,
                           uint16_t remote_cm_port, struct rte_mbuf **out_cm_mbuf) {
     int              ret     = FI_SUCCESS;
     struct rte_mbuf *cm_mbuf = rte_pktmbuf_alloc(res->cm_pool);
@@ -390,7 +390,7 @@ static int dpdk_ep_shutdown(struct fid_ep *ep, uint64_t flags) {
     struct dpdk_ep     *dep    = container_of(ep, struct dpdk_ep, util_ep.ep_fid);
     struct dpdk_domain *domain = container_of(dep->util_ep.domain, struct dpdk_domain, util_domain);
     assert(domain->res);
-    struct rte_mbuf    *disconnreq_mbuf = NULL;
+    struct rte_mbuf *disconnreq_mbuf = NULL;
     // 0 - handle shutdown for states
     switch (dep->conn_state) {
     case ep_conn_state_connected:
@@ -536,20 +536,18 @@ struct fi_ops_cm dpdk_pep_cm_ops = {
 
 // ====== Internals ======
 /* processing connection request */
-static int process_cm_connreq(struct dpdk_domain_resources*             res,
-                              struct rte_ether_hdr*                     eth_hdr,
-                              struct rte_ipv4_hdr*                      ip_hdr,
-                              struct rte_udp_hdr*                       udp_hdr,
-                              struct dpdk_cm_msg_hdr*                   cm_hdr,
-                              void*                                     cm_data) {
+static int process_cm_connreq(struct dpdk_domain_resources *res, struct rte_ether_hdr *eth_hdr,
+                              struct rte_ipv4_hdr *ip_hdr, struct rte_udp_hdr *udp_hdr,
+                              struct dpdk_cm_msg_hdr *cm_hdr, void *cm_data) {
     int ret = FI_SUCCESS;
 
     assert(res);
     ofi_mutex_lock(&res->pep_lock);
     // skip when passive endpoint does not exist or is not active.
-    if (!res->pep || (res->pep->state!=DPDK_PEP_LISTENING)) {
-        DPDK_WARN(FI_LOG_EP_CTRL, "Received CONNREQ message without active passive endpoint on domain:%s.\n",
-                                  res->domain_name);
+    if (!res->pep || (res->pep->state != DPDK_PEP_LISTENING)) {
+        DPDK_WARN(FI_LOG_EP_CTRL,
+                  "Received CONNREQ message without active passive endpoint on domain:%s.\n",
+                  res->domain_name);
         ofi_mutex_unlock(&res->pep_lock);
         return ret;
     }
@@ -575,10 +573,9 @@ static int process_cm_connreq(struct dpdk_domain_resources*             res,
     handle->remote_data_port =
         rte_be_to_cpu_16(cm_hdr->typed_header.connection_request.client_data_udp_port);
 
-    struct fi_info* info = fi_dupinfo(res->pep->info);
+    struct fi_info *info = fi_dupinfo(res->pep->info);
     if (!info) {
-        DPDK_WARN(FI_LOG_EP_CTRL, "%s failed to duplicate a struct fi_info object.\n",
-                  __func__);
+        DPDK_WARN(FI_LOG_EP_CTRL, "%s failed to duplicate a struct fi_info object.\n", __func__);
         ret = -FI_ENOMEM;
         goto error_group_1;
     }
@@ -620,17 +617,16 @@ error_group_1:
 /* processing connection request acknowledgement or rejection
  * on the connecting client side.
  */
-static int process_cm_conn_ack_or_rej(struct dpdk_domain_resources* res,
-                                      struct rte_ether_hdr* eth_hdr,
-                                      struct rte_ipv4_hdr* ip_hdr,
-                                      struct rte_udp_hdr* udp_hdr,
-                                      struct dpdk_cm_msg_hdr* cm_hdr,
-                                      void* cm_data) {
+static int process_cm_conn_ack_or_rej(struct dpdk_domain_resources *res,
+                                      struct rte_ether_hdr *eth_hdr, struct rte_ipv4_hdr *ip_hdr,
+                                      struct rte_udp_hdr *udp_hdr, struct dpdk_cm_msg_hdr *cm_hdr,
+                                      void *cm_data) {
     int             ret = FI_SUCCESS;
     struct dpdk_ep *ep  = NULL;
     ofi_mutex_lock(&res->domain_lock);
     if (!res->domain) {
-        DPDK_WARN(FI_LOG_EP_CTRL,"Unexpected CONNACK/CONNREJ message received on domain:%s. drop it\n",
+        DPDK_WARN(FI_LOG_EP_CTRL,
+                  "Unexpected CONNACK/CONNREJ message received on domain:%s. drop it\n",
                   res->domain_name);
         ofi_mutex_unlock(&res->domain_lock);
         ret = -FI_EINVAL;
@@ -722,18 +718,16 @@ error_group_1: // endpoint is still connecting
 
 // TODO: check process_cm_conn_ack_or_rej and process_cm_disconnect
 /* processing disconnection request */
-static int process_cm_disconnect(struct dpdk_domain_resources *res,
-                                 struct rte_ether_hdr *eth_hdr,
-                                 struct rte_ipv4_hdr *ip_hdr,
-                                 struct rte_udp_hdr *udp_hdr,
-                                 struct dpdk_cm_msg_hdr *cm_hdr,
-                                 void* cm_data) {
+static int process_cm_disconnect(struct dpdk_domain_resources *res, struct rte_ether_hdr *eth_hdr,
+                                 struct rte_ipv4_hdr *ip_hdr, struct rte_udp_hdr *udp_hdr,
+                                 struct dpdk_cm_msg_hdr *cm_hdr, void *cm_data) {
     int             ret = FI_SUCCESS;
     struct dpdk_ep *ep  = NULL;
     // 0 - validate parameters
     ofi_mutex_lock(&res->domain_lock);
     if (!res->domain) {
-        DPDK_WARN(FI_LOG_EP_CTRL,"Unexpected CONNACK/CONNREJ message received on domain:%s. drop it\n",
+        DPDK_WARN(FI_LOG_EP_CTRL,
+                  "Unexpected CONNACK/CONNREJ message received on domain:%s. drop it\n",
                   cfg_title(res->domain_config));
         ofi_mutex_unlock(&res->domain_lock);
         ret = -FI_EINVAL;
@@ -752,25 +746,23 @@ static int process_cm_disconnect(struct dpdk_domain_resources *res,
     // 1 - check local status
     uint32_t ep_state = atomic_load(&ep->conn_state);
     switch (ep_state) {
-    case ep_conn_state_connected: 
-        {
-            // change state
-            atomic_store(&ep->conn_state, ep_conn_state_shutdown);
-            // generate a shutdown event
-            struct dpdk_cm_entry cm_entry;
-            cm_entry.fid        = &ep->util_ep.ep_fid.fid;
-            cm_entry.info       = NULL;
-            struct dpdk_eq *deq = container_of(ep->util_ep.eq, struct dpdk_eq, util_eq);
-            ret                 = fi_eq_write(&deq->util_eq.eq_fid, FI_SHUTDOWN, (void *)&cm_entry,
-                                              sizeof(struct fi_eq_cm_entry), 0);
-            if (ret < 0) {
-                DPDK_WARN(FI_LOG_EP_CTRL,
-                          "%s failed to insert 'connected' event to event queue with error code: %d.",
-                          __func__, ret);
-                goto error_group_2;
-            }
-        } 
-        break;
+    case ep_conn_state_connected: {
+        // change state
+        atomic_store(&ep->conn_state, ep_conn_state_shutdown);
+        // generate a shutdown event
+        struct dpdk_cm_entry cm_entry;
+        cm_entry.fid        = &ep->util_ep.ep_fid.fid;
+        cm_entry.info       = NULL;
+        struct dpdk_eq *deq = container_of(ep->util_ep.eq, struct dpdk_eq, util_eq);
+        ret                 = fi_eq_write(&deq->util_eq.eq_fid, FI_SHUTDOWN, (void *)&cm_entry,
+                                          sizeof(struct fi_eq_cm_entry), 0);
+        if (ret < 0) {
+            DPDK_WARN(FI_LOG_EP_CTRL,
+                      "%s failed to insert 'connected' event to event queue with error code: %d.",
+                      __func__, ret);
+            goto error_group_2;
+        }
+    } break;
     case ep_conn_state_connecting:
     case ep_conn_state_unbound:
     case ep_conn_state_shutdown:
@@ -795,19 +787,19 @@ error_group_1: // nothing changed.
  * This function must only be called from the connection management ctrl thread
  * Here, we hold the res->pep_lock.
  */
-int dpdk_cm_recv(struct rte_mbuf* m, struct dpdk_domain_resources* res) {
+int dpdk_cm_recv(struct rte_mbuf *m, struct dpdk_domain_resources *res) {
     int ret = FI_SUCCESS;
 
-    uint32_t                offset  = 0;
-    struct rte_ether_hdr*   eth_hdr = rte_pktmbuf_mtod_offset(m,struct rte_ether_hdr*,offset);
-    offset+=sizeof(*eth_hdr);
-    struct rte_ipv4_hdr*    ip_hdr  = rte_pktmbuf_mtod_offset(m,struct rte_ipv4_hdr*,offset);
-    offset+=sizeof(*ip_hdr);
-    struct rte_udp_hdr*     udp_hdr = rte_pktmbuf_mtod_offset(m,struct rte_udp_hdr*,offset);
-    offset+=sizeof(*udp_hdr);
-    struct dpdk_cm_msg_hdr* cm_hdr  = rte_pktmbuf_mtod_offset(m,struct dpdk_cm_msg_hdr*,offset);
-    offset+=sizeof(*cm_hdr);
-    void*                   cm_data = rte_pktmbuf_mtod_offset(m,void*,offset);
+    uint32_t              offset  = 0;
+    struct rte_ether_hdr *eth_hdr = rte_pktmbuf_mtod_offset(m, struct rte_ether_hdr *, offset);
+    offset += sizeof(*eth_hdr);
+    struct rte_ipv4_hdr *ip_hdr = rte_pktmbuf_mtod_offset(m, struct rte_ipv4_hdr *, offset);
+    offset += sizeof(*ip_hdr);
+    struct rte_udp_hdr *udp_hdr = rte_pktmbuf_mtod_offset(m, struct rte_udp_hdr *, offset);
+    offset += sizeof(*udp_hdr);
+    struct dpdk_cm_msg_hdr *cm_hdr = rte_pktmbuf_mtod_offset(m, struct dpdk_cm_msg_hdr *, offset);
+    offset += sizeof(*cm_hdr);
+    void *cm_data = rte_pktmbuf_mtod_offset(m, void *, offset);
 
     DPDK_TRACE(FI_LOG_EP_CTRL, "Receiving CM Message with type:%d.\n", cm_hdr->type);
 

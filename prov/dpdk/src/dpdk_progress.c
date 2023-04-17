@@ -936,8 +936,8 @@ static void do_receive(struct dpdk_domain *domain) {
     int              j;
 
     /* RX packets */
-    rx_count =
-        rte_eth_rx_burst(domain->res->port_id, domain->res->data_rxq_id, pkts_burst, dpdk_default_rx_burst_size);
+    rx_count = rte_eth_rx_burst(domain->res->port_id, domain->res->data_rxq_id, pkts_burst,
+                                dpdk_default_rx_burst_size);
 
     /* Prefetch first packets */
     for (j = 0; j < PREFETCH_OFFSET && j < rx_count; j++) {

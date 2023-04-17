@@ -26,9 +26,9 @@ void enqueue_ether_frame(struct rte_mbuf *sendmsg, unsigned int ether_type, stru
         int              used_mbufs = 0;
 
         rte_pktmbuf_adj(sendmsg, RTE_ETHER_HDR_LEN);
-        if ((used_mbufs =
-                 rte_ipv4_fragment_packet(sendmsg, (struct rte_mbuf **)pkts_out, MAX_FRAG_NUM,
-                                          domain->res->mtu, ep->tx_hdr_mempool, ep->tx_ddp_mempool)) < 0)
+        if ((used_mbufs = rte_ipv4_fragment_packet(sendmsg, (struct rte_mbuf **)pkts_out,
+                                                   MAX_FRAG_NUM, domain->res->mtu,
+                                                   ep->tx_hdr_mempool, ep->tx_ddp_mempool)) < 0)
         {
             RTE_LOG(ERR, USER1, "Error while fragmenting packets: %s\n", rte_strerror(-used_mbufs));
             return;
@@ -311,9 +311,10 @@ void send_udp_dgram(struct dpdk_ep *ep, struct rte_mbuf *sendmsg, uint32_t raw_c
     // ddp_length); ip               = prepend_ipv4_header(sendmsg, IP_UDP, domain->ipv4_addr,
     // ep->remote_ipv4_addr,
     //                                        ddp_length + UDP_HDR_LEN);
-    udp = prepend_udp_header(sendmsg, ep->udp_port, ep->remote_udp_port, ddp_length);
-    ip  = prepend_ipv4_header(sendmsg, IP_UDP, rte_be_to_cpu_16(domain->res->local_cm_addr.sin_addr.s_addr),
-                              ep->remote_ipv4_addr, ddp_length + UDP_HDR_LEN);
+    udp              = prepend_udp_header(sendmsg, ep->udp_port, ep->remote_udp_port, ddp_length);
+    ip               = prepend_ipv4_header(sendmsg, IP_UDP,
+                                           rte_be_to_cpu_16(domain->res->local_cm_addr.sin_addr.s_addr),
+                                           ep->remote_ipv4_addr, ddp_length + UDP_HDR_LEN);
     udp->dgram_cksum = rte_ipv4_phdr_cksum(ip, sendmsg->ol_flags);
 
     if (!(sendmsg->ol_flags & RTE_MBUF_F_TX_UDP_CKSUM)) {
@@ -333,9 +334,9 @@ void send_udp_dgram(struct dpdk_ep *ep, struct rte_mbuf *sendmsg, uint32_t raw_c
 void send_trp_ack(struct dpdk_ep *ep) {
     struct dpdk_domain *domain = container_of(ep->util_ep.domain, struct dpdk_domain, util_domain);
     assert(domain->res);
-    struct ee_state    *ee     = &ep->remote_ep;
-    struct rte_mbuf    *sendmsg;
-    struct trp_hdr     *trp;
+    struct ee_state *ee = &ep->remote_ep;
+    struct rte_mbuf *sendmsg;
+    struct trp_hdr  *trp;
 
     assert(!(ee->trp_flags & trp_recv_missing));
     sendmsg = rte_pktmbuf_alloc(ep->tx_hdr_mempool);

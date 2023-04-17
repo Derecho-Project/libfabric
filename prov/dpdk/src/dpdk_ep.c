@@ -79,32 +79,28 @@ static int dpdk_ep_bind(struct fid *fid, struct fid *bfid, uint64_t flags) {
     }
 
     switch (bfid->fclass) {
-    case FI_CLASS_CQ:
-        {
-            struct dpdk_cq *cq = container_of(bfid, struct dpdk_cq, util_cq.cq_fid.fid);
-            ret                = ofi_ep_bind_cq(&ep->util_ep, &cq->util_cq, flags);
-            if (ret < 0) {
-                printf("ofi_ep_bind_cq failed\n");
-                FI_WARN(&dpdk_prov, FI_LOG_EP_CTRL, "ofi_ep_bind_cq failed");
-                return ret;
-            }
+    case FI_CLASS_CQ: {
+        struct dpdk_cq *cq = container_of(bfid, struct dpdk_cq, util_cq.cq_fid.fid);
+        ret                = ofi_ep_bind_cq(&ep->util_ep, &cq->util_cq, flags);
+        if (ret < 0) {
+            printf("ofi_ep_bind_cq failed\n");
+            FI_WARN(&dpdk_prov, FI_LOG_EP_CTRL, "ofi_ep_bind_cq failed");
+            return ret;
         }
-        break;
+    } break;
 
         // TODO: for the moment, just associate the CQ.
         // The rest of the function is unimplemented
 
-    case FI_CLASS_EQ:
-        {
-            struct dpdk_eq *eq = container_of(bfid, struct dpdk_eq, util_eq.eq_fid.fid);
-            ret                = ofi_ep_bind_eq(&ep->util_ep, &eq->util_eq);
-            if (ret < 0) {
-                printf("ofi_ep_bind_eq failed\n");
-                FI_WARN(&dpdk_prov, FI_LOG_EP_CTRL, "ofi_ep_bind_eq failed");
-                return ret;
-            }
+    case FI_CLASS_EQ: {
+        struct dpdk_eq *eq = container_of(bfid, struct dpdk_eq, util_eq.eq_fid.fid);
+        ret                = ofi_ep_bind_eq(&ep->util_ep, &eq->util_eq);
+        if (ret < 0) {
+            printf("ofi_ep_bind_eq failed\n");
+            FI_WARN(&dpdk_prov, FI_LOG_EP_CTRL, "ofi_ep_bind_eq failed");
+            return ret;
         }
-        break;
+    } break;
     // case FI_CLASS_SRX_CTX:
     //     if (ep->util_ep.type != FI_EP_MSG)
     //         return -FI_EINVAL;
@@ -343,7 +339,8 @@ int dpdk_endpoint(struct fid_domain *domain, struct fi_info *info, struct fid_ep
     slist_insert_tail(&ep->entry, &dpdk_domain->endpoint_list);
     dpdk_domain->udp_port_to_ep[dpdk_domain->num_endpoints] = ep;
     dpdk_domain->num_endpoints++;
-    ep->udp_port = rte_be_to_cpu_16(dpdk_domain->res->local_cm_addr.sin_port) + dpdk_domain->num_endpoints;
+    ep->udp_port =
+        rte_be_to_cpu_16(dpdk_domain->res->local_cm_addr.sin_port) + dpdk_domain->num_endpoints;
     ofi_genlock_unlock(&dpdk_domain->ep_mutex);
 
     FI_INFO(&dpdk_prov, FI_LOG_EP_CTRL, "Created EP at udp port(%u)\n", ep->udp_port);
@@ -369,12 +366,10 @@ static int dpdk_pep_bind(struct fid *fid, struct fid *bfid, uint64_t flags) {
 
     int ret = FI_SUCCESS;
     switch (bfid->fclass) {
-    case FI_CLASS_EQ:
-        {
-            struct util_eq *eq_l2 = container_of(bfid, struct util_eq, eq_fid.fid);
-            ret                   = ofi_pep_bind_eq(&pep_l3->util_pep, eq_l2, flags);
-        }
-        break;
+    case FI_CLASS_EQ: {
+        struct util_eq *eq_l2 = container_of(bfid, struct util_eq, eq_fid.fid);
+        ret                   = ofi_pep_bind_eq(&pep_l3->util_pep, eq_l2, flags);
+    } break;
     default:
         DPDK_WARN(FI_LOG_EP_CTRL, "%s: invalid FID class %lu. Expecting FI_CLASS_EQ(%d) only.\n",
                   __func__, bfid->fclass, FI_CLASS_EQ);
@@ -434,32 +429,33 @@ int dpdk_passive_ep(struct fid_fabric *fabric, struct fi_info *info, struct fid_
     pep->state = DPDK_PEP_INIT;
 
     if (!info->domain_attr || !info->domain_attr->name) {
-        DPDK_WARN(FI_LOG_EP_CTRL,"failed to create passive endpoint, domain is"
-                                 "not specified in 'struct fi_info'.\n");
+        DPDK_WARN(FI_LOG_EP_CTRL, "failed to create passive endpoint, domain is"
+                                  "not specified in 'struct fi_info'.\n");
         goto err2;
     }
 
-    pep->info  = fi_dupinfo(info);
+    pep->info = fi_dupinfo(info);
     if (!pep->info) {
         ret = -FI_ENOMEM;
         goto err2;
     }
 
     // step 1 - check/allocate domain resource
-    struct dpdk_fabric* _f = container_of(fabric,struct dpdk_fabric,util_fabric.fabric_fid);
-    struct dpdk_domain_resources* res = NULL;
-    ret = get_or_create_dpdk_domain_resources(_f,pep->info,&res);
+    struct dpdk_fabric *_f = container_of(fabric, struct dpdk_fabric, util_fabric.fabric_fid);
+    struct dpdk_domain_resources *res = NULL;
+    ret                               = get_or_create_dpdk_domain_resources(_f, pep->info, &res);
     if (ret) {
-        DPDK_WARN(FI_LOG_EP_CTRL,"Failed to get or create passive endpoint.\n");
+        DPDK_WARN(FI_LOG_EP_CTRL, "Failed to get or create passive endpoint.\n");
         goto err2;
     }
     // step 2 - setup res
     ofi_mutex_lock(&res->pep_lock);
     if (res->pep) {
         ofi_mutex_unlock(&res->pep_lock);
-        DPDK_WARN(FI_LOG_EP_CTRL,"failed to create passive endpoint because passive endpoint"
-                                 "on the same domain(%s) already exists.\n",
-                                 res->domain_name);
+        DPDK_WARN(FI_LOG_EP_CTRL,
+                  "failed to create passive endpoint because passive endpoint"
+                  "on the same domain(%s) already exists.\n",
+                  res->domain_name);
         ret = -FI_EBUSY;
         goto err3;
     }
