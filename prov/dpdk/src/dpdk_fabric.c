@@ -294,6 +294,8 @@ int create_dpdk_domain_resources(struct fi_info *info, struct dpdk_domain_resour
         err = -FI_EFAULT;
         goto error_group_2;
     }
+
+    // RX pool for control path
     sprintf(name, "lf.%s.cmp", res->domain_name);
     res->cm_pool = rte_pktmbuf_pool_create(
         name, 1024, 64, 0,
@@ -306,6 +308,29 @@ int create_dpdk_domain_resources(struct fi_info *info, struct dpdk_domain_resour
         err = -FI_EFAULT;
         goto error_group_2;
     }
+
+    // RX pool for data path
+    char rx_pool_name[32];
+    sprintf(rx_pool_name, "rx_pool_%s", res->domain_name);
+    // Dimension of the TX mempools (must be power of 2)
+    size_t pool_size = rte_align32pow2(2 * MAX_ENDPOINTS_PER_APP * dpdk_default_rx_size);
+    // Dimension of the mbufs in the TX mempools. Must contain at least an Ethernet frame + private
+    // DPDK data (see documentation)
+    size_t mbuf_size = RTE_MBUF_DEFAULT_DATAROOM;
+    // Other parameters
+    size_t cache_size   = 64;
+    size_t private_size = 0;
+
+    res->rx_data_pool = rte_pktmbuf_pool_create(rx_pool_name, pool_size, cache_size, private_size,
+                                                mbuf_size, rte_eth_dev_socket_id(res->port_id));
+    if (res->rx_data_pool == NULL) {
+        ofi_mutex_unlock(&res->domain_lock);
+        DPDK_WARN(FI_LOG_CORE, "Cannot create RX mbuf pool for domain %s: %s\n", res->domain_name,
+                  rte_strerror(rte_errno));
+        goto error_group_2;
+    }
+    DPDK_TRACE(FI_LOG_CORE, "RX mempool created.\n");
+
     // Configure device, initialize the rx/tx queues and the flows.
     struct rte_eth_conf port_conf;
     bzero(&port_conf, sizeof(port_conf));
@@ -326,32 +351,57 @@ int create_dpdk_domain_resources(struct fi_info *info, struct dpdk_domain_resour
                   port_id, res->mtu, rte_strerror(rte_errno));
         goto error_group_3;
     }
-    uint16_t nb_rxd = cfg_cm_ring_size;
-    uint16_t nb_txd = cfg_cm_ring_size;
+
+    uint16_t nb_rxd = 1024 + cfg_cm_ring_size;
+    uint16_t nb_txd = 1024 + cfg_cm_ring_size;
     if ((err = rte_eth_dev_adjust_nb_rx_tx_desc(port_id, &nb_rxd, &nb_txd)) != 0) {
         DPDK_WARN(FI_LOG_FABRIC,
-                  "rte_eth_dev_adjust_nb_rx_tx_desc ont port:%u failed with error:%s.\n", port_id,
+                  "rte_eth_dev_adjust_nb_rx_tx_desc on port:%u failed with error:%s.\n", port_id,
                   rte_strerror(rte_errno));
         goto error_group_3;
     }
     // We use queue 0 for the data path and queue 1 for the control path.
     struct rte_eth_txconf txconf = devinfo.default_txconf;
     txconf.offloads              = port_conf.txmode.offloads;
-    for (uint16_t q = 0; q < 2; q++) {
-        if ((err = rte_eth_rx_queue_setup(port_id, q, nb_rxd, socket_id, NULL, res->cm_pool)) != 0)
-        {
-            DPDK_WARN(FI_LOG_FABRIC,
-                      "rte_eth_rx_queue_setup failed on port:%u, qid:%u failed with error:%s.\n",
-                      port_id, q, rte_strerror(rte_errno));
-            goto error_group_3;
-        }
-        if ((err = rte_eth_tx_queue_setup(port_id, q, nb_txd, socket_id, &txconf)) != 0) {
-            DPDK_WARN(FI_LOG_FABRIC,
-                      "rte_eth_tx_queue_setup failed on port:%u, qid:%u failed with error:%s.\n",
-                      port_id, q, rte_strerror(rte_errno));
-            goto error_group_3;
-        }
+
+    // 1) Data path queues
+    nb_rxd = 1024;
+    nb_txd = 1024;
+
+    if ((err = rte_eth_rx_queue_setup(port_id, res->data_rxq_id, nb_rxd, socket_id, NULL,
+                                      res->rx_data_pool)) != 0)
+    {
+        DPDK_WARN(FI_LOG_FABRIC,
+                  "rte_eth_rx_queue_setup failed on port:%u, qid:%u failed with error:%s.\n",
+                  port_id, res->data_rxq_id, rte_strerror(rte_errno));
+        goto error_group_3;
     }
+    if ((err = rte_eth_tx_queue_setup(port_id, res->data_txq_id, nb_txd, socket_id, &txconf)) != 0)
+    {
+        DPDK_WARN(FI_LOG_FABRIC,
+                  "rte_eth_tx_queue_setup failed on port:%u, qid:%u failed with error:%s.\n",
+                  port_id, res->data_txq_id, rte_strerror(rte_errno));
+        goto error_group_3;
+    }
+
+    // 2) Connection management (control path) queues
+    nb_rxd = cfg_cm_ring_size;
+    nb_txd = cfg_cm_ring_size;
+    if ((err = rte_eth_rx_queue_setup(port_id, res->cm_rxq_id, nb_rxd, socket_id, NULL,
+                                      res->cm_pool)) != 0)
+    {
+        DPDK_WARN(FI_LOG_FABRIC,
+                  "rte_eth_rx_queue_setup failed on port:%u, qid:%u failed with error:%s.\n",
+                  port_id, res->cm_rxq_id, rte_strerror(rte_errno));
+        goto error_group_3;
+    }
+    if ((err = rte_eth_tx_queue_setup(port_id, res->cm_txq_id, nb_txd, socket_id, &txconf)) != 0) {
+        DPDK_WARN(FI_LOG_FABRIC,
+                  "rte_eth_tx_queue_setup failed on port:%u, qid:%u failed with error:%s.\n",
+                  port_id, res->cm_txq_id, rte_strerror(rte_errno));
+        goto error_group_3;
+    }
+
     do {
         err = rte_eth_dev_start(port_id);
         if (err != -EAGAIN) {
@@ -363,11 +413,13 @@ int create_dpdk_domain_resources(struct fi_info *info, struct dpdk_domain_resour
                   rte_strerror(rte_errno));
         goto error_group_3;
     }
+
     if ((err = rte_eth_promiscuous_enable(port_id)) != 0) {
         DPDK_WARN(FI_LOG_FABRIC, "rte_eth_promiscuous failed on port:%u, error:%s.\n", port_id,
                   rte_strerror(rte_errno));
         goto error_group_3;
     }
+
     // Enable the flow
     struct rte_flow_error flow_error;
     if ((res->cm_flow = generate_cm_flow(port_id, 1, res->local_cm_addr.sin_addr.s_addr,

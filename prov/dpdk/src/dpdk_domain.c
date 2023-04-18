@@ -16,10 +16,6 @@ static int dpdk_domain_close(fid_t fid) {
 
     domain = container_of(fid, struct dpdk_domain, util_domain.domain_fid.fid);
 
-    if (domain->rx_pool) {
-        rte_mempool_free(domain->rx_pool);
-    }
-
     if (domain->info) {
         fi_freeinfo(domain->info);
     }
@@ -134,28 +130,6 @@ int dpdk_domain_open(struct fid_fabric *fabric_fid, struct fi_info *info,
     domain->dev_flags = 0x0;
     domain->lcore_id  = 0x1;
 
-    // Allocate the mempool for RX mbufs
-    char rx_pool_name[32];
-    sprintf(rx_pool_name, "rx_pool_%s", domain->util_domain.name);
-    // Dimension of the TX mempools (must be power of 2)
-    size_t pool_size = rte_align32pow2(2 * MAX_ENDPOINTS_PER_APP * dpdk_default_rx_size);
-    // Dimension of the mbufs in the TX mempools. Must contain at least an Ethernet frame + private
-    // DPDK data (see documentation)
-    size_t mbuf_size = RTE_MBUF_DEFAULT_DATAROOM;
-    // Other parameters
-    size_t cache_size   = 64;
-    size_t private_size = 0;
-    domain->rx_pool     = rte_pktmbuf_pool_create(rx_pool_name, pool_size, cache_size, private_size,
-                                                  mbuf_size, rte_eth_dev_socket_id(res->port_id));
-    if (domain->rx_pool == NULL) {
-        ofi_mutex_unlock(&res->domain_lock);
-        DPDK_WARN(FI_LOG_CORE, "Cannot create RX mbuf pool for domain %s: %s\n",
-                  domain->util_domain.name, rte_strerror(rte_errno));
-        ret = -FI_ENOMEM;
-        goto close;
-    }
-    DPDK_TRACE(FI_LOG_CORE, "RX mempool created.\n");
-
     // Initialize the list of endpoints
     slist_init(&domain->endpoint_list);
     domain->num_endpoints = 0;
@@ -190,9 +164,6 @@ int dpdk_domain_open(struct fid_fabric *fabric_fid, struct fi_info *info,
 close_prog:
     dpdk_close_progress(&domain->progress);
 close:
-    if (domain->rx_pool) {
-        rte_mempool_free(domain->rx_pool);
-    }
     if (domain->info) {
         fi_freeinfo(domain->info);
     }

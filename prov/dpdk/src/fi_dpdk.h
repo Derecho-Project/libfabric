@@ -278,9 +278,6 @@ struct dpdk_domain {
     // Progress thread data
     struct dpdk_progress progress;
 
-    // Mempool for incoming packets
-    struct rte_mempool *rx_pool;
-
     // Receive TLB to track incoming fragmented packet
     // TODO: Potentially, this could span multiple hardware queues.
     struct lcore_queue_conf lcore_queue_conf;
@@ -410,6 +407,8 @@ struct dpdk_domain_resources {
     uint16_t data_rxq_id;
     // data tx queue id <- 0
     uint16_t data_txq_id;
+    // data rx pktmbuf pool
+    struct rte_mempool *rx_data_pool;
     // cm rx queue id <- 1
     uint16_t cm_rxq_id;
     // cm tx queue id <- 1
