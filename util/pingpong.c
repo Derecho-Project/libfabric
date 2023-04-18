@@ -1363,19 +1363,16 @@ static int pp_alloc_msgs(struct ct_pingpong *ct)
 	/* Extra alignment for the second part of the buffer */
 	ct->buf_size += alignment;
 
-	/*
-	 ret = ofi_memalign(&(ct->buf), (size_t)alignment, ct->buf_size);
-
+    ret = ofi_memalign(&(ct->buf), (size_t)alignment, ct->buf_size);
 	if (ret) {
 		PP_PRINTERR("ofi_memalign", ret);
 		return ret;
 	}
-	*/
-	ct->buf = mmap(NULL,ct->buf_size, PROT_READ|PROT_WRITE, MAP_ANONYMOUS|MAP_PRIVATE|MAP_HUGETLB|MAP_HUGE_2MB, -1,0);
-	if (ct->buf == MAP_FAILED) {
-		PP_PRINTERR("mmap",errno);
-		return errno;
-	}
+	// ct->buf = mmap(NULL,ct->buf_size, PROT_READ|PROT_WRITE, MAP_ANONYMOUS|MAP_PRIVATE|MAP_HUGETLB|MAP_HUGE_2MB, -1,0);
+	// if (ct->buf == MAP_FAILED) {
+	// 	PP_PRINTERR("mmap",errno);
+	// 	return errno;
+	// }
 	memset(ct->buf, 0, ct->buf_size);
 	ct->rx_buf = ct->buf;
 	ct->tx_buf = (char *)ct->buf +
