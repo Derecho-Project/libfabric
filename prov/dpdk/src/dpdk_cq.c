@@ -46,6 +46,9 @@ static ssize_t dpdk_cq_readfrom(struct fid_cq *cq_fid, void *buf, size_t count,
         *src_addr = FI_ADDR_NOTAVAIL;
     }
 
+    // Return the CQ descriptor to the free ring
+    rte_ring_enqueue_burst(cq->free_ring, (void **)cqe, count, NULL);
+
     return ret;
 }
 
