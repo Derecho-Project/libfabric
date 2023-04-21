@@ -62,11 +62,11 @@ static struct rte_flow *generate_cm_flow(uint16_t port_id, uint16_t rx_queue_id,
     ipv4_spec.hdr.dst_addr      = ip;
     bzero(&ipv4_mask, sizeof(ipv4_mask));
     ipv4_mask.hdr.next_proto_id = 0xff; // UDP Mask
-    ipv4_mask.hdr.dst_addr      = 0xffffffff;
-    pattern[1].type             = RTE_FLOW_ITEM_TYPE_IPV4;
-    pattern[1].spec             = &ipv4_spec;
-    pattern[1].mask             = &ipv4_mask;
-    pattern[1].last             = NULL;
+    // ipv4_mask.hdr.dst_addr      = 0xffffffff; // This is not supported by the Intel driver
+    pattern[1].type = RTE_FLOW_ITEM_TYPE_IPV4;
+    pattern[1].spec = &ipv4_spec;
+    pattern[1].mask = &ipv4_mask;
+    pattern[1].last = NULL;
 
     bzero(&udp_spec, sizeof(udp_spec));
     udp_spec.hdr.dst_port = port;
@@ -286,8 +286,8 @@ int create_dpdk_domain_resources(struct fi_info *info, struct dpdk_domain_resour
         cfg_cm_ring_size = (uint16_t)cfg_getint(res->domain_config, CFG_OPT_DOMAIN_CM_RING_SIZE);
     }
     sprintf(name, "lf.%s.cmxr", res->domain_name);
-    res->cm_tx_ring = rte_ring_create(name, cfg_cm_ring_size, rte_eth_dev_socket_id(port_id),
-                                      RING_F_MP_RTS_ENQ | RING_F_SC_DEQ);
+    res->cm_tx_ring =
+        rte_ring_create(name, cfg_cm_ring_size, socket_id, RING_F_MP_RTS_ENQ | RING_F_SC_DEQ);
     if (!res->cm_tx_ring) {
         DPDK_WARN(FI_LOG_FABRIC, "failed to create cm_tx_ring, error:%s.\n",
                   rte_strerror(rte_errno));
@@ -297,11 +297,18 @@ int create_dpdk_domain_resources(struct fi_info *info, struct dpdk_domain_resour
 
     // RX pool for control path
     sprintf(name, "lf.%s.cmp", res->domain_name);
-    res->cm_pool = rte_pktmbuf_pool_create(
-        name, 1024, 64, 0,
-        RTE_ETHER_HDR_LEN + sizeof(struct rte_ipv4_hdr) + sizeof(struct rte_udp_hdr) +
-            sizeof(struct dpdk_cm_msg_hdr) + DPDK_MAX_CM_DATA_SIZE + RTE_ETHER_CRC_LEN,
-        socket_id);
+    // Dimension of the CP mempool (must be power of 2)
+    size_t pool_size = 1024;
+    // Dimension of the mbufs in the mempool. Must contain at least an Ethernet frame + private
+    // DPDK data (see documentation). Must be at least 384 bytes for the Intel IGC driver.
+    size_t mbuf_size = RTE_ETHER_HDR_LEN + sizeof(struct rte_ipv4_hdr) +
+                       sizeof(struct rte_udp_hdr) + sizeof(struct dpdk_cm_msg_hdr) +
+                       DPDK_MAX_CM_DATA_SIZE + RTE_ETHER_CRC_LEN + RTE_PKTMBUF_HEADROOM;
+    // Other parameters
+    size_t cache_size   = 64;
+    size_t private_size = 0;
+
+    res->cm_pool = rte_pktmbuf_pool_create(name, pool_size, 64, 0, mbuf_size, socket_id);
     if (!res->cm_pool) {
         DPDK_WARN(FI_LOG_FABRIC, "failed to create memory pool-%s, error:%s.\n", name,
                   rte_strerror(rte_errno));
@@ -312,17 +319,17 @@ int create_dpdk_domain_resources(struct fi_info *info, struct dpdk_domain_resour
     // RX pool for data path
     char rx_pool_name[32];
     sprintf(rx_pool_name, "rx_pool_%s", res->domain_name);
-    // Dimension of the TX mempools (must be power of 2)
-    size_t pool_size = rte_align32pow2(2 * MAX_ENDPOINTS_PER_APP * dpdk_default_rx_size);
-    // Dimension of the mbufs in the TX mempools. Must contain at least an Ethernet frame + private
+    // Dimension of the TX mempool (must be power of 2)
+    pool_size = rte_align32pow2(2 * MAX_ENDPOINTS_PER_APP * dpdk_default_rx_size);
+    // Dimension of the mbufs in the mempool. Must contain at least an Ethernet frame + private
     // DPDK data (see documentation)
-    size_t mbuf_size = RTE_MBUF_DEFAULT_DATAROOM;
+    mbuf_size = RTE_MBUF_DEFAULT_DATAROOM;
     // Other parameters
-    size_t cache_size   = 64;
-    size_t private_size = 0;
+    cache_size   = 64;
+    private_size = 0;
 
     res->rx_data_pool = rte_pktmbuf_pool_create(rx_pool_name, pool_size, cache_size, private_size,
-                                                mbuf_size, rte_eth_dev_socket_id(res->port_id));
+                                                mbuf_size, socket_id);
     if (res->rx_data_pool == NULL) {
         ofi_mutex_unlock(&res->domain_lock);
         DPDK_WARN(FI_LOG_CORE, "Cannot create RX mbuf pool for domain %s: %s\n", res->domain_name,

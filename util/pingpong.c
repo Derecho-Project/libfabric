@@ -1753,6 +1753,10 @@ static int pp_client_connect(struct ct_pingpong *ct)
 	if (ret)
 		return ret;
 
+    printf("Sleeping 5 seconds before connecting\n");
+    sleep(5);
+    printf("Connecting\n");
+
 	ret = fi_connect(ct->ep, ct->rem_name, NULL, 0);
 	if (ret) {
 		PP_PRINTERR("fi_connect", ret);

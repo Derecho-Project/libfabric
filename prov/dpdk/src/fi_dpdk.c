@@ -71,7 +71,8 @@ static void dpdk_load_cfg() {
         // read configuration file
         if (cfg_parse(dpdk_config, cfg_file) != CFG_SUCCESS) {
             DPDK_WARN(FI_LOG_CORE,
-                      "Failed loading configuration file: %s, falling back to defaults", cfg_file);
+                      "Failed loading configuration file: %s, falling back to defaults\n",
+                      cfg_file);
         }
     }
 }
