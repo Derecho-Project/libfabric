@@ -398,15 +398,18 @@ void flush_tx_queue(struct dpdk_ep *ep) {
 
     begin            = ep->txq;
     uint32_t nb_segs = ep->txq_end - begin;
+    if (!nb_segs) {
+        return;
+    }
+
+    RTE_LOG(DEBUG, USER1, "Flushing %d packets\n", nb_segs);
 
     /* Transmit the enqueued packets. It is the responsibility of the rte_eth_tx_burst() function to
-     * transparently free the memory buffers of packets previously sent. So we should clone those
-     * that we do not want to free */
+     * transparently free the memory buffers of packets previously sent. So we should have cloned
+     * those that we do not want to free */
     while (begin != ep->txq_end) {
         ret = rte_eth_tx_burst(domain->res->port_id, domain->res->data_txq_id, begin, nb_segs);
-        if (ret > 0) {
-            RTE_LOG(DEBUG, USER1, "Transmitted %d packets\n", ret);
-        }
+        RTE_LOG(DEBUG, USER1, "Transmitted %d packets\n", ret);
         begin += ret;
     }
 
