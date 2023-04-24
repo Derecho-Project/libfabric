@@ -62,10 +62,10 @@ static struct rte_flow *generate_cm_flow(uint16_t port_id, uint16_t rx_queue_id,
     ipv4_spec.hdr.dst_addr      = ip;
     bzero(&ipv4_mask, sizeof(ipv4_mask));
     ipv4_mask.hdr.next_proto_id = 0xff; // UDP Mask
-    // ipv4_mask.hdr.dst_addr      = 0xffffffff; // This is not supported by the Intel driver
+    // ipv4_mask.hdr.dst_addr      = 0xffffffff; // This is not supported by the Intel IGC driver
     pattern[1].type = RTE_FLOW_ITEM_TYPE_IPV4;
-    pattern[1].spec = &ipv4_spec;
-    pattern[1].mask = &ipv4_mask;
+    // pattern[1].spec = &ipv4_spec;      // This is not supported by the Intel i40e driver
+    // pattern[1].mask = &ipv4_mask;      // This is not supported by the Intel i40e driver
     pattern[1].last = NULL;
 
     bzero(&udp_spec, sizeof(udp_spec));
@@ -300,10 +300,11 @@ int create_dpdk_domain_resources(struct fi_info *info, struct dpdk_domain_resour
     // Dimension of the CP mempool (must be power of 2)
     size_t pool_size = 1024;
     // Dimension of the mbufs in the mempool. Must contain at least an Ethernet frame + private
-    // DPDK data (see documentation). Must be at least 384 bytes for the Intel IGC driver.
-    size_t mbuf_size = RTE_ETHER_HDR_LEN + sizeof(struct rte_ipv4_hdr) +
-                       sizeof(struct rte_udp_hdr) + sizeof(struct dpdk_cm_msg_hdr) +
-                       DPDK_MAX_CM_DATA_SIZE + RTE_ETHER_CRC_LEN + RTE_PKTMBUF_HEADROOM;
+    // DPDK data (see documentation). Must be at least 384 bytes for the Intel IGC driver, and at
+    // least 1152 for the Intel ie40 driver.
+    size_t mbuf_size = RTE_MAX(
+        1152, RTE_ETHER_HDR_LEN + sizeof(struct rte_ipv4_hdr) + sizeof(struct rte_udp_hdr) +
+                  sizeof(struct dpdk_cm_msg_hdr) + DPDK_MAX_CM_DATA_SIZE + RTE_ETHER_CRC_LEN);
     // Other parameters
     size_t cache_size   = 64;
     size_t private_size = 0;
