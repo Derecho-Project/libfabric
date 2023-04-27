@@ -1,7 +1,93 @@
 #include "protocols.h"
 
-/* Ethernet */
+//======================== HELPER FUNCTIONS ========================//
+void free_extbuf_cb(void *addr, void *opaque) {
+    return;
+}
 
+// This function is similar to the rte_pktmbuf_ext_shinfo_init_helper. However, the "original" one
+// would allocate the rte_mbuf_ext_shared_info structure at the end of the external buffer. We
+// can't, because the buffer is user-managed memory. So this function stores the struct in the
+// area the user passes as first argument. Generally, and specifically for this case, the caller
+// will pass a private area of the mbuf as first argument. DO NOT PASS a NULL callback pointer: it
+// will be called by DPDK causing a segfault. Just pass a function that does nothing, if you do not
+// need this feature.
+static inline void rte_pktmbuf_ext_shinfo_init_helper_custom(
+    struct rte_mbuf_ext_shared_info *ret_shinfo, rte_mbuf_extbuf_free_callback_t free_cb,
+    void *fcb_opaque) {
+
+    struct rte_mbuf_ext_shared_info *shinfo = ret_shinfo;
+    shinfo->free_cb                         = free_cb;
+    shinfo->fcb_opaque                      = fcb_opaque;
+    rte_mbuf_ext_refcnt_set(shinfo, 1);
+    return;
+}
+
+/* Checks if an mbuf crosses page boundary */
+static inline int mbuf_crosses_page_boundary(struct rte_mbuf *m, size_t pg_sz) {
+    uint64_t start = (uint64_t)m->buf_addr + m->data_off;
+    uint64_t end   = start + m->data_len;
+    return (start / pg_sz) != ((end - 1) / pg_sz);
+}
+
+static inline int set_iova_mapping(struct rte_mbuf *sendmsg, size_t page_size) {
+    int ret = 0;
+    // Get the mbuf representing external memory: the last of the chain
+    struct rte_mbuf *ext_mbuf = rte_pktmbuf_lastseg(sendmsg);
+
+    // Set the IOVA mapping for the external memory.
+    // TODO: eventually we want the mapping to come from the DPDK internal page table rather
+    // than just skipping it, by using rte_mem_virt2memseg().
+    ext_mbuf->buf_iova = rte_mem_virt2iova(ext_mbuf->buf_addr + ext_mbuf->data_off);
+
+    // Reset the data offset: it causes errors in the driver with IOVA
+    // TODO: Maybe this can be avoided by implementing the IP fragmentation
+    // manually (copy from the original DPDK version).
+    ext_mbuf->buf_addr = ext_mbuf->buf_addr + ext_mbuf->data_off;
+    ext_mbuf->data_off = 0;
+
+    // If IOVA as PA, the mbuf may span two pages that correspond to two different
+    // physical addresses. In this case, we need to split in two parts the mbuf containing the
+    // user data (as it is allocated on external memory).
+    if (rte_eal_iova_mode() != RTE_IOVA_VA && mbuf_crosses_page_boundary(ext_mbuf, page_size)) {
+        // 1. Get page boundary starting from last_mbuf->buf_addr (+ data_off)
+        uint64_t start         = (uint64_t)ext_mbuf->buf_addr + ext_mbuf->data_off;
+        uint64_t end           = start + ext_mbuf->data_len;
+        uint64_t page_boundary = ((start / page_size) + 1) * page_size;
+
+        // 3. Compute the length of the ext_mbuf and the second mbuf
+        uint64_t second_len = end - page_boundary;
+
+        // 4. Allocate a new mbuf for the second part
+        struct rte_mbuf *second_mbuf = rte_pktmbuf_alloc(ext_mbuf->pool);
+        if (!second_mbuf) {
+            FI_WARN(&dpdk_prov, FI_LOG_MR, "%s():%i: Failed to allocate mbuf", __func__, __LINE__);
+            return rte_errno;
+        }
+
+        // 5. Attach the second mbuf to the external memory in the second page, with the correct
+        // IOVA
+        struct rte_mbuf_ext_shared_info *ret_shinfo =
+            (struct rte_mbuf_ext_shared_info *)(second_mbuf + 1);
+        rte_pktmbuf_ext_shinfo_init_helper_custom(ret_shinfo, free_extbuf_cb, NULL);
+        rte_pktmbuf_attach_extbuf(second_mbuf, (void *)page_boundary,
+                                  rte_mem_virt2iova((void *)page_boundary), second_len, ret_shinfo);
+        second_mbuf->data_len = second_len;
+        second_mbuf->data_off = 0;
+
+        // 6. Chain this mbuf to the last one
+        ext_mbuf->next = second_mbuf;
+        ext_mbuf->data_len -= second_len;
+
+        // 7. Increase the nsegs of the overall chain
+        sendmsg->nb_segs++;
+    }
+
+    return ret;
+}
+
+//======================== PROTOCOL-RELATED FUNCTIONS ========================//
+/* Ethernet */
 /* Prepends an Ethernet header to the frame and enqueues it on the given port.
  * It performs fragmentation if sendmsg is greater than the Ethernet MTU.
  * The ether_type should be in host byte order. */
@@ -10,6 +96,8 @@ void enqueue_ether_frame(struct rte_mbuf *sendmsg, unsigned int ether_type, stru
 
     struct dpdk_domain *domain = container_of(ep->util_ep.domain, struct dpdk_domain, util_domain);
     assert(domain->res);
+    // TODO: retrieve this from the domain!
+    size_t pg_sz = sysconf(_SC_PAGESIZE);
 
     struct rte_ether_hdr *eth =
         rte_pktmbuf_mtod_offset(sendmsg, struct rte_ether_hdr *, ETHERNET_HDR_OFFSET);
@@ -53,6 +141,9 @@ void enqueue_ether_frame(struct rte_mbuf *sendmsg, unsigned int ether_type, stru
             hdr_frag->ether_type = rte_cpu_to_be_16(ether_type);
             m->l2_len            = sizeof(*hdr_frag);
 
+            // Set IOVA mapping for the fragment
+            set_iova_mapping(m, pg_sz);
+
             // Append the fragment to the transmission queue
             *(ep->txq_end++) = m;
 
@@ -66,6 +157,9 @@ void enqueue_ether_frame(struct rte_mbuf *sendmsg, unsigned int ether_type, stru
         rte_pktmbuf_free(sendmsg);
 
     } else {
+        // Set IOVA mapping
+        set_iova_mapping(sendmsg, pg_sz);
+
         // Append the mbuf chain to the transmission queue
         *(ep->txq_end++) = sendmsg;
         if (ep->txq_end == ep->txq + dpdk_default_tx_burst_size) {
@@ -486,28 +580,6 @@ int send_ddp_segment(struct dpdk_ep *ep, struct rte_mbuf *sendmsg,
 } /* send_ddp_segment */
 
 /* RDMAP */
-
-void free_extbuf_cb(void *addr, void *opaque) {
-}
-
-// This function is similar to the rte_pktmbuf_ext_shinfo_init_helper. However, the "original" one
-// would allocate the rte_mbuf_ext_shared_info structure at the end of the external buffer. We
-// can't, because the buffer is user-managed memory. So this function stores the struct in the
-// area the user passes as first argument. Generally, and specifically for this case, the caller
-// will pass a private area of the mbuf as first argument. DO NOT PASS a NULL callback pointer: it
-// will be called by DPDK causing a segfault. Just pass a function that does nothing, if you do not
-// need this feature.
-static inline void rte_pktmbuf_ext_shinfo_init_helper_custom(
-    struct rte_mbuf_ext_shared_info *ret_shinfo, rte_mbuf_extbuf_free_callback_t free_cb,
-    void *fcb_opaque) {
-
-    struct rte_mbuf_ext_shared_info *shinfo = ret_shinfo;
-    shinfo->free_cb                         = free_cb;
-    shinfo->fcb_opaque                      = fcb_opaque;
-    rte_mbuf_ext_refcnt_set(shinfo, 1);
-    return;
-}
-
 static void put_iov_in_chain(struct rte_mempool *pool, struct rte_mbuf *head_pkt, size_t dest_size,
                              const struct iovec *restrict src, size_t iov_count, size_t offset) {
     size_t prev, pos, cur;
@@ -522,12 +594,12 @@ static void put_iov_in_chain(struct rte_mempool *pool, struct rte_mbuf *head_pkt
             // Prepare an mbuf to point at the relevant payload
             struct rte_mbuf                 *payload_mbuf = rte_pktmbuf_alloc(pool);
             char                            *data         = src_iov_base + offset - prev;
-            rte_iova_t                       iova         = rte_mem_virt2iova(data);
             struct rte_mbuf_ext_shared_info *ret_shinfo =
                 (struct rte_mbuf_ext_shared_info *)(payload_mbuf + 1);
             rte_pktmbuf_ext_shinfo_init_helper_custom(ret_shinfo, free_extbuf_cb, NULL);
             // Attach the memory buffer to the mbuf
-            rte_pktmbuf_attach_extbuf(payload_mbuf, data, iova, cur, ret_shinfo);
+            // We do not set the iova here. We will do that later, in the network stack
+            rte_pktmbuf_attach_extbuf(payload_mbuf, data, 0, cur, ret_shinfo);
             payload_mbuf->pkt_len = payload_mbuf->data_len = cur;
 
             // Put packets in chain
