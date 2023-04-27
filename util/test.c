@@ -1,4 +1,5 @@
 #include <arpa/inet.h>
+#include <linux/mman.h>
 #include <netdb.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -16,10 +17,6 @@
 #include <rdma/fi_rma.h>
 #include <rdma/fi_tagged.h>
 
-// This is not really necessary, but I need a quick way to get the log2 of a number
-// so I'll use this.
-#include <rte_common.h>
-
 #include <ofi.h>
 
 #define MR_SIZE 1073741824 // This will become a parameter of the test
@@ -30,19 +27,11 @@
 #define CONF_RDMA_RX_DEPTH 256
 #define MAX_PAYLOAD_SIZE   1472
 
-#ifndef MAP_HUGE_SHIFT
-/* older kernels (or FreeBSD) will not have this define */
-#define HUGE_SHIFT (26)
-#else
-#define HUGE_SHIFT MAP_HUGE_SHIFT
-#endif
-
-#ifndef MAP_HUGETLB
-/* FreeBSD may not have MAP_HUGETLB (in fact, it probably doesn't) */
-#define HUGE_FLAG (0x40000)
-#else
-#define HUGE_FLAG MAP_HUGETLB
-#endif
+// This can be moved once we relax the requirements on the DPDK MR alignment and size
+#define ALIGN_TO(i, p)                                                                             \
+    (__typeof__((                                                                                  \
+        (i) + ((__typeof__(i))(p)-1))))((((i) + ((__typeof__(i))(p)-1))) &                         \
+                                        (~((__typeof__(((i) + ((__typeof__(i))(p)-1))))((p)-1))))
 
 /**
  * Global states
@@ -72,23 +61,15 @@ struct lf_mr {
 struct lf_ctxt g_ctxt;
 struct lf_mr   g_mr;
 
-static int pagesz_flags(uint64_t page_sz) {
-    /* as per mmap() manpage, all page sizes are log2 of page size
-     * shifted by MAP_HUGE_SHIFT
-     */
-    int log2 = rte_log2_u64(page_sz);
-
-    return (log2 << HUGE_SHIFT);
-}
-
-static void *alloc_mem(size_t memsz, size_t pgsz, bool huge) {
+static void *alloc_mem(size_t memsz, bool huge) {
     void *addr;
     int   flags;
 
-    /* allocate anonymous hugepages */
+    /* allocate anonymous pages */
     flags = MAP_ANONYMOUS | MAP_PRIVATE;
     if (huge) {
-        flags |= HUGE_FLAG | pagesz_flags(pgsz);
+        // 2MB pages
+        flags |= MAP_HUGETLB;
     }
     addr = mmap(NULL, memsz, PROT_READ | PROT_WRITE, flags, -1, 0);
     if (addr == MAP_FAILED) {
@@ -286,8 +267,9 @@ int register_memory_region() {
 
     // Important: memory allocation should be page aligned to the page size used by the DPDK
     // provider. The length must be a multiple of the page size.
-    g_mr.size   = RTE_ALIGN(MR_SIZE, sysconf(_SC_PAGESIZE));
-    g_mr.buffer = alloc_mem(g_mr.size, sysconf(_SC_PAGESIZE), false);
+    size_t page_size = sysconf(_SC_PAGESIZE);
+    g_mr.size        = ALIGN_TO(MR_SIZE, page_size);
+    g_mr.buffer      = alloc_mem(g_mr.size, (page_size > sysconf(_SC_PAGESIZE)));
 
     if (!g_mr.buffer || g_mr.size <= 0) {
         printf("Failed to allocate a memory region of size %lu\n", g_mr.size);
@@ -298,7 +280,7 @@ int register_memory_region() {
 
     /* Register the memory */
     ret = fi_mr_reg(g_ctxt.domain, (void *)g_mr.buffer, g_mr.size, mr_access, 0, 0, 0, &g_mr.mr,
-                    NULL);
+                    &page_size);
     if (ret) {
         printf("fi_mr_reg() failed: %s\n", fi_strerror(-ret));
         return ret;
