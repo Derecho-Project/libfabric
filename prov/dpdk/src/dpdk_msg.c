@@ -176,6 +176,7 @@ static ssize_t dpdk_sendmsg(struct fid_ep *ep_fid, const struct fi_msg *msg, uin
     }
     tx_entry->bytes_sent  = 0;
     tx_entry->bytes_acked = 0;
+    tx_entry->imm_data    = (uint32_t)msg->data;
     ret                   = rte_ring_enqueue(ep->sq.ring, tx_entry);
 
     return ret;
