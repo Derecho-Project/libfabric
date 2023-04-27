@@ -98,7 +98,7 @@ struct rte_udp_hdr *prepend_udp_header(struct rte_mbuf *sendmsg, unsigned int sr
                                        unsigned int dst_port, uint16_t ddp_length);
 
 /* TRP */
-#define RETRANSMIT_MAX 2
+#define RETRANSMIT_MAX 5
 
 enum {
     trp_req = 0x1000,

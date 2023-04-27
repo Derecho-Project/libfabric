@@ -44,16 +44,6 @@ static int dpdk_mr_reg(struct fid *fid, const void *buf, size_t len, uint64_t ac
                 "Memory Region to register is NULL. Application must allocate it");
         return -FI_EINVAL;
     }
-    ///////////////////////////////////////////
-    // Try to allocate contiguos physical memory
-    // struct rte_memzone *mz = rte_memzone_reserve_aligned(
-    //     "MR_LF_DPDK", len, 0, RTE_MEMZONE_IOVA_CONTIG | RTE_MEMZONE_2MB, RTE_PGSIZE_2M);
-    // if (mz == NULL) {
-    //     printf("Failed to allocate contiguous memory!\n");
-    //     return -FI_ENOMEM;
-    // }
-    // buf = mz->addr;
-    ///////////////////////////////////////////
 
     /* Libfabric-specific section */
     struct dpdk_domain *dpdk_domain =
