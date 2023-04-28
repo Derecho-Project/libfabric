@@ -35,58 +35,66 @@ static inline int set_iova_mapping(struct rte_mbuf *sendmsg, size_t page_size) {
     // Get the mbuf representing external memory: the last of the chain
     struct rte_mbuf *ext_mbuf = rte_pktmbuf_lastseg(sendmsg);
 
+    // IOVA mapping of DPDK-managed memory is already set by DPDK
+    if (!RTE_MBUF_HAS_EXTBUF(ext_mbuf)) {
+        return ret;
+    }
+
     // Set the IOVA mapping for the external memory.
     // TODO: eventually we want the mapping to come from the DPDK internal page table rather
     // than just skipping it, by using rte_mem_virt2memseg().
     ext_mbuf->buf_iova = rte_mem_virt2iova(ext_mbuf->buf_addr + ext_mbuf->data_off);
 
-    // Reset the data offset: it causes errors in the driver with IOVA
-    // TODO: Maybe this can be avoided by implementing the IP fragmentation
-    // manually (copy from the original DPDK version).
-    ext_mbuf->buf_addr = ext_mbuf->buf_addr + ext_mbuf->data_off;
-    ext_mbuf->data_off = 0;
-
     // If IOVA as PA, the mbuf may span two pages that correspond to two different
     // physical addresses. In this case, we need to split in two parts the mbuf containing the
     // user data (as it is allocated on external memory).
-    if (rte_eal_iova_mode() != RTE_IOVA_VA && mbuf_crosses_page_boundary(ext_mbuf, page_size)) {
+    if (rte_eal_iova_mode() != RTE_IOVA_VA) {
+        // Reset the data offset: it causes errors in the driver with IOVA
+        // TODO: Maybe this can be avoided by implementing the IP fragmentation
+        // manually (copy from the original DPDK version).
+        ext_mbuf->buf_addr = ext_mbuf->buf_addr + ext_mbuf->data_off;
+        ext_mbuf->data_off = 0;
 
-        FI_DBG(&dpdk_prov, FI_LOG_EP_DATA, "%s():%i: splitting mbuf crossing page boundary",
-               __func__, __LINE__);
-        // 1. Get page boundary starting from last_mbuf->buf_addr (+ data_off)
-        uint64_t start         = (uint64_t)ext_mbuf->buf_addr + ext_mbuf->data_off;
-        uint64_t end           = start + ext_mbuf->data_len;
-        uint64_t page_boundary = ((start / page_size) + 1) * page_size;
+        // If mbuf crosses a page boundary, split it in two parts, one per page
+        if (mbuf_crosses_page_boundary(ext_mbuf, page_size)) {
 
-        // 3. Compute the length of the ext_mbuf and the second mbuf
-        uint64_t second_len = end - page_boundary;
+            FI_DBG(&dpdk_prov, FI_LOG_EP_DATA, "%s():%i: splitting mbuf crossing page boundary",
+                   __func__, __LINE__);
+            // 1. Get page boundary starting from last_mbuf->buf_addr (+ data_off)
+            uint64_t start         = (uint64_t)ext_mbuf->buf_addr + ext_mbuf->data_off;
+            uint64_t end           = start + ext_mbuf->data_len;
+            uint64_t page_boundary = ((start / page_size) + 1) * page_size;
 
-        // 4. Allocate a new mbuf for the second part
-        struct rte_mbuf *second_mbuf = rte_pktmbuf_alloc(ext_mbuf->pool);
-        if (!second_mbuf) {
-            FI_WARN(&dpdk_prov, FI_LOG_EP_DATA, "%s():%i: Failed to allocate mbuf", __func__,
-                    __LINE__);
-            return rte_errno;
+            // 3. Compute the length of the ext_mbuf and the second mbuf
+            uint64_t second_len = end - page_boundary;
+
+            // 4. Allocate a new mbuf for the second part
+            struct rte_mbuf *second_mbuf = rte_pktmbuf_alloc(ext_mbuf->pool);
+            if (!second_mbuf) {
+                FI_WARN(&dpdk_prov, FI_LOG_EP_DATA, "%s():%i: Failed to allocate mbuf", __func__,
+                        __LINE__);
+                return rte_errno;
+            }
+
+            // 5. Attach the second mbuf to the external memory in the second page, with the correct
+            // IOVA
+            struct rte_mbuf_ext_shared_info *ret_shinfo =
+                (struct rte_mbuf_ext_shared_info *)(second_mbuf + 1);
+            rte_pktmbuf_ext_shinfo_init_helper_custom(ret_shinfo, free_extbuf_cb, NULL);
+            rte_pktmbuf_attach_extbuf(second_mbuf, (void *)page_boundary,
+                                      rte_mem_virt2iova((void *)page_boundary), second_len,
+                                      ret_shinfo);
+            second_mbuf->data_len = second_len;
+            second_mbuf->data_off = 0;
+
+            // 6. Chain this mbuf to the last one
+            ext_mbuf->next = second_mbuf;
+            ext_mbuf->data_len -= second_len;
+
+            // 7. Increase the nsegs of the overall chain
+            sendmsg->nb_segs++;
         }
-
-        // 5. Attach the second mbuf to the external memory in the second page, with the correct
-        // IOVA
-        struct rte_mbuf_ext_shared_info *ret_shinfo =
-            (struct rte_mbuf_ext_shared_info *)(second_mbuf + 1);
-        rte_pktmbuf_ext_shinfo_init_helper_custom(ret_shinfo, free_extbuf_cb, NULL);
-        rte_pktmbuf_attach_extbuf(second_mbuf, (void *)page_boundary,
-                                  rte_mem_virt2iova((void *)page_boundary), second_len, ret_shinfo);
-        second_mbuf->data_len = second_len;
-        second_mbuf->data_off = 0;
-
-        // 6. Chain this mbuf to the last one
-        ext_mbuf->next = second_mbuf;
-        ext_mbuf->data_len -= second_len;
-
-        // 7. Increase the nsegs of the overall chain
-        sendmsg->nb_segs++;
     }
-
     return ret;
 }
 
