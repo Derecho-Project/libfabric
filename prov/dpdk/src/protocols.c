@@ -50,6 +50,9 @@ static inline int set_iova_mapping(struct rte_mbuf *sendmsg, size_t page_size) {
     // physical addresses. In this case, we need to split in two parts the mbuf containing the
     // user data (as it is allocated on external memory).
     if (rte_eal_iova_mode() != RTE_IOVA_VA && mbuf_crosses_page_boundary(ext_mbuf, page_size)) {
+
+        FI_DBG(&dpdk_prov, FI_LOG_EP_DATA, "%s():%i: splitting mbuf crossing page boundary",
+               __func__, __LINE__);
         // 1. Get page boundary starting from last_mbuf->buf_addr (+ data_off)
         uint64_t start         = (uint64_t)ext_mbuf->buf_addr + ext_mbuf->data_off;
         uint64_t end           = start + ext_mbuf->data_len;
@@ -61,7 +64,8 @@ static inline int set_iova_mapping(struct rte_mbuf *sendmsg, size_t page_size) {
         // 4. Allocate a new mbuf for the second part
         struct rte_mbuf *second_mbuf = rte_pktmbuf_alloc(ext_mbuf->pool);
         if (!second_mbuf) {
-            FI_WARN(&dpdk_prov, FI_LOG_MR, "%s():%i: Failed to allocate mbuf", __func__, __LINE__);
+            FI_WARN(&dpdk_prov, FI_LOG_EP_DATA, "%s():%i: Failed to allocate mbuf", __func__,
+                    __LINE__);
             return rte_errno;
         }
 
