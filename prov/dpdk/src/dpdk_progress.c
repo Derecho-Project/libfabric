@@ -719,10 +719,27 @@ static void process_rx_packet(struct dpdk_domain *domain, struct rte_mbuf *mbuf)
     //     return;
     // }
 
-    eth_hdr  = rte_pktmbuf_mtod(mbuf, struct rte_ether_hdr *);
-    ipv4_hdr = (struct rte_ipv4_hdr *)rte_pktmbuf_adj(mbuf, sizeof(*eth_hdr));
+    // Check the Ether type
+    eth_hdr = rte_pktmbuf_mtod(mbuf, struct rte_ether_hdr *);
+    switch (rte_be_to_cpu_16(eth_hdr->ether_type)) {
+    case RTE_ETHER_TYPE_ARP:
+        DPDK_INFO(FI_LOG_EP_DATA, "Received ARP request\n");
+        arp_receive(domain, mbuf);
+        goto free_and_exit;
+    case RTE_ETHER_TYPE_IPV4:
+        break;
+    case RTE_ETHER_TYPE_IPV6:
+        // [Weijia]: IPv6 needs more care.
+        DPDK_INFO(FI_LOG_EP_DATA, "IPv6 is not supported yet\n");
+        goto free_and_exit;
+    default:
+        DPDK_INFO(FI_LOG_EP_DATA, "Unknown Ether type %#" PRIx16 "\n",
+                  rte_be_to_cpu_16(eth_hdr->ether_type));
+        goto free_and_exit;
+    }
 
     // Check if the packet is UDP and is for us (IP address)
+    ipv4_hdr = (struct rte_ipv4_hdr *)rte_pktmbuf_adj(mbuf, sizeof(*eth_hdr));
     if (ipv4_hdr->next_proto_id != IP_UDP) {
         RTE_LOG(DEBUG, USER1, "<dev=%s> Drop packet with IPv4 next header %" PRIu8 " not UDP\n",
                 domain->util_domain.name, ipv4_hdr->next_proto_id);
