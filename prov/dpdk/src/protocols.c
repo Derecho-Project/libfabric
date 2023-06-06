@@ -193,35 +193,170 @@ int eth_parse(char *string, unsigned char *eth_addr) {
     return 0;
 }
 
-/* IPv4 */
+/* ARP */
+// Cache entries
+static struct dlist_entry s_arp_cache = {.next = &s_arp_cache, .prev = &s_arp_cache};
+// Broadcast Ethernet address in bytes
+static uint8_t broadcast_hw[] = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
 
-uint16_t ip_checksum(struct rte_ipv4_hdr *ih, size_t len) {
-    const void *buf = ih;
-    uint32_t    sum = 0;
+uint8_t *arp_get_hwaddr(uint32_t saddr) {
+    struct dlist_entry *item;
+    arp_cache_entry_t  *entry;
 
-    /* extend strict-aliasing rules */
-    typedef uint16_t __attribute__((__may_alias__)) uint16_t_p;
-    const uint16_t_p *uint16_t_buf = (const uint16_t_p *)buf;
-    const uint16_t_p *end          = uint16_t_buf + len / sizeof(*uint16_t_buf);
-
-    for (; uint16_t_buf != end; ++uint16_t_buf)
-        sum += *uint16_t_buf;
-
-    /* if length is odd, keeping it byte order independent */
-    if (likely(len % 2)) {
-        uint16_t left           = 0;
-        *(unsigned char *)&left = *(const unsigned char *)end;
-        sum += left;
+    dlist_foreach_container(&s_arp_cache, arp_cache_entry_t, entry, list) {
+        if (entry->state == ARP_RESOLVED && entry->sip == saddr) {
+            uint8_t *copy = entry->src_mac;
+            return copy;
+        }
     }
 
-    sum = ((sum & 0xffff0000) >> 16) + (sum & 0xffff);
-    sum = ((sum & 0xffff0000) >> 16) + (sum & 0xffff);
-
-    uint16_t cksum = (uint16_t)sum;
-
-    return (uint16_t)~cksum;
+    return NULL;
 }
 
+static int32_t _arp_update_translation_table(arp_hdr_t *hdr) {
+    struct dlist_entry *item;
+    arp_cache_entry_t  *entry;
+
+    dlist_foreach_container(&s_arp_cache, arp_cache_entry_t, entry, list) {
+
+        if (entry->hwtype == hdr->arp_htype && entry->sip == hdr->arp_data.arp_sip) {
+            memcpy(entry->src_mac, hdr->arp_data.arp_sha, RTE_ETHER_ADDR_LEN);
+
+            return ARP_TRASL_TABLE_UPDATE_OK;
+        }
+    }
+
+    return ARP_TRASL_TABLE_UPDATE_NO_ENTRY;
+}
+
+static arp_cache_entry_t *__arp_cache_entry__alloc(arp_hdr_t *hdr) {
+    arp_cache_entry_t *entry = (arp_cache_entry_t *)malloc(sizeof(arp_cache_entry_t));
+
+    entry->state  = ARP_RESOLVED;
+    entry->hwtype = hdr->arp_htype;
+    entry->sip    = hdr->arp_data.arp_sip;
+    memcpy(entry->src_mac, hdr->arp_data.arp_sha, RTE_ETHER_ADDR_LEN);
+
+    dlist_init(&entry->list);
+    return entry;
+}
+
+static int32_t _arp_insert_translation_table(arp_hdr_t *hdr) {
+    arp_cache_entry_t *entry = __arp_cache_entry__alloc(hdr);
+    dlist_insert_tail(&entry->list, &s_arp_cache);
+    return ARP_TRASL_TABLE_INSERT_OK;
+}
+
+static void _do_arp_reply(struct dpdk_domain *domain, arp_ipv4_t *req_data) {
+
+    struct rte_mbuf *rte_mbuf = rte_pktmbuf_alloc(domain->res->cm_pool);
+
+    // 1. Ethernet Header
+    struct rte_ether_hdr *eth_hdr = rte_pktmbuf_mtod(rte_mbuf, struct rte_ether_hdr *);
+    memcpy(&eth_hdr->src_addr, &domain->res->local_eth_addr, RTE_ETHER_ADDR_LEN);
+    memcpy(&eth_hdr->dst_addr, req_data->arp_sha, RTE_ETHER_ADDR_LEN);
+    eth_hdr->ether_type = rte_cpu_to_be_16(ETHERNET_P_ARP);
+
+    // 2. ARP Data
+    arp_hdr_t  *arp_hdr = (arp_hdr_t *)(eth_hdr + 1);
+    arp_ipv4_t *data    = (arp_ipv4_t *)(&arp_hdr->arp_data);
+    memcpy(data->arp_tha, req_data->arp_sha, RTE_ETHER_ADDR_LEN);
+    memcpy(data->arp_sha, &domain->res->local_eth_addr, RTE_ETHER_ADDR_LEN);
+
+    data->arp_tip = req_data->arp_sip;
+    data->arp_sip = domain->res->local_cm_addr.sin_addr.s_addr;
+
+    arp_hdr->arp_opcode = rte_cpu_to_be_16(ARP_REPLY);
+    arp_hdr->arp_htype  = rte_cpu_to_be_16(ARP_ETHERNET);
+    arp_hdr->arp_hlen   = RTE_ETHER_ADDR_LEN;
+    arp_hdr->arp_ptype  = rte_cpu_to_be_16(ETHERNET_P_IP);
+    arp_hdr->arp_plen   = 4;
+
+    rte_mbuf->next     = NULL;
+    rte_mbuf->nb_segs  = 1;
+    rte_mbuf->pkt_len  = sizeof(arp_hdr_t) + RTE_ETHER_HDR_LEN;
+    rte_mbuf->data_len = rte_mbuf->pkt_len;
+
+    // 3. Append the fragment to the transmission queue of the control DP
+    rte_ring_enqueue(domain->res->cm_tx_ring, rte_mbuf);
+}
+
+void arp_receive(struct dpdk_domain *domain, struct rte_mbuf *arp_mbuf) {
+    arp_hdr_t *ahdr = rte_pktmbuf_mtod_offset(arp_mbuf, arp_hdr_t *, RTE_ETHER_HDR_LEN);
+
+    if (domain->res->local_cm_addr.sin_addr.s_addr != ahdr->arp_data.arp_tip) {
+        DPDK_DBG(FI_LOG_EP_CTRL, "ARP: was not for us - %d is not %d\n",
+                 domain->res->local_cm_addr.sin_addr.s_addr, ahdr->arp_data.arp_tip);
+        return;
+    }
+
+    uint32_t merge = _arp_update_translation_table(ahdr);
+    if (merge == ARP_TRASL_TABLE_UPDATE_NO_ENTRY &&
+        _arp_insert_translation_table(ahdr) == ARP_TRASL_TABLE_INSERT_FAILED)
+    {
+        DPDK_DBG(FI_LOG_EP_CTRL, "No free space in ARP translation table\n");
+        return;
+    }
+
+    uint16_t opcode = rte_be_to_cpu_16(ahdr->arp_opcode);
+    switch (opcode) {
+    case ARP_REQUEST:
+        _do_arp_reply(domain, &ahdr->arp_data);
+        break;
+    case ARP_REPLY:
+        DPDK_DBG(FI_LOG_EP_CTRL, "received ARP_REPLY\n");
+        // TODO: maybe move this in a better place.
+        break;
+    default:
+        DPDK_WARN(FI_LOG_EP_CTRL, "ARP: Opcode not supported: %04x!\n", opcode);
+        break;
+    }
+
+    // TODO: Here we could notify the EP, but we should loop on the EP of the domain
+    // So we could just let the EP poll on the HW cache
+    // if (ep->remote_ipv4_addr == ahdr->arp_data.arp_sip) {
+    //     DPDK_INFO(FI_LOG_EP_CTRL, "dst_dev ARP_REPLY\n");
+    //     memcpy(&ep->remote_eth_addr, ahdr->arp_data.arp_sha, RTE_ETHER_ADDR_LEN);
+    // }
+}
+
+int32_t arp_request(struct dpdk_domain *domain, uint32_t saddr, uint32_t daddr) {
+    DPDK_INFO(FI_LOG_EP_CTRL, "ARP Request\n");
+
+    // 0. Allocate an mbuf
+    struct rte_mbuf *rte_mbuf = rte_pktmbuf_alloc(domain->res->cm_pool);
+    if (!rte_mbuf) {
+        DPDK_WARN(FI_LOG_EP_CTRL, "Failed to allocate mbuf from pool %s: %s\n",
+                  domain->res->cm_pool->name, rte_strerror(rte_errno));
+        return -rte_errno;
+    }
+
+    // 1. Ethernet Header
+    struct rte_ether_hdr *eth_hdr = rte_pktmbuf_mtod(rte_mbuf, struct rte_ether_hdr *);
+    memcpy(&eth_hdr->src_addr, &domain->res->local_eth_addr, RTE_ETHER_ADDR_LEN);
+    memcpy(&eth_hdr->dst_addr, broadcast_hw, RTE_ETHER_ADDR_LEN);
+    eth_hdr->ether_type = rte_cpu_to_be_16(ETHERNET_P_ARP);
+
+    // 2. ARP data
+    arp_hdr_t  *ahdr  = (arp_hdr_t *)(eth_hdr + 1);
+    arp_ipv4_t *adata = (arp_ipv4_t *)(&ahdr->arp_data);
+
+    memcpy(adata->arp_sha, &domain->res->local_eth_addr, RTE_ETHER_ADDR_LEN);
+    memcpy(adata->arp_tha, broadcast_hw, RTE_ETHER_ADDR_LEN);
+    adata->arp_sip = saddr;
+    adata->arp_tip = daddr;
+
+    ahdr->arp_opcode = rte_cpu_to_be_16(ARP_REQUEST);
+    ahdr->arp_htype  = rte_cpu_to_be_16(ARP_ETHERNET);
+    ahdr->arp_ptype  = rte_cpu_to_be_16(ETHERNET_P_IP);
+    ahdr->arp_hlen   = RTE_ETHER_ADDR_LEN;
+    ahdr->arp_plen   = 4;
+
+    // 3. Append the fragment to the transmission queue of the control DP
+    return rte_ring_enqueue(domain->res->cm_tx_ring, rte_mbuf);
+}
+
+/* IPv4 */
 int32_t ip_parse(char *addr, uint32_t *dst) {
     if (inet_pton(AF_INET, addr, dst) != 1)
         return -1;

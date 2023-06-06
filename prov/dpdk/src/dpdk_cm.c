@@ -135,7 +135,15 @@ static int create_cm_mbuf(struct dpdk_domain_resources *res, uint32_t remote_ip_
     }
     //// fill ether header
     rte_ether_addr_copy(&res->local_eth_addr, &eth->src_addr);
-    eth_parse("ff:ff:ff:ff:ff:ff", eth->dst_addr.addr_bytes);
+    uint8_t *dst_mac = arp_get_hwaddr(remote_ip_addr);
+    while (dst_mac == NULL) {
+        DPDK_WARN(FI_LOG_EP_CTRL,
+                  "Failed to get dst MAC address from cache. Sending ARP request.\n");
+        arp_request(res->domain, res->local_cm_addr.sin_addr.s_addr, remote_ip_addr);
+        usleep(100); // TODO: Not ideal: but is there a better solution?
+        dst_mac = arp_get_hwaddr(remote_ip_addr);
+    }
+    rte_ether_addr_copy(dst_mac, &eth->dst_addr.addr_bytes);
     eth->ether_type = rte_cpu_to_be_16(ETHERNET_P_IP);
     //// fill ipv4 header in big endian
     ipv4->src_addr        = res->local_cm_addr.sin_addr.s_addr;
@@ -211,6 +219,26 @@ static int dpdk_ep_connect(struct fid_ep *ep_fid, const void *addr, const void *
     atomic_store(&ep->conn_state, ep_conn_state_connecting);
     atomic_store(&ep->session_id, ++domain->res->cm_session_counter);
 
+    // STEP 2.5 - Get the dst MAC address from the ARP cache
+    uint8_t *dst_mac = arp_get_hwaddr(paddrin->sin_addr.s_addr);
+    if (dst_mac == NULL) {
+        DPDK_INFO(FI_LOG_EP_CTRL,
+                  "Failed to get dst MAC address from cache. Sending ARP request.\n");
+        ret = arp_request(domain, domain->res->local_cm_addr.sin_addr.s_addr,
+                          paddrin->sin_addr.s_addr);
+        if (ret < 0) {
+            DPDK_WARN(FI_LOG_EP_CTRL, "Failed to send ARP request: %s\n", rte_strerror(-ret));
+            goto error;
+        }
+
+        // TODO: Not ideal: but is there a better solution?
+        while (!dst_mac) {
+            usleep(100);
+            dst_mac = arp_get_hwaddr(paddrin->sin_addr.s_addr);
+        }
+    }
+    memcpy(ep->remote_eth_addr.addr_bytes, dst_mac, RTE_ETHER_ADDR_LEN);
+
     // STEP 3 - send connection request
     struct rte_mbuf *connreq_mbuf;
     ret = create_cm_mbuf(domain->res, ep->remote_ipv4_addr, ep->remote_cm_udp_port, &connreq_mbuf);
@@ -283,6 +311,18 @@ static int dpdk_ep_accept(struct fid_ep *ep, const void *param, size_t paramlen)
     dep->remote_ipv4_addr   = conn_handle->remote_ip_addr;
     dep->remote_cm_udp_port = conn_handle->remote_ctrl_port;
     dep->remote_udp_port    = conn_handle->remote_data_port;
+
+    // 2.5 - Get the dst MAC address from the ARP cache
+    uint8_t *dst_mac = arp_get_hwaddr(dep->remote_ipv4_addr);
+    while (dst_mac == NULL) {
+        DPDK_WARN(FI_LOG_EP_CTRL,
+                  "Failed to get dst MAC address from cache. Sending ARP request.\n");
+        arp_request(conn_handle->res->domain, conn_handle->res->local_cm_addr.sin_addr.s_addr,
+                    dep->remote_ipv4_addr);
+        usleep(100); // TODO: Not ideal: but is there a better solution?
+        dst_mac = arp_get_hwaddr(dep->remote_ipv4_addr);
+    }
+    memcpy(dep->remote_eth_addr.addr_bytes, dst_mac, RTE_ETHER_ADDR_LEN);
 
     // 3 - set endpoint to connected state
     atomic_store(&dep->conn_state, ep_conn_state_connected);

@@ -63,6 +63,53 @@ int eth_parse(char *string, unsigned char *eth_addr);
 void enqueue_ether_frame(struct rte_mbuf *sendmsg, unsigned int ether_type, struct dpdk_ep *ep,
                          struct rte_ether_addr *dst_addr);
 
+/* ARP */
+#define ARP_REQUEST    0x0001
+#define ARP_REPLY      0x0002
+#define ARP_HEADER_LEN sizeof(struct arp_hdr)
+#define ARP_ETHERNET   0x0001
+#define ARP_IPV4       0x0800
+#define ARP_CACHE_LEN  32
+#define ARP_FREE       0
+#define ARP_WAITING    1
+#define ARP_RESOLVED   2
+
+typedef struct arp_ipv4 {
+    uint8_t  arp_sha[RTE_ETHER_ADDR_LEN];
+    uint32_t arp_sip;
+    uint8_t  arp_tha[RTE_ETHER_ADDR_LEN];
+    uint32_t arp_tip;
+} __attribute__((packed)) arp_ipv4_t;
+
+typedef struct arp_hdr {
+    uint16_t arp_htype;
+    uint16_t arp_ptype;
+    uint8_t  arp_hlen;
+    uint8_t  arp_plen;
+    uint16_t arp_opcode;
+
+    arp_ipv4_t arp_data;
+} __attribute__((packed)) arp_hdr_t;
+
+uint8_t *arp_get_hwaddr(uint32_t saddr);
+void     arp_receive(struct dpdk_domain *domain, struct rte_mbuf *arp_mbuf);
+int32_t  arp_request(struct dpdk_domain *domain, uint32_t saddr, uint32_t daddr);
+
+// ARP Table
+#define ARP_TRASL_TABLE_INSERT_FAILED   0
+#define ARP_TRASL_TABLE_INSERT_OK       1
+#define ARP_TRASL_TABLE_UPDATE_NO_ENTRY 0
+#define ARP_TRASL_TABLE_UPDATE_OK       1
+
+typedef struct arp_cache_entry {
+    struct dlist_entry list;
+
+    uint16_t hwtype;
+    uint32_t sip;
+    uint8_t  src_mac[RTE_ETHER_ADDR_LEN];
+    uint32_t state;
+} arp_cache_entry_t;
+
 /* IPv4 */
 #define ICMPV4     1
 #define IPV4       4
@@ -70,8 +117,7 @@ void enqueue_ether_frame(struct rte_mbuf *sendmsg, unsigned int ether_type, stru
 #define IP_UDP     17
 #define ip_len(ip) (ip->len - (ip->ihl * 4))
 
-uint16_t ip_checksum(struct rte_ipv4_hdr *ih, size_t len);
-int32_t  ip_parse(char *addr, uint32_t *dst);
+int32_t ip_parse(char *addr, uint32_t *dst);
 
 struct rte_ipv4_hdr *prepend_ipv4_header(struct rte_mbuf *sendmsg, int next_proto_id,
                                          uint32_t src_addr, uint32_t dst_addr, uint16_t ddp_length);
