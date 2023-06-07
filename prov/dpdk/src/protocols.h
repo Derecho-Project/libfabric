@@ -92,6 +92,7 @@ typedef struct arp_hdr {
 } __attribute__((packed)) arp_hdr_t;
 
 uint8_t *arp_get_hwaddr(uint32_t saddr);
+uint8_t *arp_get_hwaddr_or_lookup(struct dpdk_domain *domain, uint32_t saddr);
 void     arp_receive(struct dpdk_domain *domain, struct rte_mbuf *arp_mbuf);
 int32_t  arp_request(struct dpdk_domain *domain, uint32_t saddr, uint32_t daddr);
 
@@ -280,7 +281,7 @@ struct rdmap_packet {
     uint8_t  ddp_flags;  /* 0=Tagged 1=Last 7-6=DDP_Version */
     uint8_t  rdmap_info; /* 1-0=RDMAP_Version 7-4=Opcode */
     uint32_t sink_stag;
-    uint32_t immediate; /* The immediate data */
+    uint32_t immediate;  /* The immediate data */
 } __attribute__((__packed__));
 static_assert(sizeof(struct rdmap_packet) == 10, "unexpected sizeof(rdmap_packet)");
 

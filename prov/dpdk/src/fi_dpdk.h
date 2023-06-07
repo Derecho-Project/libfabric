@@ -301,6 +301,7 @@ struct dpdk_conn_handle {
     struct fid                    fid;
     struct dpdk_domain_resources *res;
     uint32_t                      session_id;
+    uint8_t                       remote_eth_addr[6];
     uint32_t                      remote_ip_addr;
     uint16_t                      remote_ctrl_port;
     uint16_t                      remote_data_port;

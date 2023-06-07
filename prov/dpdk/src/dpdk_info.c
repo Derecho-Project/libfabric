@@ -311,13 +311,13 @@ int dpdk_getinfo(uint32_t version, const char *node, const char *service, uint64
                 struct sockaddr_in addr;
                 addr.sin_family = AF_INET;
                 ssize_t cm_port = cfg_getint(domain_config, CFG_OPT_DOMAIN_CM_PORT);
-                if (cm_port < 0 || cm_port > 65535) {
+                if (cm_port < 1025 || cm_port > 65535) {
                     DPDK_WARN(FI_LOG_DOMAIN, "Invalid CM port(%ld) configured for domain:%s\n",
                               cm_port, cur_info->domain_attr->name);
                     fi_freeinfo(cur_info);
                     return -FI_EINVAL;
                 }
-                addr.sin_port = htons((uint16_t)cm_port);
+                addr.sin_port = rte_cpu_to_be_16((uint16_t)cm_port);
                 char *ip      = cfg_getstr(domain_config, CFG_OPT_DOMAIN_IP);
                 if (!inet_pton(AF_INET, ip, &addr.sin_addr)) {
                     DPDK_WARN(FI_LOG_DOMAIN, "Invalid ip address(%s) configured for domain:%s\n",

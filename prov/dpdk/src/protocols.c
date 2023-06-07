@@ -213,6 +213,25 @@ uint8_t *arp_get_hwaddr(uint32_t saddr) {
     return NULL;
 }
 
+uint8_t *arp_get_hwaddr_or_lookup(struct dpdk_domain *domain, uint32_t saddr) {
+    uint8_t *dst_mac = arp_get_hwaddr(saddr);
+    if (dst_mac == NULL) {
+        DPDK_INFO(FI_LOG_EP_CTRL,
+                  "Failed to get dst MAC address from cache. Sending ARP request.\n");
+        if ((arp_request(domain, domain->res->local_cm_addr.sin_addr.s_addr, saddr)) < 0) {
+            DPDK_WARN(FI_LOG_EP_CTRL, "Failed to send ARP request\n");
+            return NULL;
+        }
+
+        // TODO: Not ideal: but is there a better solution?
+        while (!dst_mac) {
+            usleep(100);
+            dst_mac = arp_get_hwaddr(saddr);
+        }
+    }
+    return dst_mac;
+}
+
 static int32_t _arp_update_translation_table(arp_hdr_t *hdr) {
     struct dlist_entry *item;
     arp_cache_entry_t  *entry;
@@ -244,6 +263,7 @@ static arp_cache_entry_t *__arp_cache_entry__alloc(arp_hdr_t *hdr) {
 static int32_t _arp_insert_translation_table(arp_hdr_t *hdr) {
     arp_cache_entry_t *entry = __arp_cache_entry__alloc(hdr);
     dlist_insert_tail(&entry->list, &s_arp_cache);
+    DPDK_DBG(FI_LOG_EP_CTRL, "ARP: Inserted new entry in ARP translation table\n");
     return ARP_TRASL_TABLE_INSERT_OK;
 }
 
@@ -304,8 +324,7 @@ void arp_receive(struct dpdk_domain *domain, struct rte_mbuf *arp_mbuf) {
         _do_arp_reply(domain, &ahdr->arp_data);
         break;
     case ARP_REPLY:
-        DPDK_DBG(FI_LOG_EP_CTRL, "received ARP_REPLY\n");
-        // TODO: maybe move this in a better place.
+        DPDK_DBG(FI_LOG_EP_CTRL, "ARP: Received reply\n");
         break;
     default:
         DPDK_WARN(FI_LOG_EP_CTRL, "ARP: Opcode not supported: %04x!\n", opcode);
@@ -353,6 +372,9 @@ int32_t arp_request(struct dpdk_domain *domain, uint32_t saddr, uint32_t daddr) 
     ahdr->arp_plen   = 4;
 
     // 3. Append the fragment to the transmission queue of the control DP
+    rte_mbuf->next    = NULL;
+    rte_mbuf->nb_segs = 1;
+    rte_mbuf->pkt_len = rte_mbuf->data_len = RTE_ETHER_HDR_LEN + sizeof(arp_hdr_t);
     return rte_ring_enqueue(domain->res->cm_tx_ring, rte_mbuf);
 }
 
@@ -400,7 +422,7 @@ struct rte_ipv4_hdr *prepend_ipv4_header(struct rte_mbuf *sendmsg, int next_prot
     return ip;
 } /* prepend_ipv4_header */
 
-// Reassemble IP packet from fragments
+// Reassemble IP packet from fragments. Assumes the ethertype is IPV4.
 struct rte_mbuf *reassemble(struct rte_mbuf *m, struct lcore_queue_conf *qconf, uint16_t vlan_id,
                             uint64_t tms) {
     uint16_t ether_type = 0;
@@ -413,45 +435,38 @@ struct rte_mbuf *reassemble(struct rte_mbuf *m, struct lcore_queue_conf *qconf, 
     struct rte_ip_frag_death_row *dr;
     struct rx_queue              *rxq;
 
-    eth_hdr    = rte_pktmbuf_mtod(m, struct rte_ether_hdr *);
-    ether_type = rte_be_to_cpu_16(eth_hdr->ether_type);
+    eth_hdr = rte_pktmbuf_mtod(m, struct rte_ether_hdr *);
+    ip_hdr  = (struct rte_ipv4_hdr *)(eth_hdr + 1);
+    if (ip_hdr->version != IPV4) {
+        printf("Unsupported IP version\n");
+        return NULL;
+    }
 
-    ip_hdr = (struct rte_ipv4_hdr *)(eth_hdr + 1);
+    dr  = &qconf->death_row;
+    rxq = &qconf->rx_queue_list[0];
 
-    // TODO: We do not support VLAN or VXLAN yet. See dpdk-playground for an example
-    if (ether_type == ETHERNET_P_IP) {
-        if (ip_hdr->version != IPV4) {
-            printf("Unsupported IP version\n");
+    /* if it is a fragmented packet, then try to reassemble. */
+    if (rte_ipv4_frag_pkt_is_fragmented((struct rte_ipv4_hdr *)ip_hdr)) {
+        struct rte_mbuf *mo;
+
+        tbl = rxq->frag_tbl;
+
+        /* prepare mbuf: setup l2_len/l3_len. */
+        m->l2_len = RTE_ETHER_HDR_LEN;
+        m->l3_len = IP_HDR_LEN;
+
+        /* process this fragment. */
+        mo = rte_ipv4_frag_reassemble_packet(tbl, dr, m, tms, (struct rte_ipv4_hdr *)ip_hdr);
+        if (mo == NULL) {
+            /* no packet to return. */
             return NULL;
         }
-
-        dr  = &qconf->death_row;
-        rxq = &qconf->rx_queue_list[0];
-
-        /* if it is a fragmented packet, then try to reassemble. */
-        if (rte_ipv4_frag_pkt_is_fragmented((struct rte_ipv4_hdr *)ip_hdr)) {
-            struct rte_mbuf *mo;
-
-            tbl = rxq->frag_tbl;
-
-            /* prepare mbuf: setup l2_len/l3_len. */
-            m->l2_len = RTE_ETHER_HDR_LEN;
-            m->l3_len = IP_HDR_LEN;
-
-            /* process this fragment. */
-            mo = rte_ipv4_frag_reassemble_packet(tbl, dr, m, tms, (struct rte_ipv4_hdr *)ip_hdr);
-            if (mo == NULL) {
-                /* no packet to return. */
-                return NULL;
-            }
-            /* we have our packet reassembled. */
-            if (mo != m) {
-                m = mo;
-            }
+        /* we have our packet reassembled. */
+        if (mo != m) {
+            m = mo;
         }
-        return m;
     }
-    return NULL;
+    return m;
 }
 
 /* Setup per-queue fragment table at receiver side. Modified from DPDK ip_fragmentation example*/

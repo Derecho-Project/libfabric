@@ -113,8 +113,9 @@ error_group_1: // nothing changed.
                             sizeof(struct rte_ether_hdr) + sizeof(struct rte_ipv4_hdr) +           \
                                 sizeof(struct rte_udp_hdr))
 
-static int create_cm_mbuf(struct dpdk_domain_resources *res, uint32_t remote_ip_addr,
-                          uint16_t remote_cm_port, struct rte_mbuf **out_cm_mbuf) {
+static int create_cm_mbuf(struct dpdk_domain_resources *res, uint8_t *remote_mac_addr,
+                          uint32_t remote_ip_addr, uint16_t remote_cm_port,
+                          struct rte_mbuf **out_cm_mbuf) {
     int              ret     = FI_SUCCESS;
     struct rte_mbuf *cm_mbuf = rte_pktmbuf_alloc(res->cm_pool);
     if (!cm_mbuf) {
@@ -135,15 +136,7 @@ static int create_cm_mbuf(struct dpdk_domain_resources *res, uint32_t remote_ip_
     }
     //// fill ether header
     rte_ether_addr_copy(&res->local_eth_addr, &eth->src_addr);
-    uint8_t *dst_mac = arp_get_hwaddr(remote_ip_addr);
-    while (dst_mac == NULL) {
-        DPDK_WARN(FI_LOG_EP_CTRL,
-                  "Failed to get dst MAC address from cache. Sending ARP request.\n");
-        arp_request(res->domain, res->local_cm_addr.sin_addr.s_addr, remote_ip_addr);
-        usleep(100); // TODO: Not ideal: but is there a better solution?
-        dst_mac = arp_get_hwaddr(remote_ip_addr);
-    }
-    rte_ether_addr_copy(dst_mac, &eth->dst_addr.addr_bytes);
+    rte_ether_addr_copy(remote_mac_addr, &eth->dst_addr.addr_bytes);
     eth->ether_type = rte_cpu_to_be_16(ETHERNET_P_IP);
     //// fill ipv4 header in big endian
     ipv4->src_addr        = res->local_cm_addr.sin_addr.s_addr;
@@ -212,7 +205,6 @@ static int dpdk_ep_connect(struct fid_ep *ep_fid, const void *addr, const void *
     struct dpdk_ep     *ep     = container_of(ep_fid, struct dpdk_ep, util_ep.ep_fid);
     struct dpdk_domain *domain = container_of(ep->util_ep.domain, struct dpdk_domain, util_domain);
     assert(domain->res);
-    eth_parse("ff:ff:ff:ff:ff:ff", ep->remote_eth_addr.addr_bytes);
     ep->remote_ipv4_addr   = rte_be_to_cpu_32(paddrin->sin_addr.s_addr);
     ep->remote_cm_udp_port = rte_be_to_cpu_16(paddrin->sin_port);
     ep->remote_udp_port    = 0; // this will be assigned later
@@ -220,28 +212,15 @@ static int dpdk_ep_connect(struct fid_ep *ep_fid, const void *addr, const void *
     atomic_store(&ep->session_id, ++domain->res->cm_session_counter);
 
     // STEP 2.5 - Get the dst MAC address from the ARP cache
-    uint8_t *dst_mac = arp_get_hwaddr(paddrin->sin_addr.s_addr);
-    if (dst_mac == NULL) {
-        DPDK_INFO(FI_LOG_EP_CTRL,
-                  "Failed to get dst MAC address from cache. Sending ARP request.\n");
-        ret = arp_request(domain, domain->res->local_cm_addr.sin_addr.s_addr,
-                          paddrin->sin_addr.s_addr);
-        if (ret < 0) {
-            DPDK_WARN(FI_LOG_EP_CTRL, "Failed to send ARP request: %s\n", rte_strerror(-ret));
-            goto error;
-        }
-
-        // TODO: Not ideal: but is there a better solution?
-        while (!dst_mac) {
-            usleep(100);
-            dst_mac = arp_get_hwaddr(paddrin->sin_addr.s_addr);
-        }
-    }
+    uint8_t *dst_mac = arp_get_hwaddr_or_lookup(domain, paddrin->sin_addr.s_addr);
+    DPDK_DBG(FI_LOG_EP_CTRL, "dst_mac is %02x:%02x:%02x:%02x:%02x:%02x:%02x\n", dst_mac[0],
+             dst_mac[1], dst_mac[2], dst_mac[3], dst_mac[4], dst_mac[5], dst_mac[6]);
     memcpy(ep->remote_eth_addr.addr_bytes, dst_mac, RTE_ETHER_ADDR_LEN);
 
     // STEP 3 - send connection request
     struct rte_mbuf *connreq_mbuf;
-    ret = create_cm_mbuf(domain->res, ep->remote_ipv4_addr, ep->remote_cm_udp_port, &connreq_mbuf);
+    ret = create_cm_mbuf(domain->res, ep->remote_eth_addr.addr_bytes, ep->remote_ipv4_addr,
+                         ep->remote_cm_udp_port, &connreq_mbuf);
     if (ret) {
         goto error;
     }
@@ -312,18 +291,6 @@ static int dpdk_ep_accept(struct fid_ep *ep, const void *param, size_t paramlen)
     dep->remote_cm_udp_port = conn_handle->remote_ctrl_port;
     dep->remote_udp_port    = conn_handle->remote_data_port;
 
-    // 2.5 - Get the dst MAC address from the ARP cache
-    uint8_t *dst_mac = arp_get_hwaddr(dep->remote_ipv4_addr);
-    while (dst_mac == NULL) {
-        DPDK_WARN(FI_LOG_EP_CTRL,
-                  "Failed to get dst MAC address from cache. Sending ARP request.\n");
-        arp_request(conn_handle->res->domain, conn_handle->res->local_cm_addr.sin_addr.s_addr,
-                    dep->remote_ipv4_addr);
-        usleep(100); // TODO: Not ideal: but is there a better solution?
-        dst_mac = arp_get_hwaddr(dep->remote_ipv4_addr);
-    }
-    memcpy(dep->remote_eth_addr.addr_bytes, dst_mac, RTE_ETHER_ADDR_LEN);
-
     // 3 - set endpoint to connected state
     atomic_store(&dep->conn_state, ep_conn_state_connected);
 
@@ -346,8 +313,8 @@ static int dpdk_ep_accept(struct fid_ep *ep, const void *param, size_t paramlen)
     struct rte_mbuf    *connack_mbuf = NULL;
     struct dpdk_domain *domain = container_of(dep->util_ep.domain, struct dpdk_domain, util_domain);
     assert(domain->res);
-    ret = create_cm_mbuf(domain->res, conn_handle->remote_ip_addr, conn_handle->remote_ctrl_port,
-                         &connack_mbuf);
+    ret = create_cm_mbuf(domain->res, conn_handle->remote_eth_addr, conn_handle->remote_ip_addr,
+                         conn_handle->remote_ctrl_port, &connack_mbuf);
     if (ret) {
         goto error_group_1;
     }
@@ -399,8 +366,8 @@ static int dpdk_pep_reject(struct fid_pep *pep, fid_t handle, const void *param,
     // 1 - notify the peer node with rejection
     struct rte_mbuf         *connrej_mbuf = NULL;
     struct dpdk_conn_handle *conn_handle  = container_of(handle, struct dpdk_conn_handle, fid);
-    ret = create_cm_mbuf(conn_handle->res, conn_handle->remote_ip_addr,
-                         conn_handle->remote_ctrl_port, &connrej_mbuf);
+    ret = create_cm_mbuf(conn_handle->res, conn_handle->remote_eth_addr,
+                         conn_handle->remote_ip_addr, conn_handle->remote_ctrl_port, &connrej_mbuf);
     if (ret) {
         goto error_group_1;
     }
@@ -436,8 +403,8 @@ static int dpdk_ep_shutdown(struct fid_ep *ep, uint64_t flags) {
     case ep_conn_state_connected:
         // send a DPDK_CM_MSG_DISCONNECTION_REQUEST message to peer.
         {
-            ret = create_cm_mbuf(domain->res, dep->remote_ipv4_addr, dep->remote_cm_udp_port,
-                                 &disconnreq_mbuf);
+            ret = create_cm_mbuf(domain->res, dep->remote_eth_addr.addr_bytes,
+                                 dep->remote_ipv4_addr, dep->remote_cm_udp_port, &disconnreq_mbuf);
             if (ret) {
                 goto error_group_1;
             }
@@ -605,9 +572,10 @@ static int process_cm_connreq(struct dpdk_domain_resources *res, struct rte_ethe
     // 2 - create connection handle and then the fi_info object
     struct dpdk_conn_handle *handle =
         (struct dpdk_conn_handle *)calloc(1, sizeof(struct dpdk_conn_handle));
-    handle->fid.fclass       = FI_CLASS_CONNREQ;
-    handle->res              = res;
-    handle->session_id       = rte_be_to_cpu_32(cm_hdr->session_id);
+    handle->fid.fclass = FI_CLASS_CONNREQ;
+    handle->res        = res;
+    handle->session_id = rte_be_to_cpu_32(cm_hdr->session_id);
+    memcpy(handle->remote_eth_addr, eth_hdr->src_addr.addr_bytes, RTE_ETHER_ADDR_LEN);
     handle->remote_ip_addr   = rte_be_to_cpu_32(ip_hdr->src_addr);
     handle->remote_ctrl_port = rte_be_to_cpu_16(udp_hdr->src_port);
     handle->remote_data_port =
@@ -833,6 +801,24 @@ int dpdk_cm_recv(struct rte_mbuf *m, struct dpdk_domain_resources *res) {
     uint32_t              offset  = 0;
     struct rte_ether_hdr *eth_hdr = rte_pktmbuf_mtod_offset(m, struct rte_ether_hdr *, offset);
     offset += sizeof(*eth_hdr);
+
+    switch (rte_be_to_cpu_16(eth_hdr->ether_type)) {
+    case RTE_ETHER_TYPE_ARP:
+        DPDK_INFO(FI_LOG_EP_DATA, "Received ARP request\n");
+        arp_receive(res->domain, m);
+        return ret;
+    case RTE_ETHER_TYPE_IPV4:
+        break;
+    case RTE_ETHER_TYPE_IPV6:
+        // [Weijia]: IPv6 needs more care.
+        DPDK_INFO(FI_LOG_EP_DATA, "IPv6 is not supported yet\n");
+        return -ENOTSUP;
+    default:
+        DPDK_INFO(FI_LOG_EP_DATA, "Unknown Ether type %#" PRIx16 "\n",
+                  rte_be_to_cpu_16(eth_hdr->ether_type));
+        return -ENOTSUP;
+    }
+
     struct rte_ipv4_hdr *ip_hdr = rte_pktmbuf_mtod_offset(m, struct rte_ipv4_hdr *, offset);
     offset += sizeof(*ip_hdr);
     struct rte_udp_hdr *udp_hdr = rte_pktmbuf_mtod_offset(m, struct rte_udp_hdr *, offset);
