@@ -462,6 +462,7 @@ void do_client(const char *server_ip_and_port) {
         return;
     }
 
+    printf("Sleeping 3 seconds before connecting...\n");
     sleep(3);
 
     ret = fi_connect(ep, svr_ai->ai_addr, NULL, 0);

@@ -285,8 +285,7 @@ static int dpdk_ep_accept(struct fid_ep *ep, const void *param, size_t paramlen)
     }
 
     // 2 - set up endpoint for connection ready.
-    conn_handle = container_of(dep->conn_handle, struct dpdk_conn_handle, fid);
-    eth_parse("ff:ff:ff:ff:ff:ff", dep->remote_eth_addr.addr_bytes);
+    conn_handle             = container_of(dep->conn_handle, struct dpdk_conn_handle, fid);
     dep->remote_ipv4_addr   = conn_handle->remote_ip_addr;
     dep->remote_cm_udp_port = conn_handle->remote_ctrl_port;
     dep->remote_udp_port    = conn_handle->remote_data_port;

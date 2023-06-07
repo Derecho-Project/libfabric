@@ -150,13 +150,10 @@ static void *connection_manager(void *arg) {
     struct dpdk_fabric *fabric = (struct dpdk_fabric *)arg;
     DPDK_DBG(FI_LOG_EP_CTRL, "connection manager thread started.\n");
     while (atomic_load(&fabric->active)) {
-        DPDK_DBG(FI_LOG_EP_CTRL, "connection manager thread looping...\n");
         ofi_mutex_lock(&fabric->domain_res_list_lock);
-        struct dpdk_domain_resources *res = fabric->domain_res_list.next;
-        DPDK_DBG(FI_LOG_EP_CTRL, "connection manager starts with res=%p.\n", res);
-        bool is_busy = false;
+        struct dpdk_domain_resources *res     = fabric->domain_res_list.next;
+        bool                          is_busy = false;
         while (res) {
-            DPDK_DBG(FI_LOG_EP_CTRL, "connection manager is processing res=%p.\n", res);
             struct rte_mbuf *pkts[8];
             uint16_t         npkts;
             // incoming
@@ -309,7 +306,7 @@ int create_dpdk_domain_resources(struct fi_info *info, struct dpdk_domain_resour
     size_t cache_size   = 64;
     size_t private_size = 0;
 
-    res->cm_pool = rte_pktmbuf_pool_create(name, pool_size, 64, 0, mbuf_size, socket_id);
+    res->cm_pool = rte_pktmbuf_pool_create(name, pool_size, cache_size, 0, mbuf_size, socket_id);
     if (!res->cm_pool) {
         DPDK_WARN(FI_LOG_FABRIC, "failed to create memory pool-%s, error:%s.\n", name,
                   rte_strerror(rte_errno));

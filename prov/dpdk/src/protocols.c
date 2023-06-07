@@ -58,7 +58,7 @@ static inline int set_iova_mapping(struct rte_mbuf *sendmsg, size_t page_size) {
         // If mbuf crosses a page boundary, split it in two parts, one per page
         if (mbuf_crosses_page_boundary(ext_mbuf, page_size)) {
 
-            FI_DBG(&dpdk_prov, FI_LOG_EP_DATA, "%s():%i: splitting mbuf crossing page boundary",
+            FI_DBG(&dpdk_prov, FI_LOG_EP_DATA, "%s():%i: splitting mbuf crossing page boundary\n",
                    __func__, __LINE__);
             // 1. Get page boundary starting from last_mbuf->buf_addr (+ data_off)
             uint64_t start         = (uint64_t)ext_mbuf->buf_addr + ext_mbuf->data_off;
@@ -71,7 +71,7 @@ static inline int set_iova_mapping(struct rte_mbuf *sendmsg, size_t page_size) {
             // 4. Allocate a new mbuf for the second part
             struct rte_mbuf *second_mbuf = rte_pktmbuf_alloc(ext_mbuf->pool);
             if (!second_mbuf) {
-                FI_WARN(&dpdk_prov, FI_LOG_EP_DATA, "%s():%i: Failed to allocate mbuf", __func__,
+                FI_WARN(&dpdk_prov, FI_LOG_EP_DATA, "%s():%i: Failed to allocate mbuf\n", __func__,
                         __LINE__);
                 return rte_errno;
             }
@@ -954,7 +954,7 @@ void do_rdmap_terminate(struct dpdk_ep *ep, struct packet_context *orig, enum rd
     // Add the length of the lower-level headers
     sendmsg->data_len += TRP_HDR_LEN + UDP_HDR_LEN + IP_HDR_LEN + RTE_ETHER_HDR_LEN;
     sendmsg->pkt_len = sendmsg->data_len;
-    printf("Sending RDMAP terminate packet of size: %u\n", sendmsg->pkt_len);
+    DPDK_WARN(FI_LOG_EP_DATA, "Sending RDMAP terminate packet of size: %u\n", sendmsg->pkt_len);
 
     size_t total_size =
         (payload) ? sizeof(struct rdmap_terminate_packet) + sizeof(struct rdmap_terminate_payload)

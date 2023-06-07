@@ -121,8 +121,8 @@ static int dpdk_mr_reg(struct fid *fid, const void *buf, size_t len, uint64_t ac
     ret = rte_dev_dma_map(dev_info.device, data_buffer_orig, rte_mem_virt2iova(data_buffer_orig),
                           data_buffer_len);
     if (ret < 0) {
-        FI_WARN(&dpdk_prov, FI_LOG_MR, "%s():%i: Failed to register memory for DMA\n", __func__,
-                __LINE__);
+        FI_WARN(&dpdk_prov, FI_LOG_MR, "%s():%i: Failed to register memory for DMA: %s\n", __func__,
+                __LINE__, rte_strerror(rte_errno));
         goto exit_rte_errno;
     }
 

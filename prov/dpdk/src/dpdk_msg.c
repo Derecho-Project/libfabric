@@ -83,7 +83,7 @@ static ssize_t dpdk_recvmsg(struct fid_ep *ep_fid, const struct fi_msg *msg, uin
     rx_entry->input_size = 0;
     rx_entry->complete   = false;
 
-    FI_DBG(&dpdk_prov, FI_LOG_EP_CTRL, "Enqueue a read request for EP %u", ep->udp_port);
+    FI_DBG(&dpdk_prov, FI_LOG_EP_CTRL, "Enqueue a read request for EP %u\n", ep->udp_port);
     ret = rte_ring_enqueue(ep->rq.ring, rx_entry);
     if (ret < 0) {
         ret = -ret;
@@ -195,7 +195,7 @@ static ssize_t dpdk_send(struct fid_ep *ep_fid, const void *buf, size_t len, voi
     msg.msg_iov      = &msg_iov;
     msg.iov_count    = 1;
     msg.desc         = &desc;
-    msg.addr         = dest_addr; // this is ignored in the currendly DPDK impl.
+    msg.addr         = dest_addr; // this is ignored in the current DPDK impl.
     msg.context      = context;
 
     return dpdk_sendmsg(ep_fid, &msg, 0);
