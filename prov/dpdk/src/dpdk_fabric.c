@@ -157,7 +157,7 @@ static void *connection_manager(void *arg) {
             struct rte_mbuf *pkts[8];
             uint16_t         npkts;
             // incoming
-            while ((npkts = rte_eth_rx_burst(res->port_id, res->cm_rxq_id, pkts, 8)) > 0) {
+            while ((!res->domain) && (npkts = rte_eth_rx_burst(res->port_id, 0, pkts, 8)) > 0) {
                 DPDK_DBG(FI_LOG_EP_CTRL, "connection manager detected %u incoming packets.\n",
                          npkts);
                 is_busy = true;
@@ -282,7 +282,8 @@ int create_dpdk_domain_resources(struct fi_info *info, struct dpdk_domain_resour
     if (res->domain_config) {
         cfg_cm_ring_size = (uint16_t)cfg_getint(res->domain_config, CFG_OPT_DOMAIN_CM_RING_SIZE);
     }
-    sprintf(name, "lf.%s.cmxr", res->domain_name);
+
+    sprintf(name, "lf.D.cmtx");
     res->cm_tx_ring =
         rte_ring_create(name, cfg_cm_ring_size, socket_id, RING_F_MP_RTS_ENQ | RING_F_SC_DEQ);
     if (!res->cm_tx_ring) {
@@ -293,14 +294,14 @@ int create_dpdk_domain_resources(struct fi_info *info, struct dpdk_domain_resour
     }
 
     // RX pool for control path
-    sprintf(name, "lf.%s.cmp", res->domain_name);
+    sprintf(name, "lf.D.cmrx");
     // Dimension of the CP mempool (must be power of 2)
     size_t pool_size = 1024;
     // Dimension of the mbufs in the mempool. Must contain at least an Ethernet frame + private
-    // DPDK data (see documentation). Must be at least 384 bytes for the Intel IGC driver, and at
-    // least 1152 for the Intel ie40 driver.
+    // DPDK data (see documentation). Must be at least 384 bytes for the Intel IGC driver, at
+    // least 1152 for the Intel ie40 driver, and at least 1636 for Azure DPDK
     size_t mbuf_size = RTE_MAX(
-        1152, RTE_ETHER_HDR_LEN + sizeof(struct rte_ipv4_hdr) + sizeof(struct rte_udp_hdr) +
+        2048, RTE_ETHER_HDR_LEN + sizeof(struct rte_ipv4_hdr) + sizeof(struct rte_udp_hdr) +
                   sizeof(struct dpdk_cm_msg_hdr) + DPDK_MAX_CM_DATA_SIZE + RTE_ETHER_CRC_LEN);
     // Other parameters
     size_t cache_size   = 64;
@@ -316,7 +317,7 @@ int create_dpdk_domain_resources(struct fi_info *info, struct dpdk_domain_resour
 
     // RX pool for data path
     char rx_pool_name[32];
-    sprintf(rx_pool_name, "rx_pool_%s", res->domain_name);
+    sprintf(rx_pool_name, "rx_pool_D");
     // Dimension of the TX mempool (must be power of 2)
     pool_size = rte_align32pow2(2 * MAX_ENDPOINTS_PER_APP * dpdk_default_rx_size);
     // Dimension of the mbufs in the mempool. Must contain at least an Ethernet frame + private
@@ -340,7 +341,9 @@ int create_dpdk_domain_resources(struct fi_info *info, struct dpdk_domain_resour
     struct rte_eth_conf port_conf;
     bzero(&port_conf, sizeof(port_conf));
     port_conf.rxmode.mtu = res->mtu;
-    port_conf.rxmode.offloads |= (RTE_ETH_RX_OFFLOAD_CHECKSUM | RTE_ETH_RX_OFFLOAD_SCATTER);
+    // TODO: enable and understand what it says. It seems to be only on queue 1 so maybe by not
+    // configuring it...
+    // port_conf.rxmode.offloads |= (RTE_ETH_RX_OFFLOAD_CHECKSUM | RTE_ETH_RX_OFFLOAD_SCATTER);
     port_conf.txmode.mq_mode = RTE_ETH_MQ_TX_NONE;
     port_conf.txmode.offloads |= (RTE_ETH_TX_OFFLOAD_IPV4_CKSUM | RTE_ETH_TX_OFFLOAD_MULTI_SEGS);
     if (devinfo.tx_offload_capa & RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE) {
@@ -351,11 +354,12 @@ int create_dpdk_domain_resources(struct fi_info *info, struct dpdk_domain_resour
                   port_id, rte_strerror(rte_errno));
         goto error_group_2;
     }
-    if ((err = rte_eth_dev_set_mtu(port_id, res->mtu)) != 0) {
-        DPDK_WARN(FI_LOG_FABRIC, "rte_eth_dev_set_mtu on port:%u to mtu-%u failed with error:%s.\n",
-                  port_id, res->mtu, rte_strerror(rte_errno));
-        goto error_group_3;
-    }
+    // if ((err = rte_eth_dev_set_mtu(port_id, res->mtu)) != 0) {
+    //     DPDK_WARN(FI_LOG_FABRIC, "rte_eth_dev_set_mtu on port:%u to mtu-%u failed with
+    //     error:%s.\n",
+    //               port_id, res->mtu, rte_strerror(rte_errno));
+    //     goto error_group_3;
+    // }
 
     uint16_t nb_rxd = 1024 + cfg_cm_ring_size;
     uint16_t nb_txd = 1024 + cfg_cm_ring_size;
@@ -419,21 +423,21 @@ int create_dpdk_domain_resources(struct fi_info *info, struct dpdk_domain_resour
         goto error_group_3;
     }
 
-    if ((err = rte_eth_promiscuous_enable(port_id)) != 0) {
-        DPDK_WARN(FI_LOG_FABRIC, "rte_eth_promiscuous failed on port:%u, error:%s.\n", port_id,
-                  rte_strerror(rte_errno));
-        goto error_group_3;
-    }
+    // if ((err = rte_eth_promiscuous_enable(port_id)) != 0) {
+    //     DPDK_WARN(FI_LOG_FABRIC, "rte_eth_promiscuous failed on port:%u, error:%s.\n", port_id,
+    //               rte_strerror(rte_errno));
+    //     goto error_group_3;
+    // }
 
     // Enable the flow
-    struct rte_flow_error flow_error;
-    if ((res->cm_flow = generate_cm_flow(port_id, 1, res->local_cm_addr.sin_addr.s_addr,
-                                         res->local_cm_addr.sin_port, &flow_error)) == NULL)
-    {
-        DPDK_WARN(FI_LOG_FABRIC, "cm flow generation failed on port:%u, error:%s.\n", port_id,
-                  flow_error.message ? flow_error.message : "unkown");
-        goto error_group_3;
-    }
+    // struct rte_flow_error flow_error;
+    // if ((res->cm_flow = generate_cm_flow(port_id, 1, res->local_cm_addr.sin_addr.s_addr,
+    //                                      res->local_cm_addr.sin_port, &flow_error)) == NULL)
+    // {
+    //     DPDK_WARN(FI_LOG_FABRIC, "cm flow generation failed on port:%u, error:%s.\n", port_id,
+    //               flow_error.message ? flow_error.message : "unkown");
+    //     goto error_group_3;
+    // }
     // session counter
     atomic_init(&res->cm_session_counter, 0);
 

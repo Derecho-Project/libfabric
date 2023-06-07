@@ -728,12 +728,11 @@ static void process_rx_packet(struct dpdk_domain *domain, struct rte_mbuf *mbuf)
         goto free_and_exit;
     }
 
-    // [Weijia]: IPv6 needs more care.
     if (ipv4_hdr->dst_addr != domain->res->local_cm_addr.sin_addr.s_addr) {
-        DPDK_DBG(FI_LOG_EP_DATA,
-                 "<dev=%s> Drop packet with IPv4 dst addr %" PRIx32 "; expected %" PRIx32 "\n",
-                 domain->util_domain.name, rte_be_to_cpu_32(ipv4_hdr->dst_addr),
-                 rte_be_to_cpu_32(domain->res->local_cm_addr.sin_addr.s_addr));
+        RTE_LOG(DEBUG, USER1,
+                "<dev=%s> Drop packet with IPv4 dst addr %" PRIx32 "; expected %" PRIx32 "\n",
+                domain->util_domain.name, rte_be_to_cpu_32(ipv4_hdr->dst_addr),
+                rte_be_to_cpu_32(domain->res->local_cm_addr.sin_addr.s_addr));
         goto free_and_exit;
     }
 
@@ -752,6 +751,10 @@ static void process_rx_packet(struct dpdk_domain *domain, struct rte_mbuf *mbuf)
                       domain->util_domain.name, rx_port);
             goto free_and_exit;
         }
+    } else if (rx_port == 2509) {
+        rte_pktmbuf_prepend(mbuf, RTE_ETHER_HDR_LEN + IP_HDR_LEN);
+        dpdk_cm_recv(mbuf, domain->res);
+        goto free_and_exit;
     } else {
         DPDK_INFO(FI_LOG_EP_DATA, "<dev=%s> Drop packet with UDP dst port %u;\n",
                   domain->util_domain.name, rx_port);
@@ -934,14 +937,15 @@ static void do_receive(struct dpdk_domain *domain) {
     uint64_t         cur_tsc;
     int              j;
 
-    /* RX packets */
-    rx_count = rte_eth_rx_burst(domain->res->port_id, domain->res->data_rxq_id, pkts_burst,
-                                dpdk_default_rx_burst_size);
+    for (int h = 0; h < 2; h++) {
+        /* RX packets */
+        rx_count =
+            rte_eth_rx_burst(domain->res->port_id, h, pkts_burst, dpdk_default_rx_burst_size);
 
-    /* Prefetch first packets */
-    for (j = 0; j < PREFETCH_OFFSET && j < rx_count; j++) {
-        rte_prefetch0(rte_pktmbuf_mtod(pkts_burst[j], void *));
-    }
+        /* Prefetch first packets */
+        for (j = 0; j < PREFETCH_OFFSET && j < rx_count; j++) {
+            rte_prefetch0(rte_pktmbuf_mtod(pkts_burst[j], void *));
+        }
 
         /* Process already prefetched packets */
         // TODO: Why we replicate the code? This is code copied from DPDK examples in case of
@@ -969,44 +973,45 @@ static void do_receive(struct dpdk_domain *domain) {
                 rte_pktmbuf_free(pkts_burst[j]);
                 break;
             default:
-            DPDK_INFO(FI_LOG_EP_DATA, "Unknown Ether type %#" PRIx16 "\n",
-                      rte_be_to_cpu_16(eth_hdr->ether_type));
-            rte_pktmbuf_free(pkts_burst[j]);
-            break;
-        }
-    }
-
-    /* Process remaining prefetched packets */
-    for (; j < rx_count; j++) {
-        struct rte_ether_hdr *eth_hdr    = rte_pktmbuf_mtod(pkts_burst[j], struct rte_ether_hdr *);
-        uint16_t              ether_type = rte_be_to_cpu_16(eth_hdr->ether_type);
-        // TODO: We do not support VLAN or VXLAN yet. See dpdk-playground for an example
-        switch (rte_be_to_cpu_16(eth_hdr->ether_type)) {
-        case RTE_ETHER_TYPE_ARP:
-            DPDK_INFO(FI_LOG_EP_DATA, "Received ARP packet\n");
-            arp_receive(domain, pkts_burst[j]);
-            rte_pktmbuf_free(pkts_burst[j]);
-            break;
-        case RTE_ETHER_TYPE_IPV4:
-            reassembled = reassemble(pkts_burst[j], &domain->lcore_queue_conf, 0, cur_tsc);
-            if (reassembled) {
-                process_rx_packet(domain, reassembled);
+                DPDK_INFO(FI_LOG_EP_DATA, "Unknown Ether type %#x\n",
+                          rte_be_to_cpu_16(eth_hdr->ether_type));
+                rte_pktmbuf_free(pkts_burst[j]);
+                break;
             }
-            break;
-        case RTE_ETHER_TYPE_IPV6:
-            // [Weijia]: IPv6 needs more care.
-            DPDK_INFO(FI_LOG_EP_DATA, "IPv6 is not supported yet\n");
-            rte_pktmbuf_free(pkts_burst[j]);
-            break;
-        default:
-            DPDK_INFO(FI_LOG_EP_DATA, "Unknown Ether type %#" PRIx16 "\n",
-                      rte_be_to_cpu_16(eth_hdr->ether_type));
-            rte_pktmbuf_free(pkts_burst[j]);
-            break;
+        }
+
+        /* Process remaining prefetched packets */
+        for (; j < rx_count; j++) {
+            struct rte_ether_hdr *eth_hdr = rte_pktmbuf_mtod(pkts_burst[j], struct rte_ether_hdr *);
+            uint16_t              ether_type = rte_be_to_cpu_16(eth_hdr->ether_type);
+            // TODO: We do not support VLAN or VXLAN yet. See dpdk-playground for an example
+            switch (rte_be_to_cpu_16(eth_hdr->ether_type)) {
+            case RTE_ETHER_TYPE_ARP:
+                DPDK_INFO(FI_LOG_EP_DATA, "Received ARP packet\n");
+                arp_receive(domain, pkts_burst[j]);
+                rte_pktmbuf_free(pkts_burst[j]);
+                break;
+            case RTE_ETHER_TYPE_IPV4:
+                reassembled = reassemble(pkts_burst[j], &domain->lcore_queue_conf, 0, cur_tsc);
+                if (reassembled) {
+                    process_rx_packet(domain, reassembled);
+                }
+                break;
+            case RTE_ETHER_TYPE_IPV6:
+                // [Weijia]: IPv6 needs more care.
+                DPDK_INFO(FI_LOG_EP_DATA, "IPv6 is not supported yet\n");
+                rte_pktmbuf_free(pkts_burst[j]);
+                break;
+            default:
+                DPDK_INFO(FI_LOG_EP_DATA, "Unknown Ether type %#" PRIx16 "\n",
+                          rte_be_to_cpu_16(eth_hdr->ether_type));
+                rte_pktmbuf_free(pkts_burst[j]);
+                break;
+            }
+
+            rte_ip_frag_free_death_row(&domain->lcore_queue_conf.death_row, PREFETCH_OFFSET);
         }
     }
-
-    rte_ip_frag_free_death_row(&domain->lcore_queue_conf.death_row, PREFETCH_OFFSET);
 } /* do_receive */
 
 /* Make forward progress on the queue pair. */

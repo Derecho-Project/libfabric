@@ -152,6 +152,7 @@ void enqueue_ether_frame(struct rte_mbuf *sendmsg, unsigned int ether_type, stru
             rte_ether_addr_copy(&domain->res->local_eth_addr, &hdr_frag->src_addr);
             hdr_frag->ether_type = rte_cpu_to_be_16(ether_type);
             m->l2_len            = sizeof(*hdr_frag);
+            m->ol_flags          = RTE_MBUF_F_TX_IP_CKSUM | RTE_MBUF_F_TX_IPV4;
 
             // Set IOVA mapping for the fragment
             set_iova_mapping(m, pg_sz);
@@ -415,9 +416,9 @@ struct rte_ipv4_hdr *prepend_ipv4_header(struct rte_mbuf *sendmsg, int next_prot
     ip->next_proto_id   = next_proto_id;
     ip->hdr_checksum    = 0x0000;
 
-    if (!(sendmsg->ol_flags & RTE_MBUF_F_TX_IP_CKSUM)) {
-        ip->hdr_checksum = rte_ipv4_cksum(ip);
-    }
+    // if (!(sendmsg->ol_flags & RTE_MBUF_F_TX_IP_CKSUM)) {
+    ip->hdr_checksum = rte_ipv4_cksum(ip);
+    // }
 
     return ip;
 } /* prepend_ipv4_header */
@@ -559,9 +560,11 @@ void send_udp_dgram(struct dpdk_ep *ep, struct rte_mbuf *sendmsg, uint32_t raw_c
     struct dpdk_domain  *domain = container_of(ep->util_ep.domain, struct dpdk_domain, util_domain);
     assert(domain->res);
 
-    if (domain->dev_flags & port_checksum_offload) {
-        sendmsg->ol_flags |= RTE_MBUF_F_TX_UDP_CKSUM | RTE_MBUF_F_TX_IPV4 | RTE_MBUF_F_TX_IP_CKSUM;
-    }
+    sendmsg->ol_flags = RTE_MBUF_F_TX_IP_CKSUM | RTE_MBUF_F_TX_IPV4;
+    // if (domain->dev_flags & port_checksum_offload) {
+    //     sendmsg->ol_flags |= RTE_MBUF_F_TX_UDP_CKSUM | RTE_MBUF_F_TX_IPV4 |
+    //     RTE_MBUF_F_TX_IP_CKSUM;
+    // }
 
     // udp              = prepend_udp_header(sendmsg, ep->udp_port, ep->remote_udp_port,
     // ddp_length); ip               = prepend_ipv4_header(sendmsg, IP_UDP, domain->ipv4_addr,
@@ -573,14 +576,14 @@ void send_udp_dgram(struct dpdk_ep *ep, struct rte_mbuf *sendmsg, uint32_t raw_c
                                            ep->remote_ipv4_addr, ddp_length + UDP_HDR_LEN);
     udp->dgram_cksum = rte_ipv4_phdr_cksum(ip, sendmsg->ol_flags);
 
-    if (!(sendmsg->ol_flags & RTE_MBUF_F_TX_UDP_CKSUM)) {
-        raw_cksum += udp->dgram_cksum + udp->src_port + udp->dst_port + udp->dgram_len;
-        /* Add any carry bits into the checksum. */
-        while (raw_cksum > UINT16_MAX) {
-            raw_cksum = (raw_cksum >> 16) + (raw_cksum & 0xffff);
-        }
-        udp->dgram_cksum = (raw_cksum == UINT16_MAX) ? UINT16_MAX : ~raw_cksum;
-    }
+    // if (!(sendmsg->ol_flags & RTE_MBUF_F_TX_UDP_CKSUM)) {
+    //     raw_cksum += udp->dgram_cksum + udp->src_port + udp->dst_port + udp->dgram_len;
+    //     /* Add any carry bits into the checksum. */
+    //     while (raw_cksum > UINT16_MAX) {
+    //         raw_cksum = (raw_cksum >> 16) + (raw_cksum & 0xffff);
+    //     }
+    //     udp->dgram_cksum = (raw_cksum == UINT16_MAX) ? UINT16_MAX : ~raw_cksum;
+    // }
 
     enqueue_ether_frame(sendmsg, RTE_ETHER_TYPE_IPV4, ep, &ep->remote_eth_addr);
 

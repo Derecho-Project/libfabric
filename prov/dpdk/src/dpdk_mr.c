@@ -117,7 +117,8 @@ static int dpdk_mr_reg(struct fid *fid, const void *buf, size_t len, uint64_t ac
     // 5) Register pages for DMAs with the NIC associated with the domain
     // TODO: understand if this violates the VFIO memory constraints
     struct rte_eth_dev_info dev_info;
-    rte_eth_dev_info_get(dpdk_domain->res->port_id, &dev_info);
+    // [Lorenzo] EXPERIMENTAL: This is the port_id of the VF (Mellanox).
+    rte_eth_dev_info_get(0, &dev_info);
     ret = rte_dev_dma_map(dev_info.device, data_buffer_orig, rte_mem_virt2iova(data_buffer_orig),
                           data_buffer_len);
     if (ret < 0) {

@@ -131,9 +131,11 @@ static int create_cm_mbuf(struct dpdk_domain_resources *res, uint8_t *remote_mac
     ofst += sizeof(struct rte_ipv4_hdr);
     struct rte_udp_hdr *udp = rte_pktmbuf_mtod_offset(cm_mbuf, struct rte_udp_hdr *, ofst);
     //// fill mbuf
-    if (res->domain->dev_flags & port_checksum_offload) {
-        cm_mbuf->ol_flags |= RTE_MBUF_F_TX_UDP_CKSUM | RTE_MBUF_F_TX_IPV4 | RTE_MBUF_F_TX_IP_CKSUM;
-    }
+    // THIS CAUSES PROBLEMS IN AZURE?
+    // if (res->domain->dev_flags & port_checksum_offload) {
+    //     cm_mbuf->ol_flags |= RTE_MBUF_F_TX_UDP_CKSUM | RTE_MBUF_F_TX_IPV4 |
+    //     RTE_MBUF_F_TX_IP_CKSUM;
+    // }
     //// fill ether header
     rte_ether_addr_copy(&res->local_eth_addr, &eth->src_addr);
     rte_ether_addr_copy(remote_mac_addr, &eth->dst_addr.addr_bytes);
@@ -151,9 +153,9 @@ static int create_cm_mbuf(struct dpdk_domain_resources *res, uint8_t *remote_mac
     ipv4->time_to_live    = 64;
     ipv4->next_proto_id   = IP_UDP;
     ipv4->hdr_checksum    = 0x0000;
-    if (cm_mbuf->ol_flags & RTE_MBUF_F_TX_IP_CKSUM) {
-        ipv4->hdr_checksum = rte_ipv4_cksum(ipv4);
-    }
+    // if (cm_mbuf->ol_flags & RTE_MBUF_F_TX_IP_CKSUM) {
+    ipv4->hdr_checksum = rte_ipv4_cksum(ipv4);
+    // }
     //// fill udp header
     udp->src_port    = res->local_cm_addr.sin_port;
     udp->dst_port    = rte_cpu_to_be_16(remote_cm_port);
