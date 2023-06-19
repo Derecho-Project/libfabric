@@ -212,7 +212,7 @@ static int dpdk_ep_connect(struct fid_ep *ep_fid, const void *addr, const void *
     atomic_store(&ep->session_id, ++domain->res->cm_session_counter);
 
     // STEP 2.5 - Get the dst MAC address from the ARP cache
-    uint8_t *dst_mac = arp_get_hwaddr_or_lookup(domain, paddrin->sin_addr.s_addr);
+    uint8_t *dst_mac = arp_get_hwaddr_or_lookup(domain->res, paddrin->sin_addr.s_addr);
     DPDK_DBG(FI_LOG_EP_CTRL, "dst_mac is %02x:%02x:%02x:%02x:%02x:%02x:%02x\n", dst_mac[0],
              dst_mac[1], dst_mac[2], dst_mac[3], dst_mac[4], dst_mac[5], dst_mac[6]);
     memcpy(ep->remote_eth_addr.addr_bytes, dst_mac, RTE_ETHER_ADDR_LEN);
@@ -804,7 +804,7 @@ int dpdk_cm_recv(struct rte_mbuf *m, struct dpdk_domain_resources *res) {
     switch (rte_be_to_cpu_16(eth_hdr->ether_type)) {
     case RTE_ETHER_TYPE_ARP:
         DPDK_INFO(FI_LOG_EP_DATA, "Received ARP request\n");
-        arp_receive(res->domain, m);
+        arp_receive(res, m);
         return ret;
     case RTE_ETHER_TYPE_IPV4:
         break;

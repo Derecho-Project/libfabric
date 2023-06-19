@@ -213,12 +213,12 @@ uint8_t *arp_get_hwaddr(uint32_t saddr) {
     return NULL;
 }
 
-uint8_t *arp_get_hwaddr_or_lookup(struct dpdk_domain *domain, uint32_t saddr) {
+uint8_t *arp_get_hwaddr_or_lookup(struct dpdk_domain_resources *domain_res, uint32_t saddr) {
     uint8_t *dst_mac = arp_get_hwaddr(saddr);
     if (dst_mac == NULL) {
         DPDK_INFO(FI_LOG_EP_CTRL,
                   "Failed to get dst MAC address from cache. Sending ARP request.\n");
-        if ((arp_request(domain, domain->res->local_cm_addr.sin_addr.s_addr, saddr)) < 0) {
+        if ((arp_request(domain_res, domain_res->local_cm_addr.sin_addr.s_addr, saddr)) < 0) {
             DPDK_WARN(FI_LOG_EP_CTRL, "Failed to send ARP request\n");
             return NULL;
         }
@@ -267,13 +267,13 @@ static int32_t _arp_insert_translation_table(arp_hdr_t *hdr) {
     return ARP_TRASL_TABLE_INSERT_OK;
 }
 
-static void _do_arp_reply(struct dpdk_domain *domain, arp_ipv4_t *req_data) {
+static void _do_arp_reply(struct dpdk_domain_resources *domain_res, arp_ipv4_t *req_data) {
 
-    struct rte_mbuf *rte_mbuf = rte_pktmbuf_alloc(domain->res->cm_pool);
+    struct rte_mbuf *rte_mbuf = rte_pktmbuf_alloc(domain_res->cm_pool);
 
     // 1. Ethernet Header
     struct rte_ether_hdr *eth_hdr = rte_pktmbuf_mtod(rte_mbuf, struct rte_ether_hdr *);
-    memcpy(&eth_hdr->src_addr, &domain->res->local_eth_addr, RTE_ETHER_ADDR_LEN);
+    memcpy(&eth_hdr->src_addr, &domain_res->local_eth_addr, RTE_ETHER_ADDR_LEN);
     memcpy(&eth_hdr->dst_addr, req_data->arp_sha, RTE_ETHER_ADDR_LEN);
     eth_hdr->ether_type = rte_cpu_to_be_16(ETHERNET_P_ARP);
 
@@ -281,10 +281,10 @@ static void _do_arp_reply(struct dpdk_domain *domain, arp_ipv4_t *req_data) {
     arp_hdr_t  *arp_hdr = (arp_hdr_t *)(eth_hdr + 1);
     arp_ipv4_t *data    = (arp_ipv4_t *)(&arp_hdr->arp_data);
     memcpy(data->arp_tha, req_data->arp_sha, RTE_ETHER_ADDR_LEN);
-    memcpy(data->arp_sha, &domain->res->local_eth_addr, RTE_ETHER_ADDR_LEN);
+    memcpy(data->arp_sha, &domain_res->local_eth_addr, RTE_ETHER_ADDR_LEN);
 
     data->arp_tip = req_data->arp_sip;
-    data->arp_sip = domain->res->local_cm_addr.sin_addr.s_addr;
+    data->arp_sip = domain_res->local_cm_addr.sin_addr.s_addr;
 
     arp_hdr->arp_opcode = rte_cpu_to_be_16(ARP_REPLY);
     arp_hdr->arp_htype  = rte_cpu_to_be_16(ARP_ETHERNET);
@@ -298,15 +298,15 @@ static void _do_arp_reply(struct dpdk_domain *domain, arp_ipv4_t *req_data) {
     rte_mbuf->data_len = rte_mbuf->pkt_len;
 
     // 3. Append the fragment to the transmission queue of the control DP
-    rte_ring_enqueue(domain->res->cm_tx_ring, rte_mbuf);
+    rte_ring_enqueue(domain_res->cm_tx_ring, rte_mbuf);
 }
 
-void arp_receive(struct dpdk_domain *domain, struct rte_mbuf *arp_mbuf) {
+void arp_receive(struct dpdk_domain_resources *domain_res, struct rte_mbuf *arp_mbuf) {
     arp_hdr_t *ahdr = rte_pktmbuf_mtod_offset(arp_mbuf, arp_hdr_t *, RTE_ETHER_HDR_LEN);
 
-    if (domain->res->local_cm_addr.sin_addr.s_addr != ahdr->arp_data.arp_tip) {
+    if (domain_res->local_cm_addr.sin_addr.s_addr != ahdr->arp_data.arp_tip) {
         DPDK_DBG(FI_LOG_EP_CTRL, "ARP: was not for us - %d is not %d\n",
-                 domain->res->local_cm_addr.sin_addr.s_addr, ahdr->arp_data.arp_tip);
+                 domain_res->local_cm_addr.sin_addr.s_addr, ahdr->arp_data.arp_tip);
         return;
     }
 
@@ -321,7 +321,7 @@ void arp_receive(struct dpdk_domain *domain, struct rte_mbuf *arp_mbuf) {
     uint16_t opcode = rte_be_to_cpu_16(ahdr->arp_opcode);
     switch (opcode) {
     case ARP_REQUEST:
-        _do_arp_reply(domain, &ahdr->arp_data);
+        _do_arp_reply(domain_res, &ahdr->arp_data);
         break;
     case ARP_REPLY:
         DPDK_DBG(FI_LOG_EP_CTRL, "ARP: Received reply\n");
@@ -339,20 +339,20 @@ void arp_receive(struct dpdk_domain *domain, struct rte_mbuf *arp_mbuf) {
     // }
 }
 
-int32_t arp_request(struct dpdk_domain *domain, uint32_t saddr, uint32_t daddr) {
+int32_t arp_request(struct dpdk_domain_resources *domain_res, uint32_t saddr, uint32_t daddr) {
     DPDK_INFO(FI_LOG_EP_CTRL, "ARP Request\n");
 
     // 0. Allocate an mbuf
-    struct rte_mbuf *rte_mbuf = rte_pktmbuf_alloc(domain->res->cm_pool);
+    struct rte_mbuf *rte_mbuf = rte_pktmbuf_alloc(domain_res->cm_pool);
     if (!rte_mbuf) {
         DPDK_WARN(FI_LOG_EP_CTRL, "Failed to allocate mbuf from pool %s: %s\n",
-                  domain->res->cm_pool->name, rte_strerror(rte_errno));
+                  domain_res->cm_pool->name, rte_strerror(rte_errno));
         return -rte_errno;
     }
 
     // 1. Ethernet Header
     struct rte_ether_hdr *eth_hdr = rte_pktmbuf_mtod(rte_mbuf, struct rte_ether_hdr *);
-    memcpy(&eth_hdr->src_addr, &domain->res->local_eth_addr, RTE_ETHER_ADDR_LEN);
+    memcpy(&eth_hdr->src_addr, &domain_res->local_eth_addr, RTE_ETHER_ADDR_LEN);
     memcpy(&eth_hdr->dst_addr, broadcast_hw, RTE_ETHER_ADDR_LEN);
     eth_hdr->ether_type = rte_cpu_to_be_16(ETHERNET_P_ARP);
 
@@ -360,7 +360,7 @@ int32_t arp_request(struct dpdk_domain *domain, uint32_t saddr, uint32_t daddr) 
     arp_hdr_t  *ahdr  = (arp_hdr_t *)(eth_hdr + 1);
     arp_ipv4_t *adata = (arp_ipv4_t *)(&ahdr->arp_data);
 
-    memcpy(adata->arp_sha, &domain->res->local_eth_addr, RTE_ETHER_ADDR_LEN);
+    memcpy(adata->arp_sha, &domain_res->local_eth_addr, RTE_ETHER_ADDR_LEN);
     memcpy(adata->arp_tha, broadcast_hw, RTE_ETHER_ADDR_LEN);
     adata->arp_sip = saddr;
     adata->arp_tip = daddr;
@@ -375,7 +375,7 @@ int32_t arp_request(struct dpdk_domain *domain, uint32_t saddr, uint32_t daddr) 
     rte_mbuf->next    = NULL;
     rte_mbuf->nb_segs = 1;
     rte_mbuf->pkt_len = rte_mbuf->data_len = RTE_ETHER_HDR_LEN + sizeof(arp_hdr_t);
-    return rte_ring_enqueue(domain->res->cm_tx_ring, rte_mbuf);
+    return rte_ring_enqueue(domain_res->cm_tx_ring, rte_mbuf);
 }
 
 /* IPv4 */

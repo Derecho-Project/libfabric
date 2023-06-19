@@ -420,6 +420,7 @@ struct dpdk_domain_resources {
     struct rte_mempool *cm_pool;
     // cm flow
     struct rte_flow *cm_flow;
+    struct rte_flow *arp_flow;
     // cm session counter
     atomic_uint cm_session_counter;
     /* The passive endpoint and domain are set during fi_passive_ep() and

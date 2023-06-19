@@ -87,6 +87,47 @@ static struct rte_flow *generate_cm_flow(uint16_t port_id, uint16_t rx_queue_id,
     return flow;
 }
 
+static struct rte_flow *generate_arp_flow(uint16_t port_id, uint16_t rx_queue_id, uint32_t ip,
+                                          uint16_t port, struct rte_flow_error *error) {
+    struct rte_flow_attr         attr;
+    struct rte_flow_item         pattern[2];
+    struct rte_flow_item_eth     item_eth_mask = {};
+    struct rte_flow_item_eth     item_eth_spec = {};
+    struct rte_flow_action       action[2];
+    struct rte_flow             *flow  = NULL;
+    struct rte_flow_action_queue queue = {.index = rx_queue_id};
+    int                          err;
+
+    bzero(&attr, sizeof(attr));
+    bzero(pattern, sizeof(pattern));
+    bzero(action, sizeof(action));
+
+    // rule attr
+    attr.ingress = 1;
+
+    // action sequence
+    action[0].type = RTE_FLOW_ACTION_TYPE_QUEUE;
+    action[0].conf = &queue;
+    action[1].type = RTE_FLOW_ACTION_TYPE_END;
+
+    // patterns
+    // TODO: There is a specific enum for ARP but I was not able to use it
+    item_eth_spec.hdr.ether_type = RTE_BE16(RTE_ETHER_TYPE_ARP);
+    item_eth_mask.hdr.ether_type = RTE_BE16(0xFFFF);
+
+    pattern[0].type = RTE_FLOW_ITEM_TYPE_ETH;
+    pattern[0].mask = &item_eth_mask;
+    pattern[0].spec = &item_eth_spec;
+    pattern[1].type = RTE_FLOW_ITEM_TYPE_END;
+
+    err = rte_flow_validate(port_id, &attr, pattern, action, error);
+    if (!err) {
+        flow = rte_flow_create(port_id, &attr, pattern, action, error);
+    }
+
+    return flow;
+}
+
 /**
  * clean up a single domain resource object
  * @param res   pointer to a single res;
@@ -282,7 +323,15 @@ int create_dpdk_domain_resources(struct fi_info *info, struct dpdk_domain_resour
     if (res->domain_config) {
         cfg_cm_ring_size = (uint16_t)cfg_getint(res->domain_config, CFG_OPT_DOMAIN_CM_RING_SIZE);
     }
-    sprintf(name, "lf.%s.cmxr", res->domain_name);
+
+    char substr[23];
+    if (strlen(res->domain_name) > 22) {
+        strncpy(substr, res->domain_name, 22);
+        substr[22] = '\0';
+        sprintf(name, "lf.%s.cmxr", substr);
+    } else {
+        sprintf(name, "lf.%s.cmxr", res->domain_name);
+    }
     res->cm_tx_ring =
         rte_ring_create(name, cfg_cm_ring_size, socket_id, RING_F_MP_RTS_ENQ | RING_F_SC_DEQ);
     if (!res->cm_tx_ring) {
@@ -293,7 +342,14 @@ int create_dpdk_domain_resources(struct fi_info *info, struct dpdk_domain_resour
     }
 
     // RX pool for control path
-    sprintf(name, "lf.%s.cmp", res->domain_name);
+    bzero(substr, 23);
+    if (strlen(res->domain_name) > 22) {
+        strncpy(substr, res->domain_name, 22);
+        substr[22] = '\0';
+        sprintf(name, "lf.%s.cmp", substr);
+    } else {
+        sprintf(name, "lf.%s.cmp", res->domain_name);
+    }
     // Dimension of the CP mempool (must be power of 2)
     size_t pool_size = 1024;
     // Dimension of the mbufs in the mempool. Must contain at least an Ethernet frame + private
@@ -316,7 +372,14 @@ int create_dpdk_domain_resources(struct fi_info *info, struct dpdk_domain_resour
 
     // RX pool for data path
     char rx_pool_name[32];
-    sprintf(rx_pool_name, "rx_pool_%s", res->domain_name);
+    bzero(substr, 23);
+    if (strlen(res->domain_name) > 22) {
+        strncpy(substr, res->domain_name, 22);
+        substr[22] = '\0';
+        sprintf(rx_pool_name, "rx_pool_%s", substr);
+    } else {
+        sprintf(rx_pool_name, "rx_pool_%s", res->domain_name);
+    }
     // Dimension of the TX mempool (must be power of 2)
     pool_size = rte_align32pow2(2 * MAX_ENDPOINTS_PER_APP * dpdk_default_rx_size);
     // Dimension of the mbufs in the mempool. Must contain at least an Ethernet frame + private
@@ -427,10 +490,19 @@ int create_dpdk_domain_resources(struct fi_info *info, struct dpdk_domain_resour
 
     // Enable the flow
     struct rte_flow_error flow_error;
-    if ((res->cm_flow = generate_cm_flow(port_id, 1, res->local_cm_addr.sin_addr.s_addr,
-                                         res->local_cm_addr.sin_port, &flow_error)) == NULL)
+    if ((res->cm_flow =
+             generate_cm_flow(port_id, res->cm_txq_id, res->local_cm_addr.sin_addr.s_addr,
+                              res->local_cm_addr.sin_port, &flow_error)) == NULL)
     {
         DPDK_WARN(FI_LOG_FABRIC, "cm flow generation failed on port:%u, error:%s.\n", port_id,
+                  flow_error.message ? flow_error.message : "unkown");
+        goto error_group_3;
+    }
+    if ((res->arp_flow =
+             generate_arp_flow(port_id, res->cm_txq_id, res->local_cm_addr.sin_addr.s_addr,
+                               res->local_cm_addr.sin_port, &flow_error)) == NULL)
+    {
+        DPDK_WARN(FI_LOG_FABRIC, "ARP flow generation failed on port:%u, error:%s.\n", port_id,
                   flow_error.message ? flow_error.message : "unkown");
         goto error_group_3;
     }

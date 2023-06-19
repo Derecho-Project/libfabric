@@ -92,9 +92,9 @@ typedef struct arp_hdr {
 } __attribute__((packed)) arp_hdr_t;
 
 uint8_t *arp_get_hwaddr(uint32_t saddr);
-uint8_t *arp_get_hwaddr_or_lookup(struct dpdk_domain *domain, uint32_t saddr);
-void     arp_receive(struct dpdk_domain *domain, struct rte_mbuf *arp_mbuf);
-int32_t  arp_request(struct dpdk_domain *domain, uint32_t saddr, uint32_t daddr);
+uint8_t *arp_get_hwaddr_or_lookup(struct dpdk_domain_resources *domain_res, uint32_t saddr);
+void     arp_receive(struct dpdk_domain_resources *domain_res, struct rte_mbuf *arp_mbuf);
+int32_t  arp_request(struct dpdk_domain_resources *domain_res, uint32_t saddr, uint32_t daddr);
 
 // ARP Table
 #define ARP_TRASL_TABLE_INSERT_FAILED   0
