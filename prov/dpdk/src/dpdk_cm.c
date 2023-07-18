@@ -213,8 +213,8 @@ static int dpdk_ep_connect(struct fid_ep *ep_fid, const void *addr, const void *
 
     // STEP 2.5 - Get the dst MAC address from the ARP cache
     uint8_t *dst_mac = arp_get_hwaddr_or_lookup(domain->res, paddrin->sin_addr.s_addr);
-    DPDK_DBG(FI_LOG_EP_CTRL, "dst_mac is %02x:%02x:%02x:%02x:%02x:%02x:%02x\n", dst_mac[0],
-             dst_mac[1], dst_mac[2], dst_mac[3], dst_mac[4], dst_mac[5], dst_mac[6]);
+    DPDK_DBG(FI_LOG_EP_CTRL, "dst_mac is %02x:%02x:%02x:%02x:%02x:%02x\n", dst_mac[0], dst_mac[1],
+             dst_mac[2], dst_mac[3], dst_mac[4], dst_mac[5]);
     memcpy(ep->remote_eth_addr.addr_bytes, dst_mac, RTE_ETHER_ADDR_LEN);
 
     // STEP 3 - send connection request
@@ -285,7 +285,8 @@ static int dpdk_ep_accept(struct fid_ep *ep, const void *param, size_t paramlen)
     }
 
     // 2 - set up endpoint for connection ready.
-    conn_handle             = container_of(dep->conn_handle, struct dpdk_conn_handle, fid);
+    conn_handle = container_of(dep->conn_handle, struct dpdk_conn_handle, fid);
+    memcpy(dep->remote_eth_addr.addr_bytes, conn_handle->remote_eth_addr, RTE_ETHER_ADDR_LEN);
     dep->remote_ipv4_addr   = conn_handle->remote_ip_addr;
     dep->remote_cm_udp_port = conn_handle->remote_ctrl_port;
     dep->remote_udp_port    = conn_handle->remote_data_port;
@@ -803,7 +804,7 @@ int dpdk_cm_recv(struct rte_mbuf *m, struct dpdk_domain_resources *res) {
 
     switch (rte_be_to_cpu_16(eth_hdr->ether_type)) {
     case RTE_ETHER_TYPE_ARP:
-        DPDK_INFO(FI_LOG_EP_DATA, "Received ARP request\n");
+        DPDK_INFO(FI_LOG_EP_DATA, "Received ARP request/reply\n");
         arp_receive(res, m);
         return ret;
     case RTE_ETHER_TYPE_IPV4:

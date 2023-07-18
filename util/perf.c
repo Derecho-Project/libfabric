@@ -78,7 +78,6 @@ typedef struct test_config {
     uint64_t max_msg;
     uint16_t burst_size;
     uint16_t port_id;
-    uint16_t queue_id;
 } test_config_t;
 
 /***Global states */
@@ -153,7 +152,6 @@ int parse_arguments(int argc, char *argv[], test_config_t *config) {
     config->max_msg      = 0;
     config->burst_size   = 8;
     config->port_id      = 0;
-    config->queue_id     = 0;
 
     /* Test role (mandatory argument) */
     if (!strcmp(argv[1], "server")) {
@@ -816,6 +814,18 @@ void do_ping(test_config_t *params) {
         return ret;
     }
 
+    struct addrinfo *svr_ai = parse_ip_port_string(params->remote_endpoint);
+    if (!svr_ai) {
+        fprintf(stderr, "%s cannot get server address from string:%s.\n", __func__,
+                params->remote_endpoint);
+        return;
+    }
+
+    g_ctxt.fi->dest_addr = malloc(svr_ai->ai_addrlen);
+    memcpy(g_ctxt.fi->dest_addr, svr_ai->ai_addr, svr_ai->ai_addrlen);
+    g_ctxt.fi->dest_addrlen = svr_ai->ai_addrlen;
+    g_ctxt.fi->addr_format  = FI_SOCKADDR_IN;
+
     if (init_active_ep(g_ctxt.fi, &ep, &eq)) {
         printf("failed to initialize ping endpoint.\n");
         exit(2);
@@ -831,13 +841,6 @@ void do_ping(test_config_t *params) {
     // Connect to the server
     struct fi_eq_cm_entry entry;
     uint32_t              event;
-
-    struct addrinfo *svr_ai = parse_ip_port_string(params->remote_endpoint);
-    if (!svr_ai) {
-        fprintf(stderr, "%s cannot get server address from string:%s.\n", __func__,
-                params->remote_endpoint);
-        return;
-    }
 
     ret = fi_connect(ep, svr_ai->ai_addr, NULL, 0);
     if (ret) {
@@ -884,6 +887,7 @@ void do_ping(test_config_t *params) {
         if (params->sleep_time) {
             sleep(params->sleep_time);
         }
+
         send_time = get_clock_realtime_ns();
 
         // Post a receive request: Pong
@@ -901,23 +905,28 @@ void do_ping(test_config_t *params) {
         ret         = fi_sendmsg(ep, &msg, FI_COMPLETION);
         if (ret) {
             printf("fi_sendmsg() failed: %s\n", fi_strerror(-ret));
-            printf("Insert a message size: ");
-            continue;
+            exit(2);
         }
 
         // Get receive completion
         do {
-            ret = fi_cq_readfrom(g_ctxt.rx_cq, &comp, 1, &src_addr);
+            ret = fi_cq_read(g_ctxt.rx_cq, &comp, 1);
             if (ret < 0 && ret != -FI_EAGAIN) {
-                printf("CQ read failed: %s", fi_strerror(-ret));
+                printf("CQ read failed: (%d) %s\n", ret, fi_strerror(-ret));
                 break;
             }
         } while (ret == -FI_EAGAIN);
 
         // Compute latency
         response_time = get_clock_realtime_ns();
-        latency       = response_time - send_time;
-        fprintf(stdout, "(%ld) RTT: %.3f us\n", counter, (float)latency / 1000.0F);
+        // PRINT LATENCY BREAKDOWN
+        // printf("[%ld] Send     %lu\n", counter, send_time);
+        // fi_control(&g_ctxt.fabric->fid, counter, 0); // Dummy call to allow printing timestamps
+        // printf("[%ld] Recv     %lu\n", counter, response_time);
+        latency = response_time - send_time;
+        // Print the latency in us
+        // fprintf(stdout, "[%ld] %.3f\n", counter, (float)latency / 1000.0F);
+        fprintf(stdout, "%.3f\n", (float)latency / 1000.0F);
 
         counter++;
     }
@@ -1031,9 +1040,9 @@ void do_pong(test_config_t *params) {
 
         // Get receive completion
         do {
-            ret = fi_cq_readfrom(g_ctxt.rx_cq, &comp, 1, &src_addr);
+            ret = fi_cq_read(g_ctxt.rx_cq, &comp, 1);
             if (ret < 0 && ret != -FI_EAGAIN) {
-                printf("CQ read failed: %s", fi_strerror(-ret));
+                printf("CQ read failed: (%d) %s\n", ret, fi_strerror(-ret));
                 break;
             }
         } while (ret == -FI_EAGAIN);

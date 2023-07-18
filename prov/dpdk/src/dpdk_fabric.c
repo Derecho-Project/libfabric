@@ -33,6 +33,8 @@ static struct rte_flow *generate_cm_flow(uint16_t port_id, uint16_t rx_queue_id,
                                          uint16_t port, struct rte_flow_error *error) {
     struct rte_flow_attr         attr;
     struct rte_flow_item         pattern[4];
+    struct rte_flow_item_eth     item_eth_mask = {};
+    struct rte_flow_item_eth     item_eth_spec = {};
     struct rte_flow_item_ipv4    ipv4_spec;
     struct rte_flow_item_ipv4    ipv4_mask;
     struct rte_flow_item_udp     udp_spec;
@@ -55,7 +57,11 @@ static struct rte_flow *generate_cm_flow(uint16_t port_id, uint16_t rx_queue_id,
     action[1].type = RTE_FLOW_ACTION_TYPE_END;
 
     // patterns
-    pattern[0].type = RTE_FLOW_ITEM_TYPE_ETH;
+    item_eth_spec.hdr.ether_type = RTE_BE16(RTE_ETHER_TYPE_IPV4);
+    item_eth_mask.hdr.ether_type = RTE_BE16(0xFFFF);
+    pattern[0].type              = RTE_FLOW_ITEM_TYPE_ETH;
+    pattern[0].mask              = &item_eth_mask;
+    pattern[0].spec              = &item_eth_spec;
 
     bzero(&ipv4_spec, sizeof(ipv4_spec));
     ipv4_spec.hdr.next_proto_id = 0x11; // UDP
@@ -488,24 +494,27 @@ int create_dpdk_domain_resources(struct fi_info *info, struct dpdk_domain_resour
         goto error_group_3;
     }
 
-    // Enable the flow
+    // Enable the flow 1: UDP packets with destination port equal to the CM port go to CM
     struct rte_flow_error flow_error;
     if ((res->cm_flow =
-             generate_cm_flow(port_id, res->cm_txq_id, res->local_cm_addr.sin_addr.s_addr,
+             generate_cm_flow(port_id, res->cm_rxq_id, res->local_cm_addr.sin_addr.s_addr,
                               res->local_cm_addr.sin_port, &flow_error)) == NULL)
     {
         DPDK_WARN(FI_LOG_FABRIC, "cm flow generation failed on port:%u, error:%s.\n", port_id,
                   flow_error.message ? flow_error.message : "unkown");
         goto error_group_3;
     }
+
+    // Enable the flow 2: ARP packets
     if ((res->arp_flow =
-             generate_arp_flow(port_id, res->cm_txq_id, res->local_cm_addr.sin_addr.s_addr,
+             generate_arp_flow(port_id, res->cm_rxq_id, res->local_cm_addr.sin_addr.s_addr,
                                res->local_cm_addr.sin_port, &flow_error)) == NULL)
     {
         DPDK_WARN(FI_LOG_FABRIC, "ARP flow generation failed on port:%u, error:%s.\n", port_id,
                   flow_error.message ? flow_error.message : "unkown");
         goto error_group_3;
     }
+
     // session counter
     atomic_init(&res->cm_session_counter, 0);
 

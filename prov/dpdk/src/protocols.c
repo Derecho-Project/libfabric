@@ -321,6 +321,7 @@ void arp_receive(struct dpdk_domain_resources *domain_res, struct rte_mbuf *arp_
     uint16_t opcode = rte_be_to_cpu_16(ahdr->arp_opcode);
     switch (opcode) {
     case ARP_REQUEST:
+        DPDK_DBG(FI_LOG_EP_CTRL, "ARP: Seding reply\n");
         _do_arp_reply(domain_res, &ahdr->arp_data);
         break;
     case ARP_REPLY:
