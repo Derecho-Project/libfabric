@@ -405,8 +405,8 @@ void do_server() {
         }
 
         // Get the associated completion
-        struct fi_cq_msg_entry comp;
-        fi_addr_t              src_addr;
+        struct fi_cq_data_entry comp;
+        fi_addr_t               src_addr;
         do {
             ret = fi_cq_readfrom(g_ctxt.rx_cq, &comp, 1, &src_addr);
             if (ret < 0 && ret != -FI_EAGAIN) {
@@ -415,7 +415,7 @@ void do_server() {
             }
         } while (ret == -FI_EAGAIN);
 
-        printf("Received a new message [size = %lu]: ", comp.len);
+        printf("Received a new message [size = %lu][imm_data = %lu]: ", comp.len, comp.data);
 
         // Integrity check
         uint8_t content_ok = 1;
@@ -501,7 +501,8 @@ void do_client(const char *server_ip_and_port) {
     msg.msg_iov      = &msg_iov;
 
     // Send message
-    char input[32];
+    char     input[32];
+    uint64_t counter = 0;
     printf("Insert a message size: ");
     while (fgets((char *restrict)&input, 32, stdin) != NULL) {
         msg_iov.iov_len = atol(input);
@@ -517,10 +518,12 @@ void do_client(const char *server_ip_and_port) {
         }
 
         // Fill the buffer with random content
+        msg.msg_iov = &msg_iov;
         memset(g_mr.buffer, 'a', msg_iov.iov_len);
+        msg.data = counter++; // To enable the IMMEDIATE, use the FI_REMOTE_CQ_DATA flag
 
         // Post a send request
-        ret = fi_sendmsg(ep, &msg, FI_COMPLETION);
+        ret = fi_sendmsg(ep, &msg, FI_COMPLETION | FI_REMOTE_CQ_DATA);
         if (ret) {
             printf("fi_sendmsg() failed: %s\n", fi_strerror(-ret));
             printf("Insert a message size: ");
