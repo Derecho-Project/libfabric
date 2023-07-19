@@ -27,9 +27,9 @@ void ep_free_recv_xfer(struct dpdk_ep *ep, struct dpdk_xfer_entry *wqe) {
 static int ep_get_next_send_entry(struct dpdk_ep *ep, struct dpdk_xfer_entry **xfer_entry) {
     int ret;
 
-    rte_spinlock_lock(&ep->sq.lock);
+    // rte_spinlock_lock(&ep->sq.lock);
     ret = rte_ring_dequeue(ep->sq.free_ring, (void **)xfer_entry);
-    rte_spinlock_unlock(&ep->sq.lock);
+    // rte_spinlock_unlock(&ep->sq.lock);
     if (ret == -ENOENT) {
         FI_WARN(&dpdk_prov, FI_LOG_EP_CTRL, "Send queue full!");
         ret = -ENOSPC;
@@ -163,7 +163,7 @@ static ssize_t dpdk_sendmsg(struct fid_ep *ep_fid, const struct fi_msg *msg, uin
     tx_entry->flags = flags;
 
     // Fill the TX entry with the data from the msg
-    tx_entry->opcode  = xfer_send;
+    tx_entry->opcode  = (flags & FI_REMOTE_CQ_DATA) ? xfer_send_with_imm : xfer_send;
     tx_entry->context = msg->context;
     memcpy(tx_entry->iov, msg->msg_iov, msg->iov_count * sizeof(*msg->msg_iov));
     tx_entry->iov_count    = msg->iov_count;
