@@ -32,18 +32,18 @@ static inline int mbuf_crosses_page_boundary(struct rte_mbuf *m, size_t pg_sz) {
 
 static inline int set_iova_mapping(struct rte_mbuf *sendmsg, size_t page_size) {
     int ret = 0;
-    // Get the mbuf representing external memory: the last of the chain
-    struct rte_mbuf *ext_mbuf = rte_pktmbuf_lastseg(sendmsg);
-
+    // Get the mbuf pointing to external memory: the last of the chain.
     // IOVA mapping of DPDK-managed memory is already set by DPDK
+    struct rte_mbuf *ext_mbuf = rte_pktmbuf_lastseg(sendmsg);
     if (!RTE_MBUF_HAS_EXTBUF(ext_mbuf)) {
         return ret;
     }
 
     // Set the IOVA mapping for the external memory.
-    // TODO: eventually we want the mapping to come from the DPDK internal page table rather
-    // than just skipping it, by using rte_mem_virt2memseg().
-    ext_mbuf->buf_iova = rte_mem_virt2iova(ext_mbuf->buf_addr + ext_mbuf->data_off);
+    struct rte_memseg *ms =
+        rte_mem_virt2memseg(ext_mbuf->buf_addr, rte_mem_virt2memseg_list(ext_mbuf->buf_addr));
+    ext_mbuf->buf_iova = ms->iova;
+    // ext_mbuf->buf_iova = rte_mem_virt2iova(ext_mbuf->buf_addr + ext_mbuf->data_off);
 
     // If IOVA as PA, the mbuf may span two pages that correspond to two different
     // physical addresses. In this case, we need to split in two parts the mbuf containing the
@@ -81,8 +81,7 @@ static inline int set_iova_mapping(struct rte_mbuf *sendmsg, size_t page_size) {
             struct rte_mbuf_ext_shared_info *ret_shinfo =
                 (struct rte_mbuf_ext_shared_info *)(second_mbuf + 1);
             rte_pktmbuf_ext_shinfo_init_helper_custom(ret_shinfo, free_extbuf_cb, NULL);
-            rte_pktmbuf_attach_extbuf(second_mbuf, (void *)page_boundary,
-                                      rte_mem_virt2iova((void *)page_boundary), second_len,
+            rte_pktmbuf_attach_extbuf(second_mbuf, (void *)page_boundary, ms->iova, second_len,
                                       ret_shinfo);
             second_mbuf->data_len = second_len;
             second_mbuf->data_off = 0;
