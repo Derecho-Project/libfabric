@@ -205,8 +205,8 @@ int dpdk_endpoint(struct fid_domain *domain, struct fi_info *info, struct fid_ep
     (*ep_fid)->fid.ops = &dpdk_ep_fi_ops;
     (*ep_fid)->cm      = &dpdk_cm_ops;
     (*ep_fid)->msg     = &dpdk_msg_ops;
+    (*ep_fid)->rma     = &dpdk_rma_ops;
     // TODO: Complete the OPS definition
-    // (*ep_fid)->rma     = &dpdk_rma_ops;
     // (*ep_fid)->tagged  = &dpdk_tagged_ops;
     // (*ep_fid)->atomic  = &dpdk_atomic_ops;
     // (*ep_fid)->ops_collective    = &dpdk_collective_ops;
@@ -319,7 +319,7 @@ int dpdk_endpoint(struct fid_domain *domain, struct fi_info *info, struct fid_ep
     // Initialize "external buffers" memory pool. TODO: handle memory cleanup
     // These will reference user memory (provided that it was previously registered)
     // and will be put in chain with the headers
-    mbuf_size    = 0; // Will reference external memory!
+    mbuf_size    = 0;                                       // Will reference external memory!
     cache_size   = 64;
     private_size = sizeof(struct rte_mbuf_ext_shared_info); // Keeps info about ext memory
     char tx_ddp_mempool_name[20];

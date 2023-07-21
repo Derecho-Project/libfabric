@@ -8,9 +8,7 @@ static void free_extbuf_cb(void *addr, void *opaque) {
 static int ep_get_next_recv_entry(struct dpdk_ep *ep, struct dpdk_xfer_entry **xfer_entry) {
     int ret;
 
-    rte_spinlock_lock(&ep->rq.lock);
     ret = rte_ring_dequeue(ep->rq.free_ring, (void **)xfer_entry);
-    rte_spinlock_unlock(&ep->rq.lock);
     if (ret == -ENOENT)
         ret = -ENOSPC;
     return ret;
@@ -27,9 +25,7 @@ void ep_free_recv_xfer(struct dpdk_ep *ep, struct dpdk_xfer_entry *wqe) {
 static int ep_get_next_send_entry(struct dpdk_ep *ep, struct dpdk_xfer_entry **xfer_entry) {
     int ret;
 
-    // rte_spinlock_lock(&ep->sq.lock);
     ret = rte_ring_dequeue(ep->sq.free_ring, (void **)xfer_entry);
-    // rte_spinlock_unlock(&ep->sq.lock);
     if (ret == -ENOENT) {
         FI_WARN(&dpdk_prov, FI_LOG_EP_CTRL, "Send queue full!");
         ret = -ENOSPC;
@@ -82,8 +78,9 @@ static ssize_t dpdk_recvmsg(struct fid_ep *ep_fid, const struct fi_msg *msg, uin
     rx_entry->recv_size  = 0;
     rx_entry->input_size = 0;
     rx_entry->complete   = false;
+    rx_entry->flags      = flags;
 
-    FI_DBG(&dpdk_prov, FI_LOG_EP_CTRL, "Enqueue a read request for EP %u\n", ep->udp_port);
+    FI_DBG(&dpdk_prov, FI_LOG_EP_CTRL, "Enqueue a receive request for EP %u\n", ep->udp_port);
     ret = rte_ring_enqueue(ep->rq.ring, rx_entry);
     if (ret < 0) {
         ret = -ret;

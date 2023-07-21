@@ -726,7 +726,12 @@ int send_ddp_segment(struct dpdk_ep *ep, struct rte_mbuf *sendmsg,
     pending->wqe            = wqe;
     pending->readresp       = readresp;
     pending->transmit_count = 0;
-    pending->ddp_length     = payload_length;
+
+    // TODO: this is wrong. This must be only the actual payload size
+    // while now payload lenght includes also the headers and I have no
+    // way now to know the actual payload size
+    pending->ddp_length = payload_length;
+
     if (!domain->dev_flags & port_checksum_offload) {
         pending->ddp_raw_cksum =
             rte_raw_cksum(rte_pktmbuf_mtod(sendmsg, void *), rte_pktmbuf_data_len(sendmsg));
@@ -858,8 +863,8 @@ void do_rdmap_send(struct dpdk_ep *ep, struct dpdk_xfer_entry *wqe) {
         }
 
         send_ddp_segment(ep, sendmsg, NULL, wqe, RDMAP_HDR_LEN + payload_length);
-        RTE_LOG(DEBUG, USER1, "<ep=%" PRIx16 "> SEND transmit msn=%" PRIu32 " [%zu-%zu]\n",
-                ep->udp_port, wqe->msn, wqe->bytes_sent, wqe->bytes_sent + payload_length);
+        FI_DBG(&dpdk_prov, FI_LOG_EP_DATA, "<ep=%u> SEND transmit msn=%" PRIu32 " [%zu-%zu]\n",
+               ep->udp_port, wqe->msn, wqe->bytes_sent, wqe->bytes_sent + payload_length);
 
         wqe->bytes_sent += payload_length;
     }
@@ -868,6 +873,219 @@ void do_rdmap_send(struct dpdk_ep *ep, struct dpdk_xfer_entry *wqe) {
         wqe->state = SEND_XFER_WAIT;
     }
 } /* do_rdmap_send */
+
+void do_rdmap_write(struct dpdk_ep *ep, struct dpdk_xfer_entry *wqe) {
+    struct rdmap_tagged_packet *new_rdmap;
+    struct rte_mbuf            *sendmsg;
+    size_t                      payload_length, header_length;
+
+    uint16_t mtu = 1440; // MAX_RDMAP_PAYLOAD_SIZE;
+    void    *payload;
+
+    while (wqe->bytes_sent < wqe->total_length &&
+           serial_less_32(wqe->remote_ep->send_next_psn, wqe->remote_ep->send_max_psn))
+    {
+        sendmsg = rte_pktmbuf_alloc(ep->tx_hdr_mempool);
+        if (!sendmsg) {
+            // TODO: Should we create an "error" state?
+            wqe->state = SEND_XFER_COMPLETE;
+            RTE_LOG(ERR, USER1, "Failed to allocate mbuf from pool %s\n", ep->tx_hdr_mempool->name);
+            return;
+        }
+
+        // Header len. Add now the LEN of the packet. Now, because from now on, all the functions
+        // will be potentially executed more than once in case of retransmission
+        // TODO: Dos this make sense? In case of re-transmission to re-traverse the whole stack?
+        header_length = RTE_ETHER_HDR_LEN + IP_HDR_LEN + UDP_HDR_LEN + TRP_HDR_LEN +
+                        sizeof(struct rdmap_tagged_packet);
+        sendmsg->data_len += header_length;
+        sendmsg->pkt_len += header_length;
+
+        payload_length = RTE_MIN(mtu, wqe->total_length - wqe->bytes_sent);
+        new_rdmap =
+            rte_pktmbuf_mtod_offset(sendmsg, struct rdmap_tagged_packet *, RDMAP_HDR_OFFSET);
+        new_rdmap->head.ddp_flags =
+            (wqe->total_length - wqe->bytes_sent <= mtu) ? DDP_V1_TAGGED_LAST_DF : DDP_V1_TAGGED_DF;
+
+        if (wqe->opcode == xfer_write_with_imm) {
+            new_rdmap->head.rdmap_info = rdmap_opcode_rdma_write_with_imm | RDMAP_V1;
+            new_rdmap->head.immediate  = wqe->imm_data;
+        } else {
+            new_rdmap->head.rdmap_info = rdmap_opcode_rdma_write | RDMAP_V1;
+            new_rdmap->head.immediate  = 0;
+        }
+        // TODO: We are currently only supporting a SINGLE IO for the write operation.
+        // In the short-term, this should be checked earlier. In the long term, we should
+        // support multiple IOs
+        new_rdmap->head.sink_stag = rte_cpu_to_be_64(wqe->rma_iov[0].key);
+        new_rdmap->offset         = rte_cpu_to_be_64(wqe->rma_iov[0].addr + wqe->bytes_sent);
+
+        // Copy inline data, which are small
+        if (payload_length > 0) {
+            // TODO: Do we support inline data?
+            // if (wqe->flags & usiw_send_inline) {
+            //     payload = rte_pktmbuf_append(sendmsg, payload_length);
+            //     memcpy(payload, (char *)wqe->iov + wqe->bytes_sent, payload_length);
+            // } else {
+
+            // This is zero-copy send. But what about small sizes?
+            // We could enable a mechanism that if total_size is <threshold, we copy the data
+            put_iov_in_chain(ep->tx_ddp_mempool, sendmsg, payload_length, wqe->iov, wqe->iov_count,
+                             wqe->bytes_sent);
+        }
+
+        FI_DBG(&dpdk_prov, FI_LOG_EP_DATA, "Total size is %d and payload_len is %d\n",
+               sendmsg->pkt_len, payload_length);
+
+        send_ddp_segment(ep, sendmsg, NULL, wqe, header_length + payload_length);
+        FI_DBG(&dpdk_prov, FI_LOG_EP_DATA, "<ep=%u> RDMA WRITE transmit bytes %zu through %zu\n",
+               ep->udp_port, wqe->bytes_sent, wqe->bytes_sent + payload_length);
+
+        wqe->bytes_sent += payload_length;
+    }
+
+    if (wqe->bytes_sent == wqe->total_length) {
+        wqe->state = SEND_XFER_WAIT;
+    }
+} /* do_rdmap_write */
+
+void do_rdmap_read_request(struct dpdk_ep *ep, struct dpdk_xfer_entry *wqe) {
+    struct rdmap_readreq_packet *new_rdmap;
+    struct rte_mbuf             *sendmsg;
+    unsigned int                 packet_length, header_length;
+
+    if (wqe->state != SEND_XFER_TRANSFER) {
+        return;
+    }
+
+    if (ep->ord_active >= dpdk_max_ord) {
+        /* Cannot issue more than ord_max simultaneous RDMA READ
+         * Requests. */
+        return;
+    } else if (wqe->remote_ep->send_next_psn == wqe->remote_ep->send_max_psn ||
+               serial_greater_32(wqe->remote_ep->send_next_psn, wqe->remote_ep->send_max_psn))
+    {
+        /* We have reached the maximum number of credits we are allowed
+         * to send. */
+        return;
+    }
+    ep->ord_active++;
+
+    sendmsg = rte_pktmbuf_alloc(ep->tx_hdr_mempool);
+    if (!sendmsg) {
+        // TODO: Should we create an "error" state?
+        wqe->state = SEND_XFER_COMPLETE;
+        FI_DBG(&dpdk_prov, FI_LOG_EP_DATA, "Failed to allocate mbuf from pool %s\n",
+               ep->tx_hdr_mempool->name);
+        return;
+    }
+
+    // Header len. Add now the LEN of the packet. Now, because from now on, all the functions
+    // will be potentially executed more than once in case of retransmission
+    header_length = RTE_ETHER_HDR_LEN + IP_HDR_LEN + UDP_HDR_LEN + TRP_HDR_LEN;
+    sendmsg->data_len += header_length;
+    sendmsg->pkt_len += header_length;
+
+    // This is a header only, as it is a read request
+    new_rdmap = rte_pktmbuf_mtod_offset(sendmsg, struct rdmap_readreq_packet *, RDMAP_HDR_OFFSET);
+    packet_length = sizeof(*new_rdmap);
+    sendmsg->data_len += packet_length;
+    sendmsg->pkt_len += packet_length;
+
+    if (!new_rdmap) {
+        // TODO: Should we create an "error" state?
+        wqe->state = SEND_XFER_COMPLETE;
+        FI_DBG(&dpdk_prov, FI_LOG_EP_DATA, "Failed to append RDMAP header to empty mbuf %s\n",
+               ep->tx_hdr_mempool->name);
+        return;
+    }
+
+    new_rdmap->untagged.head.ddp_flags  = DDP_V1_UNTAGGED_LAST_DF;
+    new_rdmap->untagged.head.rdmap_info = rdmap_opcode_rdma_read_request | RDMAP_V1;
+    new_rdmap->untagged.head.sink_stag  = rte_cpu_to_be_32(wqe->local_stag);
+    new_rdmap->untagged.qn              = rte_cpu_to_be_32(1);
+    new_rdmap->untagged.msn             = rte_cpu_to_be_32(wqe->msn);
+    new_rdmap->untagged.mo              = rte_cpu_to_be_32(0);
+    new_rdmap->sink_offset              = rte_cpu_to_be_64((uintptr_t)wqe->iov[0].iov_base);
+    new_rdmap->read_msg_size            = rte_cpu_to_be_32(wqe->iov[0].iov_len);
+    // TODO: We are currently only supporting a SINGLE IO for the write operation.
+    // In the short-term, this should be checked earlier. In the long term, we should
+    // support multiple IOs
+    new_rdmap->source_stag   = rte_cpu_to_be_64(wqe->rma_iov[0].key);
+    new_rdmap->source_offset = rte_cpu_to_be_64(wqe->rma_iov[0].addr);
+
+    send_ddp_segment(ep, sendmsg, NULL, wqe, header_length + packet_length);
+    FI_DBG(&dpdk_prov, FI_LOG_EP_DATA, "<ep=%u> RDMA READ transmit msn=%u\n", ep->udp_port,
+           wqe->msn);
+
+    wqe->state = SEND_XFER_WAIT;
+} /* do_rdmap_read_request */
+
+int do_rdmap_read_response(struct dpdk_ep *ep, struct read_atomic_response_state *readresp) {
+    struct rdmap_tagged_packet *new_rdmap;
+    struct rte_mbuf            *sendmsg;
+    size_t                      dgram_length;
+    size_t                      payload_length, header_length;
+    int                         count = 0;
+
+    // Todo: see comment in ddp_place_tagged_data
+    uint16_t mtu = 1440; // MAX_RDMAP_PAYLOAD_SIZE;
+
+    while (readresp->read.msg_size > 0 &&
+           serial_less_32(readresp->sink_ep->send_next_psn, readresp->sink_ep->send_max_psn))
+    {
+        sendmsg = rte_pktmbuf_alloc(ep->tx_hdr_mempool);
+        if (!sendmsg) {
+            RTE_LOG(ERR, USER1, "Failed to allocate mbuf from pool %s\n", ep->tx_hdr_mempool->name);
+            return;
+        }
+
+        // Header len. Add now the LEN of the packet. Now, because from now on, all the functions
+        // will be potentially executed more than once in case of retransmission
+        // TODO: Dos this make sense? In case of re-transmission to re-traverse the whole stack?
+        header_length = RTE_ETHER_HDR_LEN + IP_HDR_LEN + UDP_HDR_LEN + TRP_HDR_LEN +
+                        sizeof(struct rdmap_tagged_packet);
+        sendmsg->data_len += header_length;
+        sendmsg->pkt_len += header_length;
+
+        // Fill the header
+        new_rdmap =
+            rte_pktmbuf_mtod_offset(sendmsg, struct rdmap_tagged_packet *, RDMAP_HDR_OFFSET);
+        new_rdmap->head.ddp_flags =
+            (readresp->read.msg_size <= mtu) ? DDP_V1_TAGGED_LAST_DF : DDP_V1_TAGGED_DF;
+        new_rdmap->head.rdmap_info = RDMAP_V1 | rdmap_opcode_rdma_read_response;
+        new_rdmap->head.sink_stag  = readresp->sink_stag;
+        new_rdmap->offset          = rte_cpu_to_be_64(readresp->read.sink_offset);
+
+        // Compute the payload
+        payload_length = RTE_MIN(mtu, readresp->read.msg_size);
+        if (payload_length > 0) {
+            // memcpy(PAYLOAD_OF(new_rdmap), readresp->vaddr, payload_length);
+            struct iovec iov = {
+                .iov_base = readresp->vaddr,
+                .iov_len  = payload_length,
+            };
+            // This is zero-copy send. But what about small sizes?
+            // We could enable a mechanism that if total_size is <threshold, we copy the data
+            // Attach the header buffer to the mbuf(s) that describe the payload
+            put_iov_in_chain(ep->tx_ddp_mempool, sendmsg, payload_length, &iov, 1, 0);
+        }
+
+        send_ddp_segment(ep, sendmsg, readresp, NULL, header_length + payload_length);
+        readresp->vaddr += payload_length;
+        readresp->read.msg_size -= payload_length;
+        readresp->read.sink_offset += payload_length;
+        count++;
+    }
+
+    if (readresp->read.msg_size == 0) {
+        /* Signal that this is done */
+        readresp->active = false;
+        ep->readresp_head_msn++;
+    }
+
+    return count;
+} /* respond_rdma_read */
 
 void do_rdmap_terminate(struct dpdk_ep *ep, struct packet_context *orig, enum rdmap_errno errcode) {
 

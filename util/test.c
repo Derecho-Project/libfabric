@@ -61,6 +61,20 @@ struct lf_mr {
 struct lf_ctxt g_ctxt;
 struct lf_mr   g_mr;
 
+/** API mode */
+enum mode {
+    send_mode,
+    read_mode,
+    write_mode,
+};
+
+/** Descriptor of the remote memory region */
+struct remote_mr_desc {
+    char    *addr;
+    uint64_t key;
+    size_t   len;
+} __attribute__((packed));
+
 static void *alloc_mem(size_t memsz, bool huge) {
     void *addr;
     int   flags;
@@ -290,10 +304,12 @@ int register_memory_region() {
         return -1;
     }
 
+    printf("Registered memory region at address %p\n", g_mr.buffer);
+
     return 0;
 }
 
-void do_server() {
+void do_server(enum mode mode) {
     int ret;
 
     // Create passive EP (=> similar to server socket)
@@ -378,57 +394,135 @@ void do_server() {
     fi_freeinfo(entry.info);
     printf("Server connected!\n");
 
-    // Server loop
     struct iovec  msg_iov;
     struct fi_msg msg;
     msg_iov.iov_base = g_mr.buffer;
     msg_iov.iov_len  = g_mr.size;
 
-    while (1) {
-        bzero((void *)g_mr.buffer, g_mr.size);
+    // Now the connection is open, I have to send to the client the details of my local MR in case
+    // of one-sided operations
+    if (mode != send_mode) {
+
+        // Give the client some time to post the receive request
+        sleep(1);
+
+        // Fill the buffer with the info about the local MR
+        msg_iov.iov_len = sizeof(struct remote_mr_desc);
+        msg.iov_count   = 1;
+
+        struct remote_mr_desc *remote_mr = (struct remote_mr_desc *)g_mr.buffer;
+        remote_mr->addr                  = (uint64_t)g_mr.buffer;
+        remote_mr->key                   = fi_mr_key(g_mr.mr);
+        remote_mr->len                   = g_mr.size;
+
+        // Post a send request
         msg.msg_iov = &msg_iov;
-
-        void *desc    = fi_mr_desc(g_mr.mr);
-        msg.desc      = &desc;
-        msg.iov_count = 1;
-        msg.addr      = 0;
-        msg.context   = NULL;
-
-        // Post a receive request
-        ret = fi_recvmsg(ep, &msg, 0);
-        if (ret == -FI_EAGAIN) {
-            usleep(100);
-            continue;
-        } else if (ret) {
-            printf("fi_recvmsg() failed: %s\n", fi_strerror(-ret));
+        ret         = fi_sendmsg(ep, &msg, FI_COMPLETION);
+        if (ret) {
+            printf("fi_sendmsg() failed: %s\n", fi_strerror(-ret));
             exit(2);
         }
 
-        // Get the associated completion
-        struct fi_cq_data_entry comp;
-        fi_addr_t               src_addr;
+        // Get completion
+        struct fi_cq_msg_entry comp;
+        fi_addr_t              src_addr;
         do {
-            ret = fi_cq_readfrom(g_ctxt.rx_cq, &comp, 1, &src_addr);
+            ret = fi_cq_readfrom(g_ctxt.tx_cq, &comp, 1, &src_addr);
             if (ret < 0 && ret != -FI_EAGAIN) {
                 printf("CQ read failed: %s", fi_strerror(-ret));
                 break;
             }
         } while (ret == -FI_EAGAIN);
 
-        printf("Received a new message [size = %lu][imm_data = %lu]: ", comp.len, comp.data);
+        printf("Sent the local MR info to the client:\n");
+        printf("  addr = %p\n", remote_mr->addr);
+        printf("  key  = %lu\n", remote_mr->key);
+        printf("  len  = %lu\n\n", remote_mr->len);
 
-        // Integrity check
-        uint8_t content_ok = 1;
-        for (int i = 0; i < comp.len; i++) {
-            char c = ((char *)g_mr.buffer)[i];
-            if (c != 'a') {
-                content_ok = 0;
-                printf("[ERROR] Wrong byte at index %d\n", i);
-                break;
-            }
+        // Restore the original len
+        msg_iov.iov_len = g_mr.size;
+
+        // In case of read, set the MR to a known content
+        if (mode == read_mode) {
+            memset(g_mr.buffer, 'd', g_mr.size);
+        } else {
+            // In case of write, set the MR to 0
+            memset(g_mr.buffer, 0, g_mr.size);
         }
-        if (content_ok) {
-            printf("Content OK\n");
+    }
+
+    // Server loop
+    while (1) {
+        if (mode == send_mode) {
+            printf("Insert a message size: ");
+            bzero((void *)g_mr.buffer, g_mr.size);
+            msg.msg_iov = &msg_iov;
+
+            void *desc    = fi_mr_desc(g_mr.mr);
+            msg.desc      = &desc;
+            msg.iov_count = 1;
+            msg.addr      = 0;
+            msg.context   = NULL;
+
+            // Post a receive request
+            ret = fi_recvmsg(ep, &msg, 0);
+            if (ret == -FI_EAGAIN) {
+                usleep(100);
+                continue;
+            } else if (ret) {
+                printf("fi_recvmsg() failed: %s\n", fi_strerror(-ret));
+                exit(2);
+            }
+
+            // Get the associated completion
+            struct fi_cq_data_entry comp;
+            fi_addr_t               src_addr;
+            do {
+                ret = fi_cq_readfrom(g_ctxt.rx_cq, &comp, 1, &src_addr);
+                if (ret < 0 && ret != -FI_EAGAIN) {
+                    printf("CQ read failed: %s", fi_strerror(-ret));
+                    break;
+                }
+            } while (ret == -FI_EAGAIN);
+
+            printf("Received a new message [size = %lu][imm_data = %lu]: ", comp.len, comp.data);
+
+            // Integrity check
+            uint8_t content_ok = 1;
+            for (int i = 0; i < comp.len; i++) {
+                char c = ((char *)g_mr.buffer)[i];
+                if (c != 'a') {
+                    content_ok = 0;
+                    printf("[ERROR] Wrong byte at index %d\n", i);
+                    break;
+                }
+            }
+            if (content_ok) {
+                printf("Content OK\n");
+            }
+        } else if (mode == write_mode) {
+
+            // This is in case of no immediate data
+            sleep(2);
+            if (((char *)g_mr.buffer)[0] != 0) {
+                char c = ((char *)g_mr.buffer)[0];
+                printf("The value of the MR changed (%c)!\n", c);
+                uint64_t size = 0;
+                while ((int)c != 0) {
+                    size++;
+                    c = ((char *)g_mr.buffer)[size];
+                    printf("%c", c);
+                }
+                printf("\nReceived a new message [size = %lu]\n", size);
+                fflush(stdout);
+                bzero((void *)g_mr.buffer, g_mr.size);
+            }
+
+            // In case of immediate data, I can just wait for a completion notification
+
+        } else {
+            // The server here has nothing to do!
+            sleep(10);
         }
     }
 
@@ -439,7 +533,7 @@ void do_server() {
     return;
 }
 
-void do_client(const char *server_ip_and_port) {
+void do_client(enum mode mode, const char *server_ip_and_port) {
     int ret;
 
     // Active endpoint and associated event queue
@@ -484,21 +578,67 @@ void do_client(const char *server_ip_and_port) {
         return;
     }
     printf("Client connected!\n");
-    // fflush(stdin);
-    // sleep(10);
 
-    // Now the connection is open, I can send
-    struct iovec  msg_iov;
-    struct fi_msg msg;
-
+    // Now the connection is open. We immediately wait a message from the server (two-sided)
+    // to obtain the remote key and address in case of one-sided operations
+    // Post a receive request
+    struct iovec msg_iov;
     msg_iov.iov_base = g_mr.buffer;
-    void *desc       = fi_mr_desc(g_mr.mr);
-    msg.desc         = &desc;
-    msg.iov_count    = 1;
-    msg.addr         = 0;
-    msg.context      = NULL;
-    msg.data         = 0;
-    msg.msg_iov      = &msg_iov;
+    struct remote_mr_desc remote_mr;
+
+    if (mode != send_mode) {
+        struct fi_msg msg;
+        msg_iov.iov_base = g_mr.buffer;
+        msg_iov.iov_len  = g_mr.size;
+        msg.iov_count    = 1;
+
+        void *desc  = fi_mr_desc(g_mr.mr);
+        msg.desc    = &desc;
+        msg.addr    = 0;
+        msg.context = NULL;
+
+        printf("Post receive request..\n");
+        // Post a receive request
+        msg.msg_iov = &msg_iov;
+        ret         = fi_recvmsg(ep, &msg, 0);
+        while (ret == -FI_EAGAIN) {
+            ret = fi_recvmsg(ep, &msg, 0);
+            usleep(100);
+            continue;
+        }
+        if (ret) {
+            printf("fi_recvmsg() failed: %s\n", fi_strerror(-ret));
+            exit(2);
+        }
+
+        // Get the associated completion
+        struct fi_cq_data_entry comp;
+        fi_addr_t               src_addr;
+        do {
+            ret = fi_cq_readfrom(g_ctxt.rx_cq, &comp, 1, &src_addr);
+            if (ret < 0 && ret != -FI_EAGAIN) {
+                printf("CQ read failed: %s", fi_strerror(-ret));
+                break;
+            }
+        } while (ret == -FI_EAGAIN);
+
+        if (comp.len != sizeof(struct remote_mr_desc)) {
+            printf("Received a message of size %lu, expected %lu\n", comp.len,
+                   sizeof(struct remote_mr_desc));
+            exit(2);
+        }
+        // Cast the result to the struct representing the memory region
+        memcpy(&remote_mr, g_mr.buffer, sizeof(struct remote_mr_desc));
+    }
+
+    // Now proceed with the actual test
+    // Now the connection is open, I can send
+    if (mode != send_mode) {
+        printf("Received the remote MR info from the server:\n");
+        printf("  addr = %p\n", remote_mr.addr);
+        printf("  key  = %lu\n", remote_mr.key);
+        printf("  len  = %lu\n\n", remote_mr.len);
+    }
 
     // Send message
     char     input[32];
@@ -517,36 +657,148 @@ void do_client(const char *server_ip_and_port) {
             continue;
         }
 
-        // Fill the buffer with random content
-        msg.msg_iov = &msg_iov;
-        memset(g_mr.buffer, 'a', msg_iov.iov_len);
-        msg.data = counter++; // To enable the IMMEDIATE, use the FI_REMOTE_CQ_DATA flag
+        // Send message
+        if (mode == send_mode) {
+            struct fi_msg msg;
+            void         *desc = fi_mr_desc(g_mr.mr);
+            msg.desc           = &desc;
+            msg.iov_count      = 1;
+            msg.addr           = 0;
+            msg.context        = NULL;
+            msg.data           = 0;
+            msg.msg_iov        = &msg_iov;
 
-        // Post a send request
-        ret = fi_sendmsg(ep, &msg, FI_COMPLETION | FI_REMOTE_CQ_DATA);
-        if (ret) {
-            printf("fi_sendmsg() failed: %s\n", fi_strerror(-ret));
-            printf("Insert a message size: ");
-            continue;
-        }
+            // Fill the buffer with random content
+            msg.msg_iov = &msg_iov;
+            memset(g_mr.buffer, 'a', msg_iov.iov_len);
+            msg.data = counter++; // To enable the IMMEDIATE, use the FI_REMOTE_CQ_DATA flag
 
-        // Get send completion.
-        // TODO-1: Check what exactly we are receiving!
-        // TODO-2: Are we sure we should wait until the ACK? This is the way uRDMA implemented this,
-        // but not sure this is the same semantic of libfabric. Check the Libfabric spec.
-        struct fi_cq_msg_entry comp;
-        fi_addr_t              src_addr;
-        do {
-            ret = fi_cq_readfrom(g_ctxt.tx_cq, &comp, 1, &src_addr);
-            if (ret < 0 && ret != -FI_EAGAIN) {
-                printf("CQ read failed: %s", fi_strerror(-ret));
+            // Post a send request
+            ret = fi_sendmsg(ep, &msg, FI_COMPLETION | FI_REMOTE_CQ_DATA);
+            if (ret) {
+                printf("fi_sendmsg() failed: %s\n", fi_strerror(-ret));
+                printf("Insert a message size: ");
+                continue;
+            }
+
+            // Get send completion.
+            // TODO-1: Check what exactly we are receiving!
+            // TODO-2: Are we sure we should wait until the ACK? This is the way uRDMA
+            // implemented this, but not sure this is the same semantic of libfabric. Check the
+            // Libfabric spec.
+            struct fi_cq_msg_entry comp;
+            fi_addr_t              src_addr;
+            do {
+                ret = fi_cq_readfrom(g_ctxt.tx_cq, &comp, 1, &src_addr);
+                if (ret < 0 && ret != -FI_EAGAIN) {
+                    printf("CQ read failed: %s", fi_strerror(-ret));
+                    break;
+                }
+            } while (ret == -FI_EAGAIN);
+            // TODO: Actually, we should check the completion state to know if the operation
+            // was in fact successful or there was some error. Probably there is a LF-specific
+            // way to do that
+            printf("Message successfully sent!\n");
+
+        } else if (mode == write_mode) {
+
+            struct fi_msg_rma msg;
+
+            // Fill a descriptor for the remote memory to be written
+            struct fi_rma_iov rma_iov = {
+                .addr = remote_mr.addr,
+                .key  = remote_mr.key,
+                .len  = msg_iov.iov_len,
+            };
+            msg.rma_iov       = &rma_iov;
+            msg.rma_iov_count = 1;
+
+            // Fill the local buffer with random content
+            msg.msg_iov   = &msg_iov;
+            msg.iov_count = 1;
+            memset(g_mr.buffer, 'a', msg_iov.iov_len);
+            msg.data = counter++; // To enable the IMMEDIATE, use the FI_REMOTE_CQ_DATA flag
+            msg.desc = fi_mr_desc(g_mr.mr);
+
+            // Post a write request
+            ret = fi_writemsg(ep, &msg, FI_COMPLETION);
+            if (ret) {
+                printf("fi_writemsg() failed: %s\n", fi_strerror(-ret));
                 break;
             }
-        } while (ret == -FI_EAGAIN);
-        // TODO: Actually, we should check the completion state to know if the operation
-        // was in fact successful or there was some error. Probably there is a LF-specific
-        // way to do that
-        printf("Message successfully sent!\n");
+
+            // Get write completion.
+            // TODO-1: Check what exactly we are receiving!
+            // TODO-2: Are we sure we should wait until the ACK? This is the way uRDMA
+            // implemented this, but not sure this is the same semantic of libfabric. Check the
+            // Libfabric spec.
+            struct fi_cq_msg_entry comp;
+            fi_addr_t              src_addr;
+            do {
+                ret = fi_cq_readfrom(g_ctxt.tx_cq, &comp, 1, &src_addr);
+                if (ret < 0 && ret != -FI_EAGAIN) {
+                    printf("CQ read failed: %s", fi_strerror(-ret));
+                    break;
+                }
+            } while (ret == -FI_EAGAIN);
+            // TODO: Actually, we should check the completion state to know if the operation
+            // was in fact successful or there was some error. Probably there is a LF-specific
+            // way to do that
+            printf("Message successfully written!\n");
+
+        } else { // Read
+            struct fi_msg_rma msg;
+
+            // Fill a descriptor for the remote memory to be written
+            struct fi_rma_iov rma_iov = {
+                .addr = remote_mr.addr,
+                .key  = remote_mr.key,
+                .len  = msg_iov.iov_len,
+            };
+            msg.rma_iov       = &rma_iov;
+            msg.rma_iov_count = 1;
+
+            // Associate the local memory region info
+            msg.msg_iov   = &msg_iov;
+            msg.iov_count = 1;
+            msg.desc      = fi_mr_desc(g_mr.mr);
+
+            // Put zeros in the local buffer
+            memset(g_mr.buffer, 0, msg_iov.iov_len);
+
+            // Post a read request
+            ret = fi_readmsg(ep, &msg, FI_COMPLETION);
+            if (ret) {
+                printf("fi_readmsg() failed: %s\n", fi_strerror(-ret));
+                break;
+            }
+
+            // Get send completion.
+            struct fi_cq_msg_entry comp;
+            fi_addr_t              src_addr;
+            do {
+                ret = fi_cq_readfrom(g_ctxt.tx_cq, &comp, 1, &src_addr);
+                if (ret < 0 && ret != -FI_EAGAIN) {
+                    printf("CQ read failed: %s", fi_strerror(-ret));
+                    break;
+                }
+            } while (ret == -FI_EAGAIN);
+
+            sleep(3);
+
+            // Check that the content is correct
+            uint8_t content_ok = 1;
+            for (int i = 0; i < msg_iov.iov_len; i++) {
+                char c = ((char *)g_mr.buffer)[i];
+                if (c != 'd') {
+                    content_ok = 0;
+                    printf("[ERROR] Wrong byte at index %d\n", i);
+                    break;
+                }
+            }
+
+            printf("Message successfully read!\n");
+        }
 
         printf("Insert a message size: ");
     }
@@ -561,18 +813,31 @@ void do_client(const char *server_ip_and_port) {
 }
 
 #define CMD_ARG_HELP                                                                               \
-    "<info|client|server> <prov> <domain> "                                                        \
+    "<info|client|server> <prov> <domain> <send|read|write> "                                      \
     "[remote_ip:remote_cm_port, mandatory client option]"
 
 int main(int argc, char **argv) {
     int ret;
-    if (argc < 3) {
-        printf("Usage: %s" CMD_ARG_HELP "\n", argv[0]);
+    if (argc < 4) {
+        printf("Usage: %s " CMD_ARG_HELP "\n", argv[0]);
         return 1;
     }
 
-    if (strcmp(argv[1], "client") == 0 && argc < 4) {
-        printf("Usage: %s" CMD_ARG_HELP "\n", argv[0]);
+    if (strcmp(argv[1], "client") == 0 && argc < 5) {
+        printf("Usage: %s " CMD_ARG_HELP "\n", argv[0]);
+        return 1;
+    }
+
+    // Parse mode
+    enum mode m;
+    if (strcmp(argv[4], "send") == 0) {
+        m = send_mode;
+    } else if (strcmp(argv[4], "read") == 0) {
+        m = read_mode;
+    } else if (strcmp(argv[4], "write") == 0) {
+        m = write_mode;
+    } else {
+        printf("Usage: %s " CMD_ARG_HELP "\n", argv[0]);
         return 1;
     }
 
@@ -617,11 +882,11 @@ int main(int argc, char **argv) {
     if (strcmp(argv[1], "client") == 0) {
 
         printf("Starting Client... \n");
-        do_client(argv[4]);
+        do_client(m, argv[5]);
     } else if (strcmp(argv[1], "server") == 0) {
 
         printf("Starting Server...\n");
-        do_server();
+        do_server(m);
     } else {
         printf("Usage: %s <info|client|server>\n", argv[0]);
         exit(1);

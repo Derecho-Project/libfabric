@@ -4,15 +4,24 @@
  * IMPORTANT: The memory registered with this provider must be both:
  * 1) Page aligned, to a page size that in the future will be configurable, and currently is the
  * default system page size (sysconf(_SC_PAGESIZE))
- * 2) The length of the buffer to register must be a multiple of that page size
- *
- * TODO: [Lorenzo] Currently, there seems to be an issue with memory registration when using a
- * non-Mellanox driver. The rte_dev_dma_map succeeds, but when I send chunks of data >4096 (the
- * default page size) the driver actually sends garbage on the network, which means the memory is
- * not actually registered. We need to FIX that.
+ * 2) The length of the buffer to register must be a multiple of that page size.
+ * In Libfabric, the MRs are associated to the domain.
  */
 
-// ===== HELPER FUNCTIONS =====
+// ===== Related FUNCTIONS =====
+struct dpdk_mr *dpdk_mr_lookup(struct dpdk_mr_table *tbl, uint32_t rkey) {
+    struct dpdk_mr *candidate;
+
+    for (candidate = tbl->entries[rkey % tbl->capacity]; candidate != NULL;
+         candidate = candidate->next)
+    {
+        if (candidate->rkey == rkey) {
+            return candidate;
+        }
+    }
+
+    return NULL;
+} /* usiw_mr_lookup */
 
 // ===== fi_mr IMPLEMENTATION =====
 
@@ -45,10 +54,19 @@ static int dpdk_mr_reg(struct fid *fid, const void *buf, size_t len, uint64_t ac
         return -FI_EINVAL;
     }
 
-    /* Libfabric-specific section */
+    /* Check that the requested key does not exist already */
     struct dpdk_domain *dpdk_domain =
         container_of(fid, struct dpdk_domain, util_domain.domain_fid.fid);
 
+    struct dpdk_mr_table *mr_tbl  = &dpdk_domain->mr_tbl;
+    struct dpdk_mr       *prev_mr = dpdk_mr_lookup(mr_tbl, requested_key);
+    if (prev_mr != NULL) {
+        FI_WARN(&dpdk_prov, FI_LOG_MR, "%s():%i: A MR with the requested key already exists",
+                __func__, __LINE__);
+        return -FI_EINVAL;
+    }
+
+    /* Libfabric-specific section */
     struct dpdk_mr *dpdk_mr = calloc(1, sizeof(struct dpdk_mr));
     if (!dpdk_mr) {
         return -FI_ENOMEM;
@@ -115,7 +133,7 @@ static int dpdk_mr_reg(struct fid *fid, const void *buf, size_t len, uint64_t ac
     }
 
     // 5) Register pages for DMAs with the NIC associated with the domain
-    // TODO: understand if this violates the VFIO memory constraints
+    // TODO: Verify if with Intel NICs we need to do that with page granularity
     struct rte_eth_dev_info dev_info;
     rte_eth_dev_info_get(dpdk_domain->res->port_id, &dev_info);
     ret = rte_dev_dma_map(dev_info.device, data_buffer_orig, rte_mem_virt2iova(data_buffer_orig),
@@ -128,6 +146,18 @@ static int dpdk_mr_reg(struct fid *fid, const void *buf, size_t len, uint64_t ac
 
     // 6) Free the iova vector and return
     free(iovas);
+
+    // 7) Setup memory keys
+    dpdk_mr->rkey   = requested_key;
+    dpdk_mr->lkey   = requested_key;
+    dpdk_mr->access = access;
+
+    // 8) Add the MR to the MR table of the domain
+    uint32_t hash         = requested_key % mr_tbl->capacity;
+    dpdk_mr->next         = mr_tbl->entries[hash];
+    mr_tbl->entries[hash] = dpdk_mr;
+    mr_tbl->mr_count++;
+
     return FI_SUCCESS;
 
 exit_errno:

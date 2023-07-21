@@ -19,7 +19,7 @@
 // name.
 
 #define DPDK_DOMAIN_CAPS (FI_REMOTE_COMM)
-#define DPDK_EP_CAPS     (FI_MSG) // For the moment we only support MSG endpoints
+#define DPDK_EP_CAPS     (FI_MSG | FI_RMA) // For the moment we only support MSG endpoints
 #define DPDK_TX_CAPS     (DPDK_EP_CAPS | OFI_TX_RMA_CAPS | OFI_RX_RMA_CAPS | FI_ATOMICS)
 #define DPDK_RX_CAPS     (DPDK_EP_CAPS | OFI_RX_MSG_CAPS | OFI_RX_RMA_CAPS | FI_ATOMICS)
 
@@ -73,18 +73,18 @@ static struct fi_domain_attr dpdk_domain_attr = {
     .control_progress = FI_PROGRESS_AUTO,
     .data_progress    = FI_PROGRESS_AUTO,
     .resource_mgmt    = FI_RM_ENABLED,
-    .mr_mode          = FI_MR_LOCAL,
-    .mr_key_size      = sizeof(uint64_t),
-    .av_type          = FI_AV_MAP, // Changed this. Not sure, though.
-    .cq_data_size     = sizeof(uint64_t),
-    .cq_cnt           = 256,
-    .ep_cnt           = 8192,
-    .tx_ctx_cnt       = 8192,
-    .rx_ctx_cnt       = 8192,
-    .max_ep_srx_ctx   = 8192,
-    .max_ep_tx_ctx    = 1,
-    .max_ep_rx_ctx    = 1,
-    .mr_iov_limit     = 1,
+    .mr_mode      = FI_MR_LOCAL, // Meaning that app must register memory regions before using them
+    .mr_key_size  = sizeof(uint64_t),
+    .av_type      = FI_AV_MAP,   // Changed this. Not sure, though.
+    .cq_data_size = sizeof(uint64_t),
+    .cq_cnt       = 256,
+    .ep_cnt       = 8192,
+    .tx_ctx_cnt   = 8192,
+    .rx_ctx_cnt   = 8192,
+    .max_ep_srx_ctx = 8192,
+    .max_ep_tx_ctx  = 1,
+    .max_ep_rx_ctx  = 1,
+    .mr_iov_limit   = 1,
 };
 
 static struct fi_fabric_attr dpdk_fabric_attr = {
@@ -111,7 +111,7 @@ size_t dpdk_default_rx_size       = 256; // TODO: What is this?
 size_t dpdk_max_inject            = 128; // TODO: What is this?
 size_t dpdk_default_tx_burst_size = 32;  // TODO: Why here? Should be a configurable parameter...
 size_t dpdk_default_rx_burst_size = 32;  // TODO: Why here? Should be a configurable parameter...
-// Max simultaneous RDMA READ and Atomic Requests
+// Max outstanding RDMA READ and Atomic Requests
 size_t dpdk_max_ord = 128; // TODO: Why here? Should be a configurable parameter...
 // Max simultaneous pending operations? Not sure...
 size_t dpdk_max_ird = 128; // TODO: Why here? Should be a configurable parameter...

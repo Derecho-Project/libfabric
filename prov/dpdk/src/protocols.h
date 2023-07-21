@@ -27,8 +27,7 @@ struct packet_context {
 #define MTU           1500
 #define INNER_HDR_LEN (IP_HDR_LEN + UDP_HDR_LEN + TRP_HDR_LEN + RDMAP_HDR_LEN)
 #define HDR_MBUF_EXTRA_SPACE                                                                       \
-    (sizeof(struct rdmap_terminate_packet) + sizeof(struct rdmap_terminate_payload) -              \
-     sizeof(struct rdmap_untagged_packet))
+    (sizeof(struct rdmap_readreq_packet) - sizeof(struct rdmap_untagged_packet))
 
 /* Offsets of headers in the hdr mbufs */
 #define ETHERNET_HDR_OFFSET 0
@@ -406,6 +405,9 @@ enum rdmap_errno {
 void memcpy_from_iov(char *restrict dest, size_t dest_size, const struct iovec *restrict src,
                      size_t iov_count, size_t offset);
 void do_rdmap_send(struct dpdk_ep *ep, struct dpdk_xfer_entry *entry);
+void do_rdmap_write(struct dpdk_ep *ep, struct dpdk_xfer_entry *entry);
+void do_rdmap_read_request(struct dpdk_ep *ep, struct dpdk_xfer_entry *entry);
+int  do_rdmap_read_response(struct dpdk_ep *ep, struct read_atomic_response_state *readresp);
 void do_rdmap_terminate(struct dpdk_ep *ep, struct packet_context *orig, enum rdmap_errno errcode);
 
 int setup_queue_tbl(struct rx_queue *rxq, uint32_t lcore, uint32_t queue, uint16_t port_mtu);

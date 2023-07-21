@@ -24,13 +24,11 @@ static ssize_t dpdk_cq_readfrom(struct fid_cq *cq_fid, void *buf, size_t count,
     // struct dpdk_ep *ep = cq->ep;
 
     // Array of WQEs that I read from the CQE.
-    // I am expected to return only those successfult?
+    // TODO: I am expected to return only those successfult?
     // See the libfabric spec for more details.
     struct fi_dpdk_wc *cqe[dpdk_default_rx_burst_size];
 
-    // rte_spinlock_lock(&ep->rq.lock);
     ret = rte_ring_dequeue_burst(cq->cqe_ring, (void **)cqe, count, NULL);
-    // rte_spinlock_unlock(&ep->rq.lock);
     if (ret == 0) {
         return -EAGAIN;
     }

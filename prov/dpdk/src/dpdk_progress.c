@@ -128,7 +128,7 @@ static int xfer_send_queue_lookup(struct dpdk_xfer_queue *q, uint16_t wr_opcode,
             }
             break;
         case xfer_write:
-            if (wr_key_data == lptr->rkey) {
+            if (wr_key_data == lptr->rma_iov[0].key) {
                 *wqe = lptr;
                 return 0;
             }
@@ -361,6 +361,7 @@ static void process_rdma_send(struct dpdk_ep *ep, struct packet_context *orig) {
         xfer_e->complete = true;
     }
 
+    // Immediate data
     xfer_e->imm_data = rdmap->head.immediate;
 
     /* Post completion, but only if there are no holes in the LLP packet
@@ -384,6 +385,90 @@ static void process_rdma_send(struct dpdk_ep *ep, struct packet_context *orig) {
         }
     }
 } /* process_send */
+
+static void process_rdma_read_request(struct dpdk_ep *ep, struct packet_context *orig) {
+    struct rdmap_readreq_packet       *rdmap = (struct rdmap_readreq_packet *)orig->rdmap;
+    struct read_atomic_response_state *readresp;
+    uint32_t                           rkey;
+    uint32_t                           msn;
+    struct dpdk_mr                    *mr;
+    struct dpdk_domain *domain = container_of(ep->util_ep.domain, struct dpdk_domain, util_domain);
+
+    msn = rte_be_to_cpu_32(rdmap->untagged.msn);
+    if (msn < orig->src_ep->expected_read_msn || msn >= ep->readresp_head_msn + dpdk_max_ird) {
+        DPDK_WARN(FI_LOG_EP_CTRL,
+                  "<ep=%u> RDMA READ failure: expected MSN in range [%u, %u] received %u\n",
+                  ep->udp_port, orig->src_ep->expected_read_msn,
+                  ep->readresp_head_msn + dpdk_max_ird, msn);
+        do_rdmap_terminate(ep, orig, ddp_error_untagged_invalid_msn);
+        return;
+    }
+    if (msn == orig->src_ep->expected_read_msn)
+        orig->src_ep->expected_read_msn++;
+
+    rkey = rte_be_to_cpu_32(rdmap->source_stag);
+
+    mr = dpdk_mr_lookup(&domain->mr_tbl, rkey);
+    if (!mr) {
+        DPDK_WARN(FI_LOG_EP_CTRL, "<ep=%u> RDMA READ failure: invalid rkey %x\n", ep->udp_port,
+                  rkey);
+        do_rdmap_terminate(ep, orig, rdmap_error_stag_invalid);
+        return;
+    }
+
+    uintptr_t vaddr       = (uintptr_t)rte_be_to_cpu_64(rdmap->source_offset);
+    uint32_t  rdma_length = rte_be_to_cpu_32(rdmap->read_msg_size);
+    if (vaddr < (uintptr_t)mr->buf || vaddr + rdma_length > (uintptr_t)mr->buf + mr->len) {
+        DPDK_WARN(FI_LOG_EP_CTRL,
+                  "<ep=%u> RDMA READ failure: source [%p, %p] outside of memory region [%p, %p]\n",
+                  ep->udp_port, vaddr, vaddr + rdma_length, (uintptr_t)mr->buf,
+                  (uintptr_t)mr->buf + mr->len);
+        do_rdmap_terminate(ep, orig, rdmap_error_base_or_bounds_violation);
+        return;
+    }
+
+    readresp = &ep->readresp_store[msn % dpdk_max_ird];
+    if (readresp->active) {
+        DPDK_WARN(FI_LOG_EP_CTRL, "<ep=%u> RDMA READ failure: duplicate MSN %u\n", ep->udp_port,
+                  msn);
+        do_rdmap_terminate(ep, orig, rdmap_error_remote_stream_catastrophic);
+        return;
+    }
+    readresp->active           = true;
+    readresp->type             = read_response;
+    readresp->vaddr            = (void *)vaddr;
+    readresp->sink_stag        = rdmap->untagged.head.sink_stag;
+    readresp->sink_ep          = orig->src_ep;
+    readresp->read.msg_size    = rdma_length;
+    readresp->read.sink_offset = rte_be_to_cpu_64(rdmap->sink_offset);
+} /* process_rdma_read_request */
+
+static void process_rdma_read_response(struct dpdk_ep *ep, struct packet_context *orig) {
+    struct rdmap_tagged_packet *rdmap;
+    struct dpdk_xfer_entry     *read_wqe;
+    int                         ret;
+
+    /* This ensures that at least one RDMA READ Request is active for this
+     * STag. We don't need to know exactly which one; this just ensures
+     * that we don't accept a random RDMA READ Response. */
+    rdmap = (struct rdmap_tagged_packet *)orig->rdmap;
+    ret   = xfer_send_queue_lookup(&ep->sq, xfer_read, rte_be_to_cpu_32(rdmap->head.sink_stag),
+                                   &read_wqe);
+
+    if (ret < 0 || !read_wqe || read_wqe->opcode != xfer_read) {
+        DPDK_DBG(FI_LOG_EP_CTRL, "<ep=%u> Unexpected RDMA READ response!\n", ep->udp_port);
+        do_rdmap_terminate(ep, orig, rdmap_error_opcode_unexpected);
+        return;
+    }
+
+    /* If this was the last segment of an RDMA READ Response message, insert
+     * its PSN into the heap. Next time we receive a burst of packets, we
+     * will retrieve this PSN from the heap if we have received all prior
+     * packets and complete the corresponding WQE in the correct order. */
+    if (DDP_GET_L(rdmap->head.ddp_flags)) {
+        binheap_insert(ep->remote_ep.recv_rresp_last_psn, orig->psn);
+    }
+} /* process_rdma_read_response */
 
 /* Transmits all packets currently in the transmit queue.  The queue will be
  * empty when this function returns. FIXME: It may be possible for this to never return
@@ -430,14 +515,14 @@ static void progress_send_xfer(struct dpdk_ep *ep, struct dpdk_xfer_entry *entry
     case xfer_send_with_imm:
         do_rdmap_send(ep, entry);
         break;
-        // TODO: Finish implementation for the fi_rma and fi_atomic
-        // case xfer_write:
-        // case xfer_write_with_imm:
-        //     do_rdmap_write((struct usiw_qp *)qp, wqe);
-        //     break;
-        // case xfer_read:
-        //     do_rdmap_read_request((struct usiw_qp *)qp, wqe);
-        //     break;
+    case xfer_write:
+    case xfer_write_with_imm:
+        do_rdmap_write(ep, entry);
+        break;
+    case xfer_read:
+        do_rdmap_read_request(ep, entry);
+        break;
+        // TODO: Finish implementation for the fi_atomic
         // case xfer_atomic:
         //     do_rdmap_atomic(qp, wqe);
         //     break;
@@ -458,7 +543,7 @@ static void process_terminate(struct dpdk_ep *ep, struct packet_context *orig) {
     errcode = rte_be_to_cpu_16(rdmap->error_code);
     if (!(rdmap->hdrct & rdmap_hdrct_d)) {
         DPDK_WARN(FI_LOG_EP_CTRL,
-                  "<ep=%u> Received TERMINATE with error code %#" PRIxFAST16 " and no DDP header\n",
+                  "<ep=%u> Received TERMINATE with error code %#x and no DDP header\n",
                   ep->udp_port, errcode);
         wqe = NULL;
         goto out;
@@ -538,11 +623,16 @@ static void do_process_ack(struct dpdk_ep *ep, struct dpdk_xfer_entry *wqe,
     // TODO: in the DDP_Length we included the RDMAP header.
     // But the need to subtract it here is not ideal, as maybe the user did include
     // a different header size. We should find a way to separate paylaod data from headers
-    wqe->bytes_acked += (pending->ddp_length - RDMAP_HDR_LEN);
-    assert(wqe->bytes_sent >= wqe->bytes_acked);
+    if (wqe->opcode == xfer_send || wqe->opcode == xfer_send_with_imm) {
+        wqe->bytes_acked += (pending->ddp_length - sizeof(struct rdmap_untagged_packet));
+        assert(wqe->bytes_sent >= wqe->bytes_acked);
+    } else {
+        // TODO: This is a stupid ack that I placed here before adding TLDK
+        wqe->bytes_acked += (pending->ddp_length + 2);
+    }
 
-    if ((wqe->opcode == xfer_send || wqe->opcode == xfer_write ||
-         wqe->opcode == xfer_send_with_imm) &&
+    if ((wqe->opcode == xfer_send || wqe->opcode == xfer_send_with_imm ||
+         wqe->opcode == xfer_write || wqe->opcode == xfer_write_with_imm) &&
         wqe->bytes_acked == wqe->total_length)
     {
         assert(wqe->state == SEND_XFER_WAIT);
@@ -637,6 +727,128 @@ static void sweep_unacked_packets(struct dpdk_ep *ep) {
         count++;
     }
 } /* sweep_unacked_packets */
+
+static void ddp_place_tagged_data(struct dpdk_ep *ep, struct packet_context *orig) {
+    struct rdmap_tagged_packet *rdmap;
+    struct dpdk_mr             *mr;
+    uintptr_t                   vaddr;
+    uint64_t                    rkey;
+    uint32_t                    rdma_length;
+    unsigned int                opcode;
+    int                         ret;
+
+    // Get the domain
+    struct dpdk_domain *dpdk_domain =
+        container_of(ep->util_ep.domain, struct dpdk_domain, util_domain);
+
+    rdmap = (struct rdmap_tagged_packet *)orig->rdmap;
+    rkey  = rte_be_to_cpu_32(rdmap->head.sink_stag);
+    mr    = dpdk_mr_lookup(&dpdk_domain->mr_tbl, rkey);
+    if (!mr) {
+        DPDK_WARN(FI_LOG_EP_CTRL, "<ep=%u> received DDP tagged message with invalid stag %u\n",
+                  ep->udp_port, rkey);
+        do_rdmap_terminate(ep, orig, ddp_error_tagged_stag_invalid);
+        return;
+    }
+
+    vaddr = (uintptr_t)rte_be_to_cpu_64(rdmap->offset);
+    // TODO: temporary fix, waiting for TLDK
+    rdma_length = orig->ddp_seg_length - sizeof(*rdmap) - TRP_HDR_LEN - UDP_HDR_LEN - IP_HDR_LEN -
+                  RTE_ETHER_HDR_LEN;
+
+    if (vaddr < (uintptr_t)mr->buf || vaddr + rdma_length > (uintptr_t)mr->buf + mr->len) {
+
+        DPDK_WARN(FI_LOG_EP_CTRL,
+                  "<ep=%u> received DDP tagged message with destination [%p, %p] outside of memory "
+                  "region [%p, %p]\n",
+                  ep->udp_port, vaddr, vaddr + rdma_length, mr->buf, mr->buf + mr->len);
+        do_rdmap_terminate(ep, orig, ddp_error_tagged_base_or_bounds_violation);
+        return;
+    }
+
+    // In receive, we need to copy
+    // TODO: This implementation (from uRDMA) assumes that RDMAP packets fit within the Ethernet MTU
+    // so there are never IP fragments to copy. If we would like to support larger packets, we would
+    // here need to copy the IP fragments into the single contiguous buffer. As a side effect, we
+    // cannot send more than 1440 bytes in a single READ (or WRITE) RDMAP packet.
+    rte_memcpy((void *)vaddr, PAYLOAD_OF(rdmap), rdma_length);
+
+    DPDK_INFO(FI_LOG_EP_CTRL, "<ep=%u> Wrote %u bytes to tagged buffer with stag=%u at %p\n",
+              ep->udp_port, rdma_length, rkey, vaddr);
+
+    opcode = RDMAP_GET_OPCODE(orig->rdmap->rdmap_info);
+    switch (opcode) {
+    case rdmap_opcode_rdma_write:
+        break;
+    case rdmap_opcode_rdma_read_response:
+        process_rdma_read_response(ep, orig);
+        break;
+    case rdmap_opcode_rdma_write_with_imm:
+        // If inline data, we should post a CQE to notify the receiver of the immediate data.
+        struct fi_dpdk_wc *cqe;
+        struct dpdk_cq    *cq = container_of(ep->util_ep.rx_cq, struct dpdk_cq, util_cq);
+        ret                   = get_next_cqe(cq, &cqe);
+        if (ret < 0) {
+            DPDK_INFO(FI_LOG_EP_CTRL, "Failed to post recv CQE: %s\n", strerror(-ret));
+            return ret;
+        }
+        cqe->wr_context = NULL; // This is not associated to any read WQE, so no user ctx
+        cqe->status     = FI_WC_SUCCESS;
+        cqe->opcode     = FI_WC_RDMA_WRITE_WITH_IMM;
+        cqe->byte_len   = 0;
+        cqe->ep_id      = ep->udp_port;
+        cqe->imm_data   = orig->rdmap->immediate;
+        cqe->wc_flags   = FI_WC_WITH_IMM;
+
+        /* Actually post the CQE to the CQ */
+        rte_ring_enqueue(cq->cqe_ring, cqe);
+
+        break;
+    default:
+        DPDK_WARN(FI_LOG_EP_CTRL, "<ep=%u> received DDP tagged message with invalid opcode %x\n",
+                  ep->udp_port, opcode);
+        do_rdmap_terminate(ep, orig, rdmap_error_opcode_unexpected);
+    }
+} /* ddp_place_tagged_data */
+
+static int respond_next_read_atomic(struct dpdk_ep *ep) {
+    struct read_atomic_response_state *readresp;
+    unsigned long                      msn, end;
+    int                                count;
+
+    count = 0;
+    for (msn = ep->readresp_head_msn, end = msn + dpdk_max_ird; msn != end; ++msn) {
+        readresp = &ep->readresp_store[msn % dpdk_max_ird];
+        if (!readresp->active) {
+            break;
+        }
+
+        switch (readresp->type) {
+        // TODO: Support atomic operations
+        // case atomic_response:
+        //     count += respond_atomic(ep, readresp);
+        //     break;
+        case read_response:
+            count += do_rdmap_read_response(ep, readresp);
+            break;
+        }
+    }
+    return count;
+} /* respond_next_read_atomic */
+
+static struct dpdk_xfer_entry *find_first_rdma_read_atomic(struct dpdk_ep *ep) {
+    struct dpdk_xfer_entry *lptr, *next;
+
+    // Libfabric
+    struct dlist_entry *tmp;
+    dlist_foreach_container_safe(&ep->sq.active_head, struct dpdk_xfer_entry, lptr, entry, next) {
+        if (lptr->opcode == xfer_read || lptr->opcode == xfer_atomic) {
+            return lptr;
+        }
+    }
+
+    return NULL;
+} /* find_first_rdma_read */
 
 // This function is to be enabled only if NIC filtering is active
 static int process_receive_queue(struct dpdk_ep *ep, void *prefetch_addr) {
@@ -890,36 +1102,36 @@ static void process_rx_packet(struct dpdk_domain *domain, struct rte_mbuf *mbuf)
         goto free_and_exit;
     }
 
-    // TODO: Is "tagged data" supported? I guess not!! => See capabilities
-    // if (DDP_GET_T(ctx.rdmap->ddp_flags)) {
-    // return ddp_place_tagged_data(dst_ep, &ctx);
-    // } else {
-    switch (RDMAP_GET_OPCODE(ctx.rdmap->rdmap_info)) {
-    case rdmap_opcode_send_with_imm:
-    case rdmap_opcode_send:
-    case rdmap_opcode_send_inv:
-    case rdmap_opcode_send_se:
-    case rdmap_opcode_send_se_inv:
-        process_rdma_send(dst_ep, &ctx);
-        break;
-    // TODO: The following will need to be implemented to support fi_rma
-    // case rdmap_opcode_rdma_read_request:
-    //     process_rdma_read_request(dst_ep, &ctx);
-    //     break;
-    case rdmap_opcode_terminate:
-        process_terminate(dst_ep, &ctx);
-        break;
-    // case rdmap_opcode_atomic_request:
-    //     process_atomic_request(dst_ep, &ctx);
-    //     break;
-    // case rdmap_opcode_atomic_response:
-    //     process_atomic_response(dst_ep, &ctx);
-    //     break;
-    default:
-        do_rdmap_terminate(dst_ep, &ctx, rdmap_error_opcode_unexpected);
-        break;
+    // "Tagged data" is WRITE
+    if (DDP_GET_T(ctx.rdmap->ddp_flags)) {
+        return ddp_place_tagged_data(dst_ep, &ctx);
+    } else {
+        switch (RDMAP_GET_OPCODE(ctx.rdmap->rdmap_info)) {
+        case rdmap_opcode_send_with_imm:
+        case rdmap_opcode_send:
+        case rdmap_opcode_send_inv:
+        case rdmap_opcode_send_se:
+        case rdmap_opcode_send_se_inv:
+            process_rdma_send(dst_ep, &ctx);
+            break;
+        case rdmap_opcode_rdma_read_request:
+            process_rdma_read_request(dst_ep, &ctx);
+            break;
+        case rdmap_opcode_terminate:
+            process_terminate(dst_ep, &ctx);
+            break;
+        // TODO: Support atomic operations
+        // case rdmap_opcode_atomic_request:
+        //     process_atomic_request(dst_ep, &ctx);
+        //     break;
+        // case rdmap_opcode_atomic_response:
+        //     process_atomic_response(dst_ep, &ctx);
+        //     break;
+        default:
+            do_rdmap_terminate(dst_ep, &ctx, rdmap_error_opcode_unexpected);
+            break;
+        }
     }
-
 free_and_exit:
     rte_pktmbuf_free(mbuf);
     return;
@@ -943,32 +1155,32 @@ static void do_receive(struct dpdk_domain *domain) {
         rte_prefetch0(rte_pktmbuf_mtod(pkts_burst[j], void *));
     }
 
-        /* Process already prefetched packets */
-        // TODO: Why we replicate the code? This is code copied from DPDK examples in case of
-        // fragmentation/reassembly But how does it work exactly?
-        for (j = 0; j < (rx_count - PREFETCH_OFFSET); j++) {
-            rte_prefetch0(rte_pktmbuf_mtod(pkts_burst[j + PREFETCH_OFFSET], void *));
-            // TODO: We do not support VLAN or VXLAN yet. See dpdk-playground for an example
-            struct rte_ether_hdr *eth_hdr = rte_pktmbuf_mtod(pkts_burst[j], struct rte_ether_hdr *);
-            uint16_t              ether_type = rte_be_to_cpu_16(eth_hdr->ether_type);
-            switch (rte_be_to_cpu_16(eth_hdr->ether_type)) {
-            case RTE_ETHER_TYPE_ARP:
-                DPDK_INFO(FI_LOG_EP_DATA, "Received ARP packet\n");
-                arp_receive(domain, pkts_burst[j]);
-                rte_pktmbuf_free(pkts_burst[j]);
-                break;
-            case RTE_ETHER_TYPE_IPV4:
-                reassembled = reassemble(pkts_burst[j], &domain->lcore_queue_conf, 0, cur_tsc);
-                if (reassembled) {
-                    process_rx_packet(domain, reassembled);
-                }
-                break;
-            case RTE_ETHER_TYPE_IPV6:
-                // [Weijia]: IPv6 needs more care.
-                DPDK_INFO(FI_LOG_EP_DATA, "IPv6 is not supported yet\n");
-                rte_pktmbuf_free(pkts_burst[j]);
-                break;
-            default:
+    /* Process already prefetched packets */
+    // TODO: Why we replicate the code? This is code copied from DPDK examples in case of
+    // fragmentation/reassembly But how does it work exactly?
+    for (j = 0; j < (rx_count - PREFETCH_OFFSET); j++) {
+        rte_prefetch0(rte_pktmbuf_mtod(pkts_burst[j + PREFETCH_OFFSET], void *));
+        // TODO: We do not support VLAN or VXLAN yet. See dpdk-playground for an example
+        struct rte_ether_hdr *eth_hdr    = rte_pktmbuf_mtod(pkts_burst[j], struct rte_ether_hdr *);
+        uint16_t              ether_type = rte_be_to_cpu_16(eth_hdr->ether_type);
+        switch (rte_be_to_cpu_16(eth_hdr->ether_type)) {
+        case RTE_ETHER_TYPE_ARP:
+            DPDK_INFO(FI_LOG_EP_DATA, "Received ARP packet\n");
+            arp_receive(domain, pkts_burst[j]);
+            rte_pktmbuf_free(pkts_burst[j]);
+            break;
+        case RTE_ETHER_TYPE_IPV4:
+            reassembled = reassemble(pkts_burst[j], &domain->lcore_queue_conf, 0, cur_tsc);
+            if (reassembled) {
+                process_rx_packet(domain, reassembled);
+            }
+            break;
+        case RTE_ETHER_TYPE_IPV6:
+            // [Weijia]: IPv6 needs more care.
+            DPDK_INFO(FI_LOG_EP_DATA, "IPv6 is not supported yet\n");
+            rte_pktmbuf_free(pkts_burst[j]);
+            break;
+        default:
             DPDK_INFO(FI_LOG_EP_DATA, "Unknown Ether type %#" PRIx16 "\n",
                       rte_be_to_cpu_16(eth_hdr->ether_type));
             rte_pktmbuf_free(pkts_burst[j]);
@@ -1013,8 +1225,8 @@ static void do_receive(struct dpdk_domain *domain) {
 static void progress_ep(struct dpdk_ep *ep) {
     struct dlist_entry     *cur, *tmp;
     struct dpdk_xfer_entry *send_xfer, *next;
-    // uint32_t                psn;
-    int scount, ret;
+    uint32_t                psn;
+    int                     scount, ret;
 
     /* The following is a per-EP receive we can enable only if we support NIC filtering */
     // TODO: Consider checking if the NIC supports NIC filtering, and enabling this
@@ -1026,28 +1238,27 @@ static void progress_ep(struct dpdk_ep *ep) {
     sweep_unacked_packets(ep);
 
     /* Process READ OPCODE Response last segments. */
-    // TODO: Enable when implementing fi_rma
-    // while (!binheap_empty(ep->remote_ep.recv_rresp_last_psn)) {
-    //     binheap_peek(ep->remote_ep.recv_rresp_last_psn, &psn);
-    //     if (psn < ep->remote_ep.recv_ack_psn) {
-    //         /* We have received all prior packets, so since we have
-    //          * received the RDMA READ Response segment with L=1, we
-    //          * are guaranteed to have placed all data corresponding
-    //          * to this RDMA READ Response, and can complete the
-    //          * corresponding WQE. The heap ensures that we process
-    //          * the segments in the correct order, and
-    //          * try_complete_wqe() ensures that we do not complete an
-    //          * RDMA READ request out of order. */
-    //         send_xfer = find_first_rdma_read_atomic(ep);
-    //         if (!(WARN_ONCE(!send_xfer, "No RDMA READ request pending\n"))) {
-    //             send_xfer->state = SEND_XFER_COMPLETE;
-    //             try_complete_wqe(ep, send_xfer);
-    //         }
-    //         binheap_pop(ep->remote_ep.recv_rresp_last_psn);
-    //     } else {
-    //         break;
-    //     }
-    // }
+    while (!binheap_empty(ep->remote_ep.recv_rresp_last_psn)) {
+        binheap_peek(ep->remote_ep.recv_rresp_last_psn, &psn);
+        if (psn < ep->remote_ep.recv_ack_psn) {
+            /* We have received all prior packets, so since we have
+             * received the RDMA READ Response segment with L=1, we
+             * are guaranteed to have placed all data corresponding
+             * to this RDMA READ Response, and can complete the
+             * corresponding WQE. The heap ensures that we process
+             * the segments in the correct order, and
+             * try_complete_wqe() ensures that we do not complete an
+             * RDMA READ request out of order. */
+            send_xfer = find_first_rdma_read_atomic(ep);
+            if (!(WARN_ONCE(!send_xfer, "No RDMA READ request pending\n"))) {
+                send_xfer->state = SEND_XFER_COMPLETE;
+                try_complete_wqe(ep, send_xfer);
+            }
+            binheap_pop(ep->remote_ep.recv_rresp_last_psn);
+        } else {
+            break;
+        }
+    }
 
     scount = 0;
     dlist_foreach_safe(&ep->sq.active_head, cur, tmp) {
@@ -1070,15 +1281,16 @@ static void progress_ep(struct dpdk_ep *ep) {
             send_xfer->state = SEND_XFER_TRANSFER;
             switch (send_xfer->opcode) {
             case xfer_send_with_imm:
+            case xfer_write_with_imm:
             case xfer_send:
                 send_xfer->msn = send_xfer->remote_ep->next_send_msn++;
                 break;
-                // case xfer_read:
-                // case xfer_atomic:
-                //     send_wqe->msn = send_wqe->remote_ep->next_read_msn++;
-                //     break;
-                // case xfer_write:
-                //     break;
+            case xfer_read:
+            case xfer_atomic:
+                send_xfer->msn = send_xfer->remote_ep->next_read_msn++;
+                break;
+            case xfer_write:
+                break;
             }
             xfer_queue_add_active(&ep->sq, send_xfer);
             progress_send_xfer(ep, send_xfer);
@@ -1086,9 +1298,7 @@ static void progress_ep(struct dpdk_ep *ep) {
         }
     }
 
-    // [Lorenzo] This should be needed only in case of opcodes READ and ATOMIC
-    // that we currently do not have => MAYBE for fi_rma
-    // scount += respond_next_read_atomic(ep);
+    scount += respond_next_read_atomic(ep);
 
     if (ep->remote_ep.trp_flags & trp_ack_update) {
         if (unlikely(ep->remote_ep.trp_flags & trp_recv_missing)) {
@@ -1101,11 +1311,6 @@ static void progress_ep(struct dpdk_ep *ep) {
     flush_tx_queue(ep);
 
 } /* progress_ep */
-
-/* handling connection manager outgoing packets. */
-void do_cm_send(struct dpdk_domain *domain) {
-    // TODO:
-} /* do_cm_send */
 
 // ================ Main Progress Functions =================
 struct progress_arg {

@@ -148,6 +148,10 @@ int dpdk_domain_open(struct fid_fabric *fabric_fid, struct fi_info *info,
                     res->mtu); // pool and tbl
     domain->lcore_queue_conf.rx_queue_list[0].portid = res->port_id;
 
+    // Initialize the MR tbl
+    domain->mr_tbl.capacity = MAX_MR_BUCKETS_PER_DOMAIN;
+    domain->mr_tbl.mr_count = 0;
+
     // bind domain and res
     res->domain = domain;
     domain->res = res;

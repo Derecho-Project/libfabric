@@ -11,6 +11,7 @@ _dpdk_files = \
     prov/dpdk/src/dpdk_cq.c \
     prov/dpdk/src/dpdk_progress.c \
     prov/dpdk/src/dpdk_msg.c  \
+    prov/dpdk/src/dpdk_rma.c  \
     prov/dpdk/src/dpdk_mr.c    \
     prov/dpdk/src/protocols.c \
     prov/dpdk/src/util.c
