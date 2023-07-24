@@ -467,6 +467,9 @@ static void process_rdma_read_response(struct dpdk_ep *ep, struct packet_context
      * packets and complete the corresponding WQE in the correct order. */
     if (DDP_GET_L(rdmap->head.ddp_flags)) {
         binheap_insert(ep->remote_ep.recv_rresp_last_psn, orig->psn);
+
+        // TODO: If we need to generate a completion for this, we need to do it here
+        // but should we?
     }
 } /* process_rdma_read_response */
 
@@ -623,22 +626,25 @@ static void do_process_ack(struct dpdk_ep *ep, struct dpdk_xfer_entry *wqe,
     // TODO: in the DDP_Length we included the RDMAP header.
     // But the need to subtract it here is not ideal, as maybe the user did include
     // a different header size. We should find a way to separate paylaod data from headers
-    if (wqe->opcode == xfer_send || wqe->opcode == xfer_send_with_imm) {
+    if (wqe->opcode == xfer_read) {
+        // We do not handle here READ completion (do we need to produce read completions?)
+        // In case, we will do that in another function.
+        return;
+    } else if (wqe->opcode == xfer_send || wqe->opcode == xfer_send_with_imm) {
         wqe->bytes_acked += (pending->ddp_length - sizeof(struct rdmap_untagged_packet));
-        assert(wqe->bytes_sent >= wqe->bytes_acked);
     } else {
-        // TODO: This is a stupid ack that I placed here before adding TLDK
-        wqe->bytes_acked += (pending->ddp_length + 2);
+        // For one-sided operations instead we need to subtract the header size including
+        // lower-level headers. Again, not very good...
+        uint16_t header_len = RTE_ETHER_HDR_LEN + IP_HDR_LEN + UDP_HDR_LEN + TRP_HDR_LEN;
+        wqe->bytes_acked += (pending->ddp_length - header_len - sizeof(struct rdmap_tagged_packet));
     }
 
-    if ((wqe->opcode == xfer_send || wqe->opcode == xfer_send_with_imm ||
-         wqe->opcode == xfer_write || wqe->opcode == xfer_write_with_imm) &&
-        wqe->bytes_acked == wqe->total_length)
-    {
-        assert(wqe->state == SEND_XFER_WAIT);
+    if (wqe->bytes_acked == wqe->total_length) {
+        assert(wqe->bytes_sent >= wqe->bytes_acked && wqe->state == SEND_XFER_WAIT);
         wqe->state = SEND_XFER_COMPLETE;
         try_complete_wqe(ep, wqe);
     }
+
 } /* do_process_ack */
 
 static void sweep_unacked_packets(struct dpdk_ep *ep) {
