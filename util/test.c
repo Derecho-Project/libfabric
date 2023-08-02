@@ -503,25 +503,79 @@ void do_server(enum mode mode) {
         } else if (mode == write_mode) {
 
             // This is in case of no immediate data
-            sleep(2);
-            if (((char *)g_mr.buffer)[0] != 0) {
-                char c = ((char *)g_mr.buffer)[0];
-                printf("The value of the MR changed (%c)!\n", c);
-                uint64_t size = 0;
-                while ((int)c != 0) {
-                    size++;
-                    c = ((char *)g_mr.buffer)[size];
-                    printf("%c", c);
-                }
-                printf("\nReceived a new message [size = %lu]\n", size);
-                fflush(stdout);
-                bzero((void *)g_mr.buffer, g_mr.size);
+            // sleep(2);
+            // if (((char *)g_mr.buffer)[0] != 0) {
+            //     char c = ((char *)g_mr.buffer)[0];
+            //     printf("The value of the MR changed (%c)!\n", c);
+            //     uint64_t size = 0;
+            //     while ((int)c != 0) {
+            //         size++;
+            //         c = ((char *)g_mr.buffer)[size];
+            //         printf("%c", c);
+            //     }
+            //     printf("\nReceived a new message [size = %lu]\n", size);
+            //     fflush(stdout);
+            //     bzero((void *)g_mr.buffer, g_mr.size);
+            // }
+
+            // In case of immediate data, I can just wait for a completion notification, like in the
+            // send case
+            bzero((void *)g_mr.buffer, g_mr.size);
+            msg.msg_iov = &msg_iov;
+
+            void *desc    = fi_mr_desc(g_mr.mr);
+            msg.desc      = &desc;
+            msg.iov_count = 1;
+            msg.addr      = 0;
+            msg.context   = NULL;
+
+            // Post a receive request
+            ret = fi_recvmsg(ep, &msg, 0);
+            if (ret == -FI_EAGAIN) {
+                usleep(100);
+                continue;
+            } else if (ret) {
+                printf("fi_recvmsg() failed: %s\n", fi_strerror(-ret));
+                exit(2);
             }
 
-            // In case of immediate data, I can just wait for a completion notification
+            // Get the associated completion
+            struct fi_cq_data_entry comp;
+            fi_addr_t               src_addr;
+            do {
+                ret = fi_cq_readfrom(g_ctxt.rx_cq, &comp, 1, &src_addr);
+                if (ret < 0 && ret != -FI_EAGAIN) {
+                    printf("CQ read failed: %s", fi_strerror(-ret));
+                    break;
+                }
+            } while (ret == -FI_EAGAIN);
+
+            // Now we are sure the MR has been completely written
+            uint64_t size = 0;
+            char     c    = ((char *)g_mr.buffer)[0];
+            while ((int)c != 0) {
+                size++;
+                c = ((char *)g_mr.buffer)[size];
+                // printf("%c", c);
+            }
+            printf("Received a new message [size = %lu][imm_data = %lu]: ", size, comp.data);
+
+            // Integrity check
+            uint8_t content_ok = 1;
+            for (int i = 0; i < comp.len; i++) {
+                char c = ((char *)g_mr.buffer)[i];
+                if (c != 'a') {
+                    content_ok = 0;
+                    printf("[ERROR] Wrong byte at index %d\n", i);
+                    break;
+                }
+            }
+            if (content_ok) {
+                printf("Content OK\n");
+            }
 
         } else {
-            // The server here has nothing to do!
+            // The server in READ mode has nothing to do!
             sleep(10);
         }
     }
@@ -720,18 +774,14 @@ void do_client(enum mode mode, const char *server_ip_and_port) {
             msg.data = counter++; // To enable the IMMEDIATE, use the FI_REMOTE_CQ_DATA flag
             msg.desc = fi_mr_desc(g_mr.mr);
 
-            // Post a write request
-            ret = fi_writemsg(ep, &msg, FI_COMPLETION);
+            // Post a write request // WITH IMMEDIATE
+            ret = fi_writemsg(ep, &msg, FI_COMPLETION | FI_REMOTE_CQ_DATA);
             if (ret) {
                 printf("fi_writemsg() failed: %s\n", fi_strerror(-ret));
                 break;
             }
 
             // Get write completion.
-            // TODO-1: Check what exactly we are receiving!
-            // TODO-2: Are we sure we should wait until the ACK? This is the way uRDMA
-            // implemented this, but not sure this is the same semantic of libfabric. Check the
-            // Libfabric spec.
             struct fi_cq_msg_entry comp;
             fi_addr_t              src_addr;
             do {
@@ -741,9 +791,6 @@ void do_client(enum mode mode, const char *server_ip_and_port) {
                     break;
                 }
             } while (ret == -FI_EAGAIN);
-            // TODO: Actually, we should check the completion state to know if the operation
-            // was in fact successful or there was some error. Probably there is a LF-specific
-            // way to do that
             printf("Message successfully written!\n");
 
         } else { // Read
@@ -773,7 +820,7 @@ void do_client(enum mode mode, const char *server_ip_and_port) {
                 break;
             }
 
-            // Get send completion.
+            // Get read completion.
             struct fi_cq_msg_entry comp;
             fi_addr_t              src_addr;
             do {
@@ -783,7 +830,9 @@ void do_client(enum mode mode, const char *server_ip_and_port) {
                     break;
                 }
             } while (ret == -FI_EAGAIN);
+            printf("Read request successfully posted!\n");
 
+            // Wait for the operation to complete
             sleep(3);
 
             // Check that the content is correct

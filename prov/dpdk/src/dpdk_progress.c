@@ -230,7 +230,7 @@ static enum fi_wc_opcode get_send_wc_opcode(struct dpdk_xfer_entry *wqe) {
     }
 } /* get_send_wc_opcode */
 
-/** post_send_cqe posts a CQE corresponding to a send WQE, and frees the
+/** post_send_cqe posts a CQE corresponding to a WQE, and frees the
  * completed WQE.  Locking on the CQ ensures that any operation done prior to
  * this will be seen by other threads prior to the completion being delivered.
  * This ensures that new operations can be posted immediately. */
@@ -623,14 +623,14 @@ out:
 
 static void do_process_ack(struct dpdk_ep *ep, struct dpdk_xfer_entry *wqe,
                            struct pending_datagram_info *pending) {
-    // TODO: in the DDP_Length we included the RDMAP header.
-    // But the need to subtract it here is not ideal, as maybe the user did include
-    // a different header size. We should find a way to separate paylaod data from headers
     if (wqe->opcode == xfer_read) {
         // We do not handle here READ completion (do we need to produce read completions?)
-        // In case, we will do that in another function.
+        // which is handled in progress_ep().
         return;
     } else if (wqe->opcode == xfer_send || wqe->opcode == xfer_send_with_imm) {
+        // TODO: in the DDP_Length we included the RDMAP header.
+        // But the need to subtract it here is not ideal, as maybe the user did include
+        // a different header size. We should find a way to separate paylaod data from headers
         wqe->bytes_acked += (pending->ddp_length - sizeof(struct rdmap_untagged_packet));
     } else {
         // For one-sided operations instead we need to subtract the header size including
@@ -791,24 +791,26 @@ static void ddp_place_tagged_data(struct dpdk_ep *ep, struct packet_context *ori
         break;
     case rdmap_opcode_rdma_write_with_imm:
         // If inline data, we should post a CQE to notify the receiver of the immediate data.
-        struct fi_dpdk_wc *cqe;
-        struct dpdk_cq    *cq = container_of(ep->util_ep.rx_cq, struct dpdk_cq, util_cq);
-        ret                   = get_next_cqe(cq, &cqe);
-        if (ret < 0) {
-            DPDK_INFO(FI_LOG_EP_CTRL, "Failed to post recv CQE: %s\n", strerror(-ret));
-            return ret;
+        // but only if this is the last segment!
+        if (DDP_GET_L(orig->rdmap->ddp_flags)) {
+            struct fi_dpdk_wc *cqe;
+            struct dpdk_cq    *cq = container_of(ep->util_ep.rx_cq, struct dpdk_cq, util_cq);
+            ret                   = get_next_cqe(cq, &cqe);
+            if (ret < 0) {
+                DPDK_INFO(FI_LOG_EP_CTRL, "Failed to post recv CQE: %s\n", strerror(-ret));
+                return ret;
+            }
+            cqe->wr_context = NULL; // This is not associated to any read WQE, so no user ctx
+            cqe->status     = FI_WC_SUCCESS;
+            cqe->opcode     = FI_WC_RDMA_WRITE_WITH_IMM;
+            cqe->byte_len   = 0; // Should we  somehow track the len of the write?
+            cqe->ep_id      = ep->udp_port;
+            cqe->imm_data   = orig->rdmap->immediate;
+            cqe->wc_flags   = FI_WC_WITH_IMM;
+
+            /* Actually post the CQE to the CQ */
+            rte_ring_enqueue(cq->cqe_ring, cqe);
         }
-        cqe->wr_context = NULL; // This is not associated to any read WQE, so no user ctx
-        cqe->status     = FI_WC_SUCCESS;
-        cqe->opcode     = FI_WC_RDMA_WRITE_WITH_IMM;
-        cqe->byte_len   = 0;
-        cqe->ep_id      = ep->udp_port;
-        cqe->imm_data   = orig->rdmap->immediate;
-        cqe->wc_flags   = FI_WC_WITH_IMM;
-
-        /* Actually post the CQE to the CQ */
-        rte_ring_enqueue(cq->cqe_ring, cqe);
-
         break;
     default:
         DPDK_WARN(FI_LOG_EP_CTRL, "<ep=%u> received DDP tagged message with invalid opcode %x\n",
