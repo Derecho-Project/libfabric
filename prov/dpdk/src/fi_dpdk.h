@@ -60,7 +60,8 @@
 #define DPDK_DEF_CQ_SIZE          1024
 #define DPDK_MAX_EVENTS           1024
 #define DPDK_IOV_LIMIT            8
-#define MAX_MR_BUCKETS_PER_DOMAIN 8
+#define DPDK_MAX_RMA_IOV          DPDK_IOV_LIMIT
+#define MAX_MR_BUCKETS_PER_DOMAIN 512
 
 #define DPDK_NEED_RESP     BIT(1)
 #define DPDK_NEED_ACK      BIT(2)
@@ -211,22 +212,22 @@ enum {
 // In uRDMA there are two distinct structures. I merged them. Is this a good idea?
 // Should we keep them separate? Should we use a union?
 struct dpdk_xfer_entry {
-    struct dlist_entry       entry;
-    void                    *context;
-    enum xfer_send_opcode    opcode;
-    struct ee_state         *remote_ep;
-    const struct fi_rma_iov *rma_iov;       /* remote SGL */
-    size_t                   rma_iov_count; /* # elements in rma_iov */
-    uint32_t                 flags;
-    uint32_t                 index;
-    enum xfer_send_state     state;
-    uint32_t                 msn;
-    size_t                   total_length;
-    size_t                   bytes_sent;
-    size_t                   bytes_acked;
-    uint64_t                 atomic_add_swap;
-    uint64_t                 atomic_compare;
-    uint8_t                  atomic_opcode;
+    struct dlist_entry      entry;
+    void                   *context;
+    enum xfer_send_opcode   opcode;
+    struct ee_state        *remote_ep;
+    const struct fi_rma_iov rma_iov[DPDK_MAX_RMA_IOV]; /* remote SGL */
+    size_t                  rma_iov_count;             /* # elements in rma_iov */
+    uint32_t                flags;
+    uint32_t                index;
+    enum xfer_send_state    state;
+    uint32_t                msn;
+    size_t                  total_length;
+    size_t                  bytes_sent;
+    size_t                  bytes_acked;
+    uint64_t                atomic_add_swap;
+    uint64_t                atomic_compare;
+    uint8_t                 atomic_opcode;
 
     // For send
     uint32_t local_stag; /* only used for READs */
@@ -311,6 +312,7 @@ struct dpdk_domain {
 
     // List of MR associated with this domain
     struct dpdk_mr_table mr_tbl;
+    struct ofi_genlock   mr_tbl_lock;
 
     // Progress thread data
     struct dpdk_progress progress;
@@ -701,7 +703,9 @@ int  dpdk_eq_open(struct fid_fabric *fabric_fid, struct fi_eq_attr *attr, struct
 void dpdk_tx_queue_insert(struct dpdk_ep *ep, struct dpdk_xfer_entry *tx_entry);
 
 //===================== DPDK Configurations ================
-extern struct cfg_t *dpdk_config;
+extern struct cfg_t       *dpdk_config;
+extern struct dpdk_fabric *dpdk_prov_fabric;
+
 #define CFG_OPT_DPDK_ARGS            "dpdk_args"
 #define CFG_OPT_DEFAULT_CM_PORT      "default_cm_port"
 #define CFG_OPT_DEFAULT_CM_RING_SIZE "default_cm_ring_size"

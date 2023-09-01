@@ -291,25 +291,7 @@ static int dpdk_ep_accept(struct fid_ep *ep, const void *param, size_t paramlen)
     dep->remote_cm_udp_port = conn_handle->remote_ctrl_port;
     dep->remote_udp_port    = conn_handle->remote_data_port;
 
-    // 3 - set endpoint to connected state
-    atomic_store(&dep->conn_state, ep_conn_state_connected);
-
-    // 4 - generate a FI_CONNECTED event locally, and
-    struct dpdk_cm_entry cm_entry;
-    cm_entry.fid  = &ep->fid;
-    cm_entry.info = NULL;
-    memcpy(&cm_entry.data, param, paramlen);
-    struct dpdk_eq *eq = container_of(dep->util_ep.eq, struct dpdk_eq, util_eq);
-    ret                = fi_eq_write(&eq->util_eq.eq_fid, FI_CONNECTED, (void *)&cm_entry,
-                                     sizeof(struct fi_eq_cm_entry) + paramlen, 0);
-    if (ret < 0) {
-        DPDK_WARN(FI_LOG_EP_CTRL,
-                  "%s failed to insert connreq event to event queue with error code: %d.", __func__,
-                  ret);
-        goto error_group_1;
-    }
-
-    // 5 - notify the peer node with CONNECTED
+    // 3 - notify the peer node with CONNECTED
     struct rte_mbuf    *connack_mbuf = NULL;
     struct dpdk_domain *domain = container_of(dep->util_ep.domain, struct dpdk_domain, util_domain);
     assert(domain->res);
@@ -336,6 +318,24 @@ static int dpdk_ep_accept(struct fid_ep *ep, const void *param, size_t paramlen)
         goto error_group_1;
     }
     DPDK_DBG(FI_LOG_EP_CTRL, "connack msg added to cm ring.\n");
+
+    // 4 - set endpoint to connected state
+    atomic_store(&dep->conn_state, ep_conn_state_connected);
+
+    // 5 - generate a FI_CONNECTED event locally, and
+    struct dpdk_cm_entry cm_entry;
+    cm_entry.fid  = &ep->fid;
+    cm_entry.info = NULL;
+    memcpy(&cm_entry.data, param, paramlen);
+    struct dpdk_eq *eq = container_of(dep->util_ep.eq, struct dpdk_eq, util_eq);
+    ret                = fi_eq_write(&eq->util_eq.eq_fid, FI_CONNECTED, (void *)&cm_entry,
+                                     sizeof(struct fi_eq_cm_entry) + paramlen, 0);
+    if (ret < 0) {
+        DPDK_WARN(FI_LOG_EP_CTRL,
+                  "%s failed to insert connreq event to event queue with error code: %d.", __func__,
+                  ret);
+        goto error_group_1;
+    }
 
     return FI_SUCCESS;
     // error handling
@@ -827,7 +827,8 @@ int dpdk_cm_recv(struct rte_mbuf *m, struct dpdk_domain_resources *res) {
     offset += sizeof(*cm_hdr);
     void *cm_data = rte_pktmbuf_mtod_offset(m, void *, offset);
 
-    DPDK_TRACE(FI_LOG_EP_CTRL, "Receiving CM Message with type:%d.\n", cm_hdr->type);
+    DPDK_TRACE(FI_LOG_EP_CTRL, "Receiving CM Message with type:%d.\n",
+               rte_be_to_cpu_32(cm_hdr->type));
 
     switch (rte_be_to_cpu_32(cm_hdr->type)) {
     case DPDK_CM_MSG_CONNECTION_REQUEST:

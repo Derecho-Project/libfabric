@@ -85,8 +85,8 @@ static ssize_t dpdk_readmsg(struct fid_ep *ep_fid, const struct fi_msg_rma *msg,
     tx_entry->bytes_acked = 0;
 
     // IOV of remote buffer
-    tx_entry->rma_iov       = msg->rma_iov;
     tx_entry->rma_iov_count = msg->rma_iov_count;
+    memcpy(tx_entry->rma_iov, msg->rma_iov, msg->rma_iov_count * sizeof(*msg->rma_iov));
 
     // Enqueue
     ret = rte_ring_enqueue(ep->sq.ring, tx_entry);
@@ -180,7 +180,7 @@ static ssize_t dpdk_writemsg(struct fid_ep *ep_fid, const struct fi_msg_rma *msg
     // Fill the TX entry with the data from the msg
     tx_entry->opcode  = (flags & FI_REMOTE_CQ_DATA) ? xfer_write_with_imm : xfer_write;
     tx_entry->context = msg->context;
-    memcpy(tx_entry->iov, msg->msg_iov, msg->iov_count * sizeof(*msg->msg_iov));
+    rte_memcpy(tx_entry->iov, msg->msg_iov, msg->iov_count * sizeof(*msg->msg_iov));
     tx_entry->iov_count    = msg->iov_count;
     tx_entry->remote_ep    = ee;
     tx_entry->state        = SEND_XFER_INIT;
@@ -193,8 +193,8 @@ static ssize_t dpdk_writemsg(struct fid_ep *ep_fid, const struct fi_msg_rma *msg
     tx_entry->bytes_acked = 0;
 
     // IOV of remote buffer
-    tx_entry->rma_iov       = msg->rma_iov;
     tx_entry->rma_iov_count = msg->rma_iov_count;
+    rte_memcpy(tx_entry->rma_iov, msg->rma_iov, msg->rma_iov_count * sizeof(*msg->rma_iov));
 
     // Immediate data
     tx_entry->imm_data = (uint32_t)msg->data;

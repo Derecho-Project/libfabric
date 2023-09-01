@@ -390,7 +390,7 @@ int create_dpdk_domain_resources(struct fi_info *info, struct dpdk_domain_resour
     pool_size = rte_align32pow2(2 * MAX_ENDPOINTS_PER_APP * dpdk_default_rx_size);
     // Dimension of the mbufs in the mempool. Must contain at least an Ethernet frame + private
     // DPDK data (see documentation)
-    mbuf_size = RTE_MBUF_DEFAULT_DATAROOM;
+    mbuf_size = RTE_MBUF_DEFAULT_DATAROOM + RTE_PKTMBUF_HEADROOM;
     // Other parameters
     cache_size   = 64;
     private_size = 0;
@@ -597,10 +597,23 @@ int dpdk_create_fabric(struct fi_fabric_attr *attr, struct fid_fabric **fabric_f
     struct dpdk_fabric *fabric;
     int                 ret;
 
+    // TODO: Can we have multiple fabric instances in the same application?
+    // My answer is currently NO: if we had them, we could open domains on the same NIC
+    // as other fabric instances, which would be a problem: how do you distinguish different
+    // packets? A solution would be to enforce that domains in different fabric use different
+    // UDP/TCP ports, but this would be too difficult to enforce. So why don't just return the same
+    // instance of the fabric?
+    if (dpdk_prov_fabric) {
+        *fabric_fid = &dpdk_prov_fabric->util_fabric.fabric_fid;
+        return FI_SUCCESS;
+    }
+
     // STEP 1: common setup routine
     fabric = calloc(1, sizeof(*fabric));
-    if (!fabric)
+    if (!fabric) {
         return -FI_ENOMEM;
+    }
+    dpdk_prov_fabric = fabric;
 
     ret = ofi_fabric_init(&dpdk_prov, dpdk_util_prov.info->fabric_attr, attr, &fabric->util_fabric,
                           context);

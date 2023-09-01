@@ -75,6 +75,11 @@ int dpdk_domain_open(struct fid_fabric *fabric_fid, struct fi_info *info,
         DPDK_WARN(FI_LOG_DOMAIN, "Failed to get domain resources.\n");
         return ret;
     }
+    // if a domain for the requested name already exists, return it */
+    if (res->domain) {
+        *domain_fid = &res->domain->util_domain.domain_fid;
+        return FI_SUCCESS;
+    }
 
     /* 1. libfabric-specific initialization */
     ret = ofi_prov_check_info(&dpdk_util_prov, fabric_fid->api_version, info);
@@ -147,6 +152,7 @@ int dpdk_domain_open(struct fid_fabric *fabric_fid, struct fi_info *info,
     setup_queue_tbl(&domain->lcore_queue_conf.rx_queue_list[0], domain->lcore_id, res->data_rxq_id,
                     res->mtu); // pool and tbl
     domain->lcore_queue_conf.rx_queue_list[0].portid = res->port_id;
+    ofi_genlock_init(&domain->mr_tbl_lock, OFI_LOCK_MUTEX);
 
     // Initialize the MR tbl
     domain->mr_tbl.capacity = MAX_MR_BUCKETS_PER_DOMAIN;

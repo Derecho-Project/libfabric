@@ -26,7 +26,7 @@ static int ep_queue_init(struct dpdk_ep *ep, struct dpdk_xfer_queue *q, uint32_t
         FI_WARN(&dpdk_prov, FI_LOG_EP_CTRL, "Failed to allocate memory for ring %s", name);
         return -rte_errno;
     }
-    ret = rte_ring_init(q->ring, name, ring_size, RING_F_SP_ENQ | RING_F_SC_DEQ);
+    ret = rte_ring_init(q->ring, name, ring_size, RING_F_MP_RTS_ENQ | RING_F_SC_DEQ);
     if (ret) {
         FI_WARN(&dpdk_prov, FI_LOG_EP_CTRL, "Failed to initialize ring %s", name);
         return ret;
@@ -39,7 +39,7 @@ static int ep_queue_init(struct dpdk_ep *ep, struct dpdk_xfer_queue *q, uint32_t
         FI_WARN(&dpdk_prov, FI_LOG_EP_CTRL, "Failed to allocate memory for ring %s", name);
         return -rte_errno;
     }
-    ret = rte_ring_init(q->free_ring, name, ring_size, RING_F_SP_ENQ | RING_F_SC_DEQ);
+    ret = rte_ring_init(q->free_ring, name, ring_size, RING_F_MP_RTS_ENQ | RING_F_SC_DEQ);
     if (ret) {
         FI_WARN(&dpdk_prov, FI_LOG_EP_CTRL, "Failed to initialize ring %s", name);
         return ret;
@@ -47,7 +47,7 @@ static int ep_queue_init(struct dpdk_ep *ep, struct dpdk_xfer_queue *q, uint32_t
 
     // 3. Allocate the storage for the descriptors
     wqe_size   = sizeof(struct dpdk_xfer_entry) + max_recv_sge * sizeof(struct iovec);
-    q->storage = calloc(ring_size, wqe_size);
+    q->storage = (char *)rte_malloc(NULL, ring_size * wqe_size, RTE_CACHE_LINE_SIZE);
     if (!q->storage)
         return -errno;
 
@@ -88,10 +88,6 @@ static int dpdk_ep_bind(struct fid *fid, struct fid *bfid, uint64_t flags) {
             return ret;
         }
     } break;
-
-        // TODO: for the moment, just associate the CQ.
-        // The rest of the function is unimplemented
-
     case FI_CLASS_EQ: {
         struct dpdk_eq *eq = container_of(bfid, struct dpdk_eq, util_eq.eq_fid.fid);
         ret                = ofi_ep_bind_eq(&ep->util_ep, &eq->util_eq);
@@ -194,7 +190,6 @@ int dpdk_endpoint(struct fid_domain *domain, struct fi_info *info, struct fid_ep
     if (!ep) {
         return -FI_ENOMEM;
     }
-
     /* 1. libfabric-specific initialization */
     ret = ofi_endpoint_init(domain, &dpdk_util_prov, info, &ep->util_ep, context, NULL);
     if (ret) {
@@ -214,6 +209,13 @@ int dpdk_endpoint(struct fid_domain *domain, struct fi_info *info, struct fid_ep
     /* 2. DPDK-specific initialization */
     struct dpdk_domain *dpdk_domain =
         container_of(ep->util_ep.domain, struct dpdk_domain, util_domain);
+
+    // Assign id, atomically
+    ofi_genlock_lock(&dpdk_domain->ep_mutex);
+    dpdk_domain->num_endpoints++;
+    ep->udp_port =
+        rte_be_to_cpu_16(dpdk_domain->res->local_cm_addr.sin_port) + dpdk_domain->num_endpoints;
+    ofi_genlock_unlock(&dpdk_domain->ep_mutex);
 
     // Initialize TX and RX queues
     // TODO: Cleanup and memory free in case of failure
@@ -287,7 +289,8 @@ int dpdk_endpoint(struct fid_domain *domain, struct fi_info *info, struct fid_ep
     }
 
     // Initialize the acknowledgement management system
-    ep->readresp_store = calloc(dpdk_max_ird, sizeof(*ep->readresp_store));
+    ep->readresp_store =
+        rte_malloc(NULL, dpdk_max_ird * sizeof(*ep->readresp_store), RTE_CACHE_LINE_SIZE);
     if (!ep->readresp_store) {
         // [Weijia] ep->udp_port hasn't been initialized here, right?
         RTE_LOG(DEBUG, USER1, "<ep=%" PRIx16 "> Set up readresp_store failed: %s\n", ep->udp_port,
@@ -307,7 +310,7 @@ int dpdk_endpoint(struct fid_domain *domain, struct fi_info *info, struct fid_ep
     size_t mbuf_size = RTE_ETHER_HDR_LEN + INNER_HDR_LEN + RTE_ETHER_CRC_LEN + HDR_MBUF_EXTRA_SPACE;
     size_t cache_size   = 64;
     size_t private_size = PENDING_DATAGRAM_INFO_SIZE;
-    char   tx_hdr_mempool_name[20];
+    char   tx_hdr_mempool_name[32];
     sprintf(tx_hdr_mempool_name, "hdr_pool_%u", ep->udp_port);
     ep->tx_hdr_mempool = rte_pktmbuf_pool_create(tx_hdr_mempool_name, pool_size, cache_size,
                                                  private_size, mbuf_size, rte_socket_id());
@@ -319,7 +322,7 @@ int dpdk_endpoint(struct fid_domain *domain, struct fi_info *info, struct fid_ep
     // Initialize "external buffers" memory pool. TODO: handle memory cleanup
     // These will reference user memory (provided that it was previously registered)
     // and will be put in chain with the headers
-    mbuf_size    = 0;                                       // Will reference external memory!
+    mbuf_size    = 0; // Will reference external memory!
     cache_size   = 64;
     private_size = sizeof(struct rte_mbuf_ext_shared_info); // Keeps info about ext memory
     char tx_ddp_mempool_name[20];
@@ -334,16 +337,14 @@ int dpdk_endpoint(struct fid_domain *domain, struct fi_info *info, struct fid_ep
     // Add this EP to EP list of the domain, and increase the associated values
     // MUST be done while holding the EP MUTEX.
     // [Weijia] Is it possible that num_endpoints being growing beyond MAX_ENDPOINTS_PER_APP,
-    //          leaving released udp ports unused?
+    //          leaving released udp ports unused? -> Yes, we must check for this!
     ofi_genlock_lock(&dpdk_domain->ep_mutex);
+    uint16_t base_port = rte_be_to_cpu_16(dpdk_domain->res->local_cm_addr.sin_port);
     slist_insert_tail(&ep->entry, &dpdk_domain->endpoint_list);
-    dpdk_domain->udp_port_to_ep[dpdk_domain->num_endpoints] = ep;
-    dpdk_domain->num_endpoints++;
-    ep->udp_port =
-        rte_be_to_cpu_16(dpdk_domain->res->local_cm_addr.sin_port) + dpdk_domain->num_endpoints;
+    dpdk_domain->udp_port_to_ep[ep->udp_port - (base_port + 1)] = ep;
     ofi_genlock_unlock(&dpdk_domain->ep_mutex);
 
-    FI_INFO(&dpdk_prov, FI_LOG_EP_CTRL, "Created EP at udp port(%u)\n", ep->udp_port);
+    DPDK_INFO(FI_LOG_EP_CTRL, "Created EP at udp port(%u)\n", ep->udp_port);
 
     return 0;
 
@@ -452,19 +453,17 @@ int dpdk_passive_ep(struct fid_fabric *fabric, struct fi_info *info, struct fid_
     ofi_mutex_lock(&res->pep_lock);
     if (res->pep) {
         ofi_mutex_unlock(&res->pep_lock);
-        DPDK_WARN(FI_LOG_EP_CTRL,
-                  "failed to create passive endpoint because passive endpoint"
-                  "on the same domain(%s) already exists.\n",
-                  res->domain_name);
-        ret = -FI_EBUSY;
-        goto err3;
+        *pep_fid = &res->pep->util_pep.pep_fid;
+        return FI_SUCCESS;
     }
     res->pep = pep;
     ofi_mutex_unlock(&res->pep_lock);
 
     *pep_fid = &pep->util_pep.pep_fid;
+    DPDK_INFO(FI_LOG_EP_CTRL, "Created PEP for domain %s\n", res->domain_name);
 
     release_dpdk_domain_resources(res);
+
     return FI_SUCCESS;
 err3:
     fi_freeinfo(pep->info);

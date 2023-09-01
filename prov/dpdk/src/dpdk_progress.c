@@ -268,13 +268,15 @@ static void try_complete_wqe(struct dpdk_ep *ep, struct dpdk_xfer_entry *wqe) {
      * completed. */
     if (wqe == container_of(ep->sq.active_head.next, struct dpdk_xfer_entry, entry)) {
         rte_spinlock_lock(&ep->sq.lock);
-        if (!(ep->util_ep.tx_cq->flags & FI_SELECTIVE_COMPLETION) || (wqe->flags & FI_COMPLETION)) {
+        if (wqe->flags & FI_COMPLETION || ep->util_ep.tx_msg_flags & FI_COMPLETION ||
+            ep->util_ep.rx_msg_flags & FI_COMPLETION)
+        {
             post_send_cqe(ep, wqe, FI_WC_SUCCESS);
         } else {
-            FI_INFO(&dpdk_prov, FI_LOG_EP_CTRL,
-                    "<ep=%u> Dropping TX completion, as FI_SELECTIVE_COMPLETION is set and "
-                    "FI_COMPLETION flag is not set on this specific operation\n",
-                    ep->udp_port);
+            FI_TRACE(&dpdk_prov, FI_LOG_EP_CTRL,
+                     "<ep=%u> Dropping TX completion, as FI_SELECTIVE_COMPLETION is set and "
+                     "FI_COMPLETION flag is not set on this specific operation\n",
+                     ep->udp_port);
             ep_free_send_wqe(ep, wqe, true);
         }
         rte_spinlock_unlock(&ep->sq.lock);
@@ -408,7 +410,12 @@ static void process_rdma_read_request(struct dpdk_ep *ep, struct packet_context 
 
     rkey = rte_be_to_cpu_32(rdmap->source_stag);
 
+    struct dpdk_domain *dpdk_domain =
+        container_of(ep->util_ep.domain, struct dpdk_domain, util_domain);
+    ofi_genlock_lock(&dpdk_domain->mr_tbl_lock);
     mr = dpdk_mr_lookup(&domain->mr_tbl, rkey);
+    ofi_genlock_unlock(&dpdk_domain->mr_tbl_lock);
+
     if (!mr) {
         DPDK_WARN(FI_LOG_EP_CTRL, "<ep=%u> RDMA READ failure: invalid rkey %x\n", ep->udp_port,
                   rkey);
@@ -497,7 +504,7 @@ void flush_tx_queue(struct dpdk_ep *ep) {
      * those that we do not want to free */
     while (begin != ep->txq_end) {
         ret = rte_eth_tx_burst(domain->res->port_id, domain->res->data_txq_id, begin, nb_segs);
-        DPDK_INFO(FI_LOG_EP_DATA, "Transmitted %d packets\n", ret);
+        DPDK_DBG(FI_LOG_EP_DATA, "Transmitted %d packets\n", ret);
         begin += ret;
     }
 
@@ -564,7 +571,7 @@ static void process_terminate(struct dpdk_ep *ep, struct packet_context *orig) {
                      ep->udp_port, rte_be_to_cpu_32(rreq->payload.sink_stag));
             return;
         }
-        // TODO: What do we do with this?
+        // TODO: We should consider the DE-registration of the memory regions
         // mr = usiw_mr_lookup(ep->pd, STAG_RDMA_READ(wqe->msn));
         // if (mr) {
         //     usiw_dereg_mr_real(qp->pd, mr);
@@ -584,7 +591,6 @@ static void process_terminate(struct dpdk_ep *ep, struct packet_context *orig) {
                          "<ep=%u> TERMINATE sink_stag=%" PRIu32
                          " has no matching RDMA WRITE operation\n",
                          ep->udp_port, rte_be_to_cpu_32(t->head.sink_stag));
-                return;
             }
             break;
         case rdmap_opcode_rdma_read_response:
@@ -592,14 +598,12 @@ static void process_terminate(struct dpdk_ep *ep, struct packet_context *orig) {
                      "<ep=%u> TERMINATE sink_stag=%u has tagged message error but no matching RDMA "
                      "READ Response\n",
                      ep->udp_port, rte_be_to_cpu_32(t->head.sink_stag));
-            return;
         default:
             DPDK_DBG(
                 FI_LOG_EP_CTRL,
                 "<ep=%u> TERMINATE sink_stag=%u has tagged message error but invalid opcode %u\n",
                 ep->udp_port, rte_be_to_cpu_32(t->head.sink_stag),
                 RDMAP_GET_OPCODE(t->head.rdmap_info));
-            return;
         }
         break;
     default:
@@ -624,19 +628,13 @@ out:
 static void do_process_ack(struct dpdk_ep *ep, struct dpdk_xfer_entry *wqe,
                            struct pending_datagram_info *pending) {
     if (wqe->opcode == xfer_read) {
-        // We do not handle here READ completion (do we need to produce read completions?)
-        // which is handled in progress_ep().
+        // READ completion is handled in progress_ep().
         return;
     } else if (wqe->opcode == xfer_send || wqe->opcode == xfer_send_with_imm) {
-        // TODO: in the DDP_Length we included the RDMAP header.
-        // But the need to subtract it here is not ideal, as maybe the user did include
-        // a different header size. We should find a way to separate paylaod data from headers
         wqe->bytes_acked += (pending->ddp_length - sizeof(struct rdmap_untagged_packet));
     } else {
-        // For one-sided operations instead we need to subtract the header size including
-        // lower-level headers. Again, not very good...
         uint16_t header_len = RTE_ETHER_HDR_LEN + IP_HDR_LEN + UDP_HDR_LEN + TRP_HDR_LEN;
-        wqe->bytes_acked += (pending->ddp_length - header_len - sizeof(struct rdmap_tagged_packet));
+        wqe->bytes_acked += (pending->ddp_length - sizeof(struct rdmap_tagged_packet));
     }
 
     if (wqe->bytes_acked == wqe->total_length) {
@@ -738,7 +736,7 @@ static void ddp_place_tagged_data(struct dpdk_ep *ep, struct packet_context *ori
     struct rdmap_tagged_packet *rdmap;
     struct dpdk_mr             *mr;
     uintptr_t                   vaddr;
-    uint64_t                    rkey;
+    uint32_t                    rkey;
     uint32_t                    rdma_length;
     unsigned int                opcode;
     int                         ret;
@@ -749,7 +747,9 @@ static void ddp_place_tagged_data(struct dpdk_ep *ep, struct packet_context *ori
 
     rdmap = (struct rdmap_tagged_packet *)orig->rdmap;
     rkey  = rte_be_to_cpu_32(rdmap->head.sink_stag);
-    mr    = dpdk_mr_lookup(&dpdk_domain->mr_tbl, rkey);
+    ofi_genlock_lock(&dpdk_domain->mr_tbl_lock);
+    mr = dpdk_mr_lookup(&dpdk_domain->mr_tbl, rkey);
+    ofi_genlock_unlock(&dpdk_domain->mr_tbl_lock);
     if (!mr) {
         DPDK_WARN(FI_LOG_EP_CTRL, "<ep=%u> received DDP tagged message with invalid stag %u\n",
                   ep->udp_port, rkey);
@@ -757,11 +757,8 @@ static void ddp_place_tagged_data(struct dpdk_ep *ep, struct packet_context *ori
         return;
     }
 
-    vaddr = (uintptr_t)rte_be_to_cpu_64(rdmap->offset);
-    // TODO: temporary fix, waiting for TLDK
-    rdma_length = orig->ddp_seg_length - sizeof(*rdmap) - TRP_HDR_LEN - UDP_HDR_LEN - IP_HDR_LEN -
-                  RTE_ETHER_HDR_LEN;
-
+    vaddr       = (uintptr_t)rte_be_to_cpu_64(rdmap->offset);
+    rdma_length = orig->ddp_seg_length - sizeof(*rdmap);
     if (vaddr < (uintptr_t)mr->buf || vaddr + rdma_length > (uintptr_t)mr->buf + mr->len) {
 
         DPDK_WARN(FI_LOG_EP_CTRL,
@@ -772,13 +769,8 @@ static void ddp_place_tagged_data(struct dpdk_ep *ep, struct packet_context *ori
         return;
     }
 
-    // In receive, we need to copy
-    // TODO: This implementation (from uRDMA) assumes that RDMAP packets fit within the Ethernet MTU
-    // so there are never IP fragments to copy. If we would like to support larger packets, we would
-    // here need to copy the IP fragments into the single contiguous buffer. As a side effect, we
-    // cannot send more than 1440 bytes in a single READ (or WRITE) RDMAP packet.
+    // Copy data to the application buffer
     rte_memcpy((void *)vaddr, PAYLOAD_OF(rdmap), rdma_length);
-
     DPDK_INFO(FI_LOG_EP_CTRL, "<ep=%u> Wrote %u bytes to tagged buffer with stag=%u at %p\n",
               ep->udp_port, rdma_length, rkey, vaddr);
 
@@ -973,7 +965,7 @@ static void process_rx_packet(struct dpdk_domain *domain, struct rte_mbuf *mbuf)
             goto free_and_exit;
         }
     } else {
-        DPDK_INFO(FI_LOG_EP_DATA, "<dev=%s> Drop packet with UDP dst port %u;\n",
+        DPDK_INFO(FI_LOG_EP_DATA, "<dev=%s> drop packet with UDP dst port %u;\n",
                   domain->util_domain.name, rx_port);
         goto free_and_exit;
     }
@@ -981,6 +973,15 @@ static void process_rx_packet(struct dpdk_domain *domain, struct rte_mbuf *mbuf)
     // If we got here, we have a valid packet for a valid EP
     assert(dst_ep);
     DPDK_DBG(FI_LOG_EP_DATA, "<ep=%u> received packet\n", dst_ep->udp_port);
+
+    // This is a data message that arrives before the connection ack
+    if (dst_ep->remote_udp_port == 0) {
+        assert(dst_ep->conn_state == ep_conn_state_connecting);
+        // TODO: Should we use a lock? Or an atomic?
+        DPDK_WARN(FI_LOG_EP_DATA, "<dev=%s> Packet is for a CONNECTING endpoint (%u)\n",
+                  domain->util_domain.name, dst_ep->udp_port);
+        dst_ep->remote_udp_port = rte_be_to_cpu_16(udp_hdr->src_port);
+    }
 
     ctx.src_ep = &dst_ep->remote_ep;
     if (!ctx.src_ep) {
@@ -1023,8 +1024,8 @@ static void process_rx_packet(struct dpdk_domain *domain, struct rte_mbuf *mbuf)
     /* If no DDP segment attached; ignore PSN */
     if (rte_be_to_cpu_16(udp_hdr->dgram_len) <= sizeof(*udp_hdr) + sizeof(*trp_hdr)) {
         DPDK_DBG(FI_LOG_EP_DATA,
-                 "<dev=%s ep=%u> got ACK psn %" PRIu32 "; now last_acked_psn %" PRIu32
-                 " send_next_psn %" PRIu32 " send_max_psn %" PRIu32 "\n",
+                 "<dev=%s ep=%u> got ACK psn %u; now last_acked_psn %u send_next_psn "
+                 "%u send_max_psn %u\n",
                  domain->util_domain.name, dst_ep->udp_port, ctx.src_ep->send_last_acked_psn,
                  ctx.src_ep->send_next_psn, ctx.src_ep->send_max_psn);
         goto free_and_exit;
@@ -1067,8 +1068,8 @@ static void process_rx_packet(struct dpdk_domain *domain, struct rte_mbuf *mbuf)
                  * retransmitted along with the surrounding
                  * datagrams. */
                 DPDK_INFO(FI_LOG_EP_DATA,
-                          "<dev=%s ep=%u> got out of range psn %" PRIu32 "; next expected %" PRIu32
-                          " sack range: [%" PRIu32 ",%" PRIu32 "]\n",
+                          "<dev=%s ep=%u> got out of range psn %u; next expected %u sack range: "
+                          "[%u,%u]\n",
                           domain->util_domain.name, dst_ep->udp_port, ctx.psn,
                           ctx.src_ep->recv_ack_psn, ctx.src_ep->recv_sack_psn.min,
                           ctx.src_ep->recv_sack_psn.max);
@@ -1112,7 +1113,7 @@ static void process_rx_packet(struct dpdk_domain *domain, struct rte_mbuf *mbuf)
 
     // "Tagged data" is WRITE
     if (DDP_GET_T(ctx.rdmap->ddp_flags)) {
-        return ddp_place_tagged_data(dst_ep, &ctx);
+        ddp_place_tagged_data(dst_ep, &ctx);
     } else {
         switch (RDMAP_GET_OPCODE(ctx.rdmap->rdmap_info)) {
         case rdmap_opcode_send_with_imm:
@@ -1145,8 +1146,8 @@ free_and_exit:
     return;
 } /* process_rx_packet */
 
-/* Receive action on the network. Takes care of IPv4 defragmentation, and foreach reassembled
- * packet invokes the process_rx_packet function */
+/* Receive action on the network. Takes care of IPv4 defragmentation, and foreach
+ * reassembled packet invokes the process_rx_packet function */
 static void do_receive(struct dpdk_domain *domain) {
     struct rte_mbuf *pkts_burst[dpdk_default_tx_burst_size];
     struct rte_mbuf *reassembled;
@@ -1174,7 +1175,7 @@ static void do_receive(struct dpdk_domain *domain) {
         switch (rte_be_to_cpu_16(eth_hdr->ether_type)) {
         case RTE_ETHER_TYPE_ARP:
             DPDK_INFO(FI_LOG_EP_DATA, "Received ARP packet\n");
-            arp_receive(domain, pkts_burst[j]);
+            arp_receive(domain->res, pkts_burst[j]);
             rte_pktmbuf_free(pkts_burst[j]);
             break;
         case RTE_ETHER_TYPE_IPV4:
@@ -1204,7 +1205,7 @@ static void do_receive(struct dpdk_domain *domain) {
         switch (rte_be_to_cpu_16(eth_hdr->ether_type)) {
         case RTE_ETHER_TYPE_ARP:
             DPDK_INFO(FI_LOG_EP_DATA, "Received ARP packet\n");
-            arp_receive(domain, pkts_burst[j]);
+            arp_receive(domain->res, pkts_burst[j]);
             rte_pktmbuf_free(pkts_burst[j]);
             break;
         case RTE_ETHER_TYPE_IPV4:
@@ -1382,6 +1383,7 @@ int dpdk_run_progress(void *arg) {
             case ep_conn_state_unbound:
                 /* code */
                 break;
+            case ep_conn_state_connecting:
             case ep_conn_state_connected:
                 progress_ep(ep);
                 break;

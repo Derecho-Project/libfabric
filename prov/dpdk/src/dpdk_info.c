@@ -73,14 +73,16 @@ static struct fi_domain_attr dpdk_domain_attr = {
     .control_progress = FI_PROGRESS_AUTO,
     .data_progress    = FI_PROGRESS_AUTO,
     .resource_mgmt    = FI_RM_ENABLED,
-    .mr_mode      = FI_MR_LOCAL, // Meaning that app must register memory regions before using them
-    .mr_key_size  = sizeof(uint64_t),
-    .av_type      = FI_AV_MAP,   // Changed this. Not sure, though.
-    .cq_data_size = sizeof(uint64_t),
-    .cq_cnt       = 256,
-    .ep_cnt       = 8192,
-    .tx_ctx_cnt   = 8192,
-    .rx_ctx_cnt   = 8192,
+    // FI_MR_LOCAL: Meaning that app must register memory regions before using them, and
+    // that the memory key will be chosen by the provider
+    .mr_mode        = FI_MR_LOCAL | FI_MR_VIRT_ADDR,
+    .mr_key_size    = sizeof(uint64_t),
+    .av_type        = FI_AV_MAP, // Changed this. Not sure, though.
+    .cq_data_size   = sizeof(uint64_t),
+    .cq_cnt         = 256,
+    .ep_cnt         = 8192,
+    .tx_ctx_cnt     = 8192,
+    .rx_ctx_cnt     = 8192,
     .max_ep_srx_ctx = 8192,
     .max_ep_tx_ctx  = 1,
     .max_ep_rx_ctx  = 1,

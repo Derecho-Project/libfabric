@@ -93,3 +93,5 @@ util/fi_cm_test
 util/fi_perf
 libfabric.dpdk.cfg
 eval
+install
+*.diff

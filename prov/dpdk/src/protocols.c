@@ -40,10 +40,13 @@ static inline int set_iova_mapping(struct rte_mbuf *sendmsg, size_t page_size) {
     }
 
     // Set the IOVA mapping for the external memory.
+    void *start_address = ext_mbuf->buf_addr + ext_mbuf->data_off;
+    // The IOVA of the memseg is the IOVA of the start of the segment. Hence we need to add to that
+    // value the offset between the segment start and the desired address.
     struct rte_memseg *ms =
-        rte_mem_virt2memseg(ext_mbuf->buf_addr, rte_mem_virt2memseg_list(ext_mbuf->buf_addr));
-    ext_mbuf->buf_iova = ms->iova;
-    // ext_mbuf->buf_iova = rte_mem_virt2iova(ext_mbuf->buf_addr + ext_mbuf->data_off);
+        rte_mem_virt2memseg(start_address, rte_mem_virt2memseg_list(start_address));
+    ext_mbuf->buf_iova = ms->iova + (start_address - ms->addr);
+    // ext_mbuf->buf_iova = rte_mem_virt2iova(start_address);
 
     // If IOVA as PA, the mbuf may span two pages that correspond to two different
     // physical addresses. In this case, we need to split in two parts the mbuf containing the
@@ -52,7 +55,7 @@ static inline int set_iova_mapping(struct rte_mbuf *sendmsg, size_t page_size) {
         // Reset the data offset: it causes errors in the driver with IOVA
         // TODO: Maybe this can be avoided by implementing the IP fragmentation
         // manually (copy from the original DPDK version).
-        ext_mbuf->buf_addr = ext_mbuf->buf_addr + ext_mbuf->data_off;
+        ext_mbuf->buf_addr = start_address;
         ext_mbuf->data_off = 0;
 
         // If mbuf crosses a page boundary, split it in two parts, one per page
@@ -61,7 +64,7 @@ static inline int set_iova_mapping(struct rte_mbuf *sendmsg, size_t page_size) {
             FI_DBG(&dpdk_prov, FI_LOG_EP_DATA, "%s():%i: splitting mbuf crossing page boundary\n",
                    __func__, __LINE__);
             // 1. Get page boundary starting from last_mbuf->buf_addr (+ data_off)
-            uint64_t start         = (uint64_t)ext_mbuf->buf_addr + ext_mbuf->data_off;
+            uint64_t start         = (uint64_t)start_address;
             uint64_t end           = start + ext_mbuf->data_len;
             uint64_t page_boundary = ((start / page_size) + 1) * page_size;
 
@@ -77,11 +80,15 @@ static inline int set_iova_mapping(struct rte_mbuf *sendmsg, size_t page_size) {
             }
 
             // 5. Attach the second mbuf to the external memory in the second page, with the correct
-            // IOVA
+            // IOVA.
+            ms = rte_mem_virt2memseg(page_boundary, rte_mem_virt2memseg_list(page_boundary));
+            rte_iova_t second_iova = ms->iova + ((void *)page_boundary - ms->addr);
+            // rte_iova_t second_iova = rte_mem_virt2iova(page_boundary);
+
             struct rte_mbuf_ext_shared_info *ret_shinfo =
                 (struct rte_mbuf_ext_shared_info *)(second_mbuf + 1);
             rte_pktmbuf_ext_shinfo_init_helper_custom(ret_shinfo, free_extbuf_cb, NULL);
-            rte_pktmbuf_attach_extbuf(second_mbuf, (void *)page_boundary, ms->iova, second_len,
+            rte_pktmbuf_attach_extbuf(second_mbuf, (void *)page_boundary, second_iova, second_len,
                                       ret_shinfo);
             second_mbuf->data_len = second_len;
             second_mbuf->data_off = 0;
@@ -217,6 +224,9 @@ uint8_t *arp_get_hwaddr_or_lookup(struct dpdk_domain_resources *domain_res, uint
     if (dst_mac == NULL) {
         DPDK_INFO(FI_LOG_EP_CTRL,
                   "Failed to get dst MAC address from cache. Sending ARP request.\n");
+
+        sleep(3);
+
         if ((arp_request(domain_res, domain_res->local_cm_addr.sin_addr.s_addr, saddr)) < 0) {
             DPDK_WARN(FI_LOG_EP_CTRL, "Failed to send ARP request\n");
             return NULL;
@@ -515,7 +525,7 @@ int setup_queue_tbl(struct rx_queue *rxq, uint32_t lcore, uint32_t queue, uint16
 
     snprintf(buf, sizeof(buf), "mbuf_pool_%u_%u", lcore, queue);
     rxq->pool = rte_pktmbuf_pool_create(buf, nb_mbuf, 64, 0,
-                                        port_mtu + RTE_ETHER_HDR_LEN + RTE_ETHER_CRC_LEN, socket);
+                                        RTE_MBUF_DEFAULT_DATAROOM + RTE_PKTMBUF_HEADROOM, socket);
     if (rxq->pool == NULL) {
         printf("rte_pktmbuf_pool_create(%s) failed\n", buf);
         return -1;
@@ -563,23 +573,21 @@ void send_udp_dgram(struct dpdk_ep *ep, struct rte_mbuf *sendmsg, uint32_t raw_c
         sendmsg->ol_flags |= RTE_MBUF_F_TX_UDP_CKSUM | RTE_MBUF_F_TX_IPV4 | RTE_MBUF_F_TX_IP_CKSUM;
     }
 
-    // udp              = prepend_udp_header(sendmsg, ep->udp_port, ep->remote_udp_port,
-    // ddp_length); ip               = prepend_ipv4_header(sendmsg, IP_UDP, domain->ipv4_addr,
-    // ep->remote_ipv4_addr,
-    //                                        ddp_length + UDP_HDR_LEN);
-    udp              = prepend_udp_header(sendmsg, ep->udp_port, ep->remote_udp_port, ddp_length);
-    ip               = prepend_ipv4_header(sendmsg, IP_UDP,
-                                           rte_be_to_cpu_32(domain->res->local_cm_addr.sin_addr.s_addr),
-                                           ep->remote_ipv4_addr, ddp_length + UDP_HDR_LEN);
-    udp->dgram_cksum = rte_ipv4_phdr_cksum(ip, sendmsg->ol_flags);
+    udp = prepend_udp_header(sendmsg, ep->udp_port, ep->remote_udp_port, ddp_length);
+    ip  = prepend_ipv4_header(sendmsg, IP_UDP,
+                              rte_be_to_cpu_32(domain->res->local_cm_addr.sin_addr.s_addr),
+                              ep->remote_ipv4_addr, ddp_length + UDP_HDR_LEN);
 
     if (!(sendmsg->ol_flags & RTE_MBUF_F_TX_UDP_CKSUM)) {
-        raw_cksum += udp->dgram_cksum + udp->src_port + udp->dst_port + udp->dgram_len;
-        /* Add any carry bits into the checksum. */
-        while (raw_cksum > UINT16_MAX) {
-            raw_cksum = (raw_cksum >> 16) + (raw_cksum & 0xffff);
-        }
-        udp->dgram_cksum = (raw_cksum == UINT16_MAX) ? UINT16_MAX : ~raw_cksum;
+        // TODO: There appears to be an error with this computation of UDP checsum.
+        // For now, leaving it to 0.
+        udp->dgram_cksum = 0;
+        // raw_cksum += udp->dgram_cksum + udp->src_port + udp->dst_port + udp->dgram_len;
+        // /* Add any carry bits into the checksum. */
+        // while (raw_cksum > UINT16_MAX) {
+        //     raw_cksum = (raw_cksum >> 16) + (raw_cksum & 0xffff);
+        // }
+        // udp->dgram_cksum = (raw_cksum == UINT16_MAX) ? UINT16_MAX : ~raw_cksum;
     }
 
     enqueue_ether_frame(sendmsg, RTE_ETHER_TYPE_IPV4, ep, &ep->remote_eth_addr);
@@ -596,7 +604,6 @@ void send_trp_ack(struct dpdk_ep *ep) {
 
     assert(!(ee->trp_flags & trp_recv_missing));
     sendmsg = rte_pktmbuf_alloc(ep->tx_hdr_mempool);
-    RTE_LOG(DEBUG, USER1, "Sending TRP ACK\n");
 
     trp = rte_pktmbuf_mtod_offset(sendmsg, struct trp_hdr *, TRP_HDR_OFFSET);
     sendmsg->data_len += TRP_HDR_LEN + UDP_HDR_LEN + IP_HDR_LEN + RTE_ETHER_HDR_LEN;
@@ -682,7 +689,7 @@ int resend_ddp_segment(struct dpdk_ep *ep, struct rte_mbuf *sendmsg, struct ee_s
 
     info = (struct pending_datagram_info *)(sendmsg + 1);
     // TODO: [Lorenzo] We should make this timeout a configurable parameter
-    info->next_retransmit = rte_get_timer_cycles() + rte_get_timer_hz() / 1000;
+    info->next_retransmit = rte_get_timer_cycles() + rte_get_timer_hz() * 10; // / 1000;
     if (info->transmit_count++ > RETRANSMIT_MAX) {
         return -EIO;
     }
@@ -880,7 +887,10 @@ void do_rdmap_write(struct dpdk_ep *ep, struct dpdk_xfer_entry *wqe) {
     size_t                      payload_length, header_length;
 
     uint16_t mtu = 1440; // MAX_RDMAP_PAYLOAD_SIZE;
-    void    *payload;
+
+    if (wqe->state != SEND_XFER_TRANSFER) {
+        return;
+    }
 
     while (wqe->bytes_sent < wqe->total_length &&
            serial_less_32(wqe->remote_ep->send_next_psn, wqe->remote_ep->send_max_psn))
@@ -917,7 +927,7 @@ void do_rdmap_write(struct dpdk_ep *ep, struct dpdk_xfer_entry *wqe) {
         // TODO: We are currently only supporting a SINGLE IO for the write operation.
         // In the short-term, this should be checked earlier. In the long term, we should
         // support multiple IOs
-        new_rdmap->head.sink_stag = rte_cpu_to_be_64(wqe->rma_iov[0].key);
+        new_rdmap->head.sink_stag = rte_cpu_to_be_32((uint32_t)wqe->rma_iov[0].key);
         new_rdmap->offset         = rte_cpu_to_be_64(wqe->rma_iov[0].addr + wqe->bytes_sent);
 
         // Copy inline data, which are small
@@ -934,12 +944,9 @@ void do_rdmap_write(struct dpdk_ep *ep, struct dpdk_xfer_entry *wqe) {
                              wqe->bytes_sent);
         }
 
-        FI_DBG(&dpdk_prov, FI_LOG_EP_DATA, "Total size is %d and payload_len is %d\n",
-               sendmsg->pkt_len, payload_length);
-
-        send_ddp_segment(ep, sendmsg, NULL, wqe, header_length + payload_length);
-        FI_DBG(&dpdk_prov, FI_LOG_EP_DATA, "<ep=%u> RDMA WRITE transmit bytes %zu through %zu\n",
-               ep->udp_port, wqe->bytes_sent, wqe->bytes_sent + payload_length);
+        FI_DBG(&dpdk_prov, FI_LOG_EP_DATA, "Write of size %d\n", payload_length);
+        send_ddp_segment(ep, sendmsg, NULL, wqe,
+                         sizeof(struct rdmap_tagged_packet) + payload_length);
 
         wqe->bytes_sent += payload_length;
     }
@@ -982,7 +989,8 @@ void do_rdmap_read_request(struct dpdk_ep *ep, struct dpdk_xfer_entry *wqe) {
 
     // Header len. Add now the LEN of the packet. Now, because from now on, all the functions
     // will be potentially executed more than once in case of retransmission
-    header_length = RTE_ETHER_HDR_LEN + IP_HDR_LEN + UDP_HDR_LEN + TRP_HDR_LEN;
+    header_length = RTE_ETHER_HDR_LEN + IP_HDR_LEN + UDP_HDR_LEN + TRP_HDR_LEN +
+                    sizeof(struct rdmap_readreq_packet);
     sendmsg->data_len += header_length;
     sendmsg->pkt_len += header_length;
 
@@ -1014,7 +1022,7 @@ void do_rdmap_read_request(struct dpdk_ep *ep, struct dpdk_xfer_entry *wqe) {
     new_rdmap->source_stag   = rte_cpu_to_be_64(wqe->rma_iov[0].key);
     new_rdmap->source_offset = rte_cpu_to_be_64(wqe->rma_iov[0].addr);
 
-    send_ddp_segment(ep, sendmsg, NULL, wqe, header_length + packet_length);
+    send_ddp_segment(ep, sendmsg, NULL, wqe, sizeof(struct rdmap_readreq_packet) + packet_length);
     FI_DBG(&dpdk_prov, FI_LOG_EP_DATA, "<ep=%u> RDMA READ transmit msn=%u\n", ep->udp_port,
            wqe->msn);
 
@@ -1071,7 +1079,8 @@ int do_rdmap_read_response(struct dpdk_ep *ep, struct read_atomic_response_state
             put_iov_in_chain(ep->tx_ddp_mempool, sendmsg, payload_length, &iov, 1, 0);
         }
 
-        send_ddp_segment(ep, sendmsg, readresp, NULL, header_length + payload_length);
+        send_ddp_segment(ep, sendmsg, readresp, NULL,
+                         sizeof(struct rdmap_tagged_packet) + payload_length);
         readresp->vaddr += payload_length;
         readresp->read.msg_size -= payload_length;
         readresp->read.sink_offset += payload_length;
