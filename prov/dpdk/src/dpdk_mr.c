@@ -169,8 +169,10 @@ static int dpdk_mr_reg(struct fid *fid, const void *buf, size_t len, uint64_t ac
     mr_tbl->mr_count++;
     ofi_genlock_unlock(&dpdk_domain->mr_tbl_lock);
 
-    FI_DBG(&dpdk_prov, FI_LOG_MR, "%s():%i: Registered memory region with key %lu [%p, %p]\n",
-           __func__, __LINE__, new_key, data_buffer_orig, data_buffer_orig + data_buffer_len);
+    FI_DBG(&dpdk_prov, FI_LOG_MR,
+           "%s():%i: Registered memory region with key=%lu addr=[%p, %p] size=%lu\n", __func__,
+           __LINE__, new_key, data_buffer_orig, data_buffer_orig + data_buffer_len,
+           data_buffer_len);
 
     return FI_SUCCESS;
 

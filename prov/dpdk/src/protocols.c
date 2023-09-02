@@ -810,7 +810,7 @@ void do_rdmap_send(struct dpdk_ep *ep, struct dpdk_xfer_entry *wqe) {
     struct rte_mbuf              *sendmsg;
     size_t                        payload_length;
 
-    uint16_t mtu = MAX_RDMAP_PAYLOAD_SIZE;
+    uint16_t mtu = 1436; // MAX_RDMAP_PAYLOAD_SIZE;
 
     if (wqe->state != SEND_XFER_TRANSFER) {
         return;

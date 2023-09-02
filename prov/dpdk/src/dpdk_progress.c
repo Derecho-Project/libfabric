@@ -352,8 +352,8 @@ static void process_rdma_send(struct dpdk_ep *ep, struct packet_context *orig) {
         xfer_e->input_size = offset + payload_length;
     }
 
-    DPDK_DBG(FI_LOG_EP_CTRL, "<ep=%u> recv_size=%u, iov_count=%u, data_buffer=%p\n",
-             xfer_e->recv_size, xfer_e->iov_count, xfer_e->iov[0].iov_base);
+    DPDK_DBG(FI_LOG_EP_CTRL, "<ep=%u> recv_size=%u, iov_count=%u, data_buffer=%p\n", ep->udp_port,
+             xfer_e->recv_size + payload_length, xfer_e->iov_count, xfer_e->iov[0].iov_base);
 
     rte_pktmbuf_adj(orig->mbuf_head, sizeof(struct rdmap_untagged_packet));
     memcpy_mbuf_to_iov(xfer_e->iov, xfer_e->iov_count, orig->mbuf_head, payload_length, offset);
@@ -496,8 +496,6 @@ void flush_tx_queue(struct dpdk_ep *ep) {
     if (!nb_segs) {
         return;
     }
-
-    DPDK_DBG(FI_LOG_EP_DATA, "Flushing %d packets\n", nb_segs);
 
     /* Transmit the enqueued packets. It is the responsibility of the rte_eth_tx_burst() function to
      * transparently free the memory buffers of packets previously sent. So we should have cloned

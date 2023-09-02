@@ -505,7 +505,7 @@ int create_dpdk_domain_resources(struct fi_info *info, struct dpdk_domain_resour
         goto error_group_3;
     }
 
-    // Enable the flow 2: ARP packets
+    // Enable the flow 2: ARP packets go to CM
     if ((res->arp_flow =
              generate_arp_flow(port_id, res->cm_rxq_id, res->local_cm_addr.sin_addr.s_addr,
                                res->local_cm_addr.sin_port, &flow_error)) == NULL)

@@ -19,7 +19,7 @@
 
 #include <ofi.h>
 
-#define MR_SIZE 1073741824 // This will become a parameter of the test
+#define MR_SIZE 67108864 //741824 // This will become a parameter of the test
 
 #define LF_VERSION         OFI_VERSION_LATEST
 #define MAX_LF_ADDR_SIZE   128 - sizeof(uint32_t) - 2 * sizeof(uint64_t)
