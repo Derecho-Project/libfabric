@@ -22,7 +22,7 @@
 
 #include <ofi.h>
 
-#define MR_SIZE 1073741824 // This will become a parameter of the test
+#define MR_SIZE 8192 // This will become a parameter of the test
 
 #define LF_VERSION         OFI_VERSION_LATEST
 #define MAX_LF_ADDR_SIZE   128 - sizeof(uint32_t) - 2 * sizeof(uint64_t)
@@ -78,7 +78,6 @@ typedef struct test_config {
     uint64_t max_msg;
     uint16_t burst_size;
     uint16_t port_id;
-    uint16_t queue_id;
 } test_config_t;
 
 /***Global states */
@@ -153,7 +152,6 @@ int parse_arguments(int argc, char *argv[], test_config_t *config) {
     config->max_msg      = 0;
     config->burst_size   = 8;
     config->port_id      = 0;
-    config->queue_id     = 0;
 
     /* Test role (mandatory argument) */
     if (!strcmp(argv[1], "server")) {
@@ -290,30 +288,52 @@ static int pagesz_flags(uint64_t page_sz) {
 }
 
 //--------------------------------------------------------------------------------------------------
-int lf_initialize() {
+int start_server_side() {
     int ret;
 
-    /* Initialize the fabric and domain */
-    ret = fi_fabric(g_ctxt.fi->fabric_attr, &(g_ctxt.fabric), NULL);
-
-    if (ret) {
-        printf("fi_fabric() failed: %s\n", fi_strerror(-ret));
-        return ret;
-    }
-
-    /** Initialize the event queue, initialize and configure pep  */
-    // This must be done before the fi_domain() call!
+    /** Initialize the event queue  */
     ret = fi_eq_open(g_ctxt.fabric, &(g_ctxt.eq_attr), &(g_ctxt.peq), NULL);
     if (ret) {
         printf("fi_eq_open() failed: %s\n", fi_strerror(-ret));
         return ret;
     }
 
-    ret = fi_domain(g_ctxt.fabric, g_ctxt.fi, &(g_ctxt.domain), NULL);
+    /** Initialize the event queue, initialize and configure pep  */
+    // Create passive EP (=> similar to server socket)
+    ret = fi_passive_ep(g_ctxt.fabric, g_ctxt.fi, &(g_ctxt.pep), NULL);
     if (ret) {
-        printf("fi_domain() failed: %s\n", fi_strerror(-ret));
+        printf("fi_passive_ep() failed: %s\n", fi_strerror(-ret));
         return ret;
     }
+
+    // Bind the passive endpoint to the event queue
+    ret = fi_pep_bind(g_ctxt.pep, &(g_ctxt.peq->fid), 0);
+    if (ret) {
+        printf("fi_pep_bind() failed: %s\n", fi_strerror(-ret));
+        return ret;
+    }
+
+    // Listen for incoming connections
+    ret = fi_listen(g_ctxt.pep);
+    if (ret) {
+        printf("fi_listen() failed: %s\n", fi_strerror(-ret));
+        return ret;
+    }
+
+    // Get the local address
+    ret = fi_getname(&(g_ctxt.pep->fid), g_ctxt.pep_addr, &(g_ctxt.pep_addr_len));
+    if (ret) {
+        printf("fi_getname() failed: %s\n", fi_strerror(-ret));
+        return ret;
+    }
+    if (g_ctxt.pep_addr_len > MAX_LF_ADDR_SIZE) {
+        printf("local name is too big to fit in local buffer\n");
+        return ret;
+    }
+    // Print the local address TODO: This should check the address format!!
+    struct sockaddr_in *addr = (struct sockaddr_in *)g_ctxt.pep_addr;
+    printf("Server server address: %s:%d\n", inet_ntoa(addr->sin_addr), ntohs(addr->sin_port));
+    printf("Server started! Listening for incoming connections...\n");
 
     return 0;
 }
@@ -322,17 +342,9 @@ int lf_initialize() {
 int init_active_ep(struct fi_info *fi, struct fid_ep **ep, struct fid_eq **eq) {
     int ret;
 
-    /* Open an endpoint */
-    ret = fi_endpoint(g_ctxt.domain, fi, ep, NULL);
+    ret = fi_domain(g_ctxt.fabric, g_ctxt.fi, &(g_ctxt.domain), NULL);
     if (ret) {
-        printf("fi_endpoint() failed: %s\n", fi_strerror(-ret));
-        return ret;
-    }
-
-    /* Create an event queue */
-    ret = fi_eq_open(g_ctxt.fabric, &(g_ctxt.eq_attr), eq, NULL);
-    if (ret) {
-        printf("fi_eq_open() failed: %s\n", fi_strerror(-ret));
+        printf("fi_domain() failed: %s\n", fi_strerror(-ret));
         return ret;
     }
 
@@ -357,6 +369,20 @@ int init_active_ep(struct fi_info *fi, struct fid_ep **ep, struct fid_eq **eq) {
     if (!g_ctxt.tx_cq) {
         printf("Pointer to completion queue is null\n");
         return -1;
+    }
+
+    /* Create an event queue */
+    ret = fi_eq_open(g_ctxt.fabric, &(g_ctxt.eq_attr), eq, NULL);
+    if (ret) {
+        printf("fi_eq_open() failed: %s\n", fi_strerror(-ret));
+        return ret;
+    }
+
+    /* Open an endpoint */
+    ret = fi_endpoint(g_ctxt.domain, fi, ep, NULL);
+    if (ret) {
+        printf("fi_endpoint() failed: %s\n", fi_strerror(-ret));
+        return ret;
     }
 
     /* Bind endpoint to event queue and completion queues */
@@ -529,35 +555,11 @@ static struct addrinfo *parse_ip_port_string(const char *ip_port_str) {
 void do_server(test_config_t *params) {
     int ret;
 
-    // Create passive EP (=> similar to server socket)
-    ret = fi_passive_ep(g_ctxt.fabric, g_ctxt.fi, &(g_ctxt.pep), NULL);
+    ret = start_server_side();
     if (ret) {
-        printf("fi_passive_ep() failed: %s\n", fi_strerror(-ret));
+        printf("start_server_side() failed: %s\n", fi_strerror(-ret));
         exit(2);
     }
-    // Bind the passive endpoint to the event queue
-    ret = fi_pep_bind(g_ctxt.pep, &(g_ctxt.peq->fid), 0);
-    if (ret) {
-        printf("fi_pep_bind() failed: %s\n", fi_strerror(-ret));
-        exit(2);
-    }
-    // Listen for incoming connections
-    ret = fi_listen(g_ctxt.pep);
-    if (ret) {
-        printf("fi_listen() failed: %s\n", fi_strerror(-ret));
-        exit(2);
-    }
-
-    // // Get the local address
-    // ret = fi_getname(&(g_ctxt.pep->fid), g_ctxt.pep_addr, &(g_ctxt.pep_addr_len));
-    // if (ret) {
-    //     printf("fi_getname() failed: %s\n", fi_strerror(-ret));
-    //     exit(2);
-    // }
-    // if (g_ctxt.pep_addr_len > MAX_LF_ADDR_SIZE) {
-    //     printf("local name is too big to fit in local buffer\n");
-    //     exit(2);
-    // }
 
     // Synchronously read from the passive event queue, init the server ep
     struct fi_eq_cm_entry entry;
@@ -583,6 +585,15 @@ void do_server(test_config_t *params) {
         printf("Failed to initialize server endpoint.\n");
         exit(2);
     }
+
+    // Allocate a memory region
+    ret = register_memory_region();
+    if (ret != 0) {
+        printf("register_memory_region failed: %s\n", fi_strerror(-ret));
+        exit(1);
+    }
+
+    // TODO: post a recv?
 
     // Accept the incoming connection
     if (fi_accept(ep, NULL, 0)) {
@@ -634,7 +645,8 @@ void do_server(test_config_t *params) {
 
         // Post a receive request
         do {
-            ret = fi_recvmsg(ep, &msg, 0);
+            msg.msg_iov = &msg_iov;
+            ret         = fi_recvmsg(ep, &msg, 0);
             if (ret < 0 && ret != -FI_EAGAIN) {
                 printf("fi_recvmsg() failed: %s\n", fi_strerror(-ret));
                 exit(2);
@@ -680,9 +692,23 @@ void do_client(test_config_t *params) {
     struct fid_ep *ep;
     struct fid_eq *eq;
 
+    /* Initialize the event queue  */
+    ret = fi_eq_open(g_ctxt.fabric, &(g_ctxt.eq_attr), &eq, NULL);
+    if (ret) {
+        printf("fi_eq_open() failed: %s\n", fi_strerror(-ret));
+        return ret;
+    }
+
     if (init_active_ep(g_ctxt.fi, &ep, &eq)) {
         printf("failed to initialize client endpoint.\n");
         exit(2);
+    }
+
+    // Allocate a memory region
+    ret = register_memory_region();
+    if (ret != 0) {
+        printf("register_memory_region failed: %s\n", fi_strerror(-ret));
+        exit(1);
     }
 
     // Connect to the server
@@ -745,7 +771,8 @@ void do_client(test_config_t *params) {
         tx_time = get_clock_realtime_ns();
 
         // Post a send request
-        ret = fi_sendmsg(ep, &msg, FI_COMPLETION);
+        msg.msg_iov = &msg_iov;
+        ret         = fi_sendmsg(ep, &msg, FI_COMPLETION);
         if (ret) {
             printf("fi_sendmsg() failed: %s\n", fi_strerror(-ret));
             printf("Insert a message size: ");
@@ -780,14 +807,12 @@ void do_ping(test_config_t *params) {
     struct fid_ep *ep;
     struct fid_eq *eq;
 
-    if (init_active_ep(g_ctxt.fi, &ep, &eq)) {
-        printf("failed to initialize ping endpoint.\n");
-        exit(2);
+    /* Initialize the event queue  */
+    ret = fi_eq_open(g_ctxt.fabric, &(g_ctxt.eq_attr), &eq, NULL);
+    if (ret) {
+        printf("fi_eq_open() failed: %s\n", fi_strerror(-ret));
+        return ret;
     }
-
-    // Connect to the server
-    struct fi_eq_cm_entry entry;
-    uint32_t              event;
 
     struct addrinfo *svr_ai = parse_ip_port_string(params->remote_endpoint);
     if (!svr_ai) {
@@ -795,6 +820,27 @@ void do_ping(test_config_t *params) {
                 params->remote_endpoint);
         return;
     }
+
+    g_ctxt.fi->dest_addr = malloc(svr_ai->ai_addrlen);
+    memcpy(g_ctxt.fi->dest_addr, svr_ai->ai_addr, svr_ai->ai_addrlen);
+    g_ctxt.fi->dest_addrlen = svr_ai->ai_addrlen;
+    g_ctxt.fi->addr_format  = FI_SOCKADDR_IN;
+
+    if (init_active_ep(g_ctxt.fi, &ep, &eq)) {
+        printf("failed to initialize ping endpoint.\n");
+        exit(2);
+    }
+
+    // Allocate a memory region
+    ret = register_memory_region();
+    if (ret != 0) {
+        printf("register_memory_region failed: %s\n", fi_strerror(-ret));
+        exit(1);
+    }
+
+    // Connect to the server
+    struct fi_eq_cm_entry entry;
+    uint32_t              event;
 
     ret = fi_connect(ep, svr_ai->ai_addr, NULL, 0);
     if (ret) {
@@ -841,11 +887,13 @@ void do_ping(test_config_t *params) {
         if (params->sleep_time) {
             sleep(params->sleep_time);
         }
+
         send_time = get_clock_realtime_ns();
 
         // Post a receive request: Pong
         do {
-            ret = fi_recvmsg(ep, &msg, 0);
+            msg.msg_iov = &msg_iov;
+            ret         = fi_recvmsg(ep, &msg, 0);
             if (ret < 0 && ret != -FI_EAGAIN) {
                 printf("fi_recvmsg() failed: %s\n", fi_strerror(-ret));
                 exit(2);
@@ -853,26 +901,32 @@ void do_ping(test_config_t *params) {
         } while (ret == -FI_EAGAIN);
 
         // Post a send request: PING!
-        ret = fi_sendmsg(ep, &msg, FI_COMPLETION);
+        msg.msg_iov = &msg_iov;
+        ret         = fi_sendmsg(ep, &msg, FI_COMPLETION);
         if (ret) {
             printf("fi_sendmsg() failed: %s\n", fi_strerror(-ret));
-            printf("Insert a message size: ");
-            continue;
+            exit(2);
         }
 
         // Get receive completion
         do {
-            ret = fi_cq_readfrom(g_ctxt.rx_cq, &comp, 1, &src_addr);
+            ret = fi_cq_read(g_ctxt.rx_cq, &comp, 1);
             if (ret < 0 && ret != -FI_EAGAIN) {
-                printf("CQ read failed: %s", fi_strerror(-ret));
+                printf("CQ read failed: (%d) %s\n", ret, fi_strerror(-ret));
                 break;
             }
         } while (ret == -FI_EAGAIN);
 
         // Compute latency
         response_time = get_clock_realtime_ns();
-        latency       = response_time - send_time;
-        fprintf(stdout, "(%ld) RTT: %.3f us\n", counter, (float)latency / 1000.0F);
+        // PRINT LATENCY BREAKDOWN
+        // printf("[%ld] Send     %lu\n", counter, send_time);
+        // fi_control(&g_ctxt.fabric->fid, counter, 0); // Dummy call to allow printing timestamps
+        // printf("[%ld] Recv     %lu\n", counter, response_time);
+        latency = response_time - send_time;
+        // Print the latency in us
+        // fprintf(stdout, "[%ld] %.3f\n", counter, (float)latency / 1000.0F);
+        fprintf(stdout, "%.3f\n", (float)latency / 1000.0F);
 
         counter++;
     }
@@ -882,35 +936,11 @@ void do_ping(test_config_t *params) {
 void do_pong(test_config_t *params) {
     int ret;
 
-    // Create passive EP (=> similar to server socket)
-    ret = fi_passive_ep(g_ctxt.fabric, g_ctxt.fi, &(g_ctxt.pep), NULL);
+    ret = start_server_side();
     if (ret) {
-        printf("fi_passive_ep() failed: %s\n", fi_strerror(-ret));
+        printf("start_server_side() failed: %s\n", fi_strerror(-ret));
         exit(2);
     }
-    // Bind the passive endpoint to the event queue
-    ret = fi_pep_bind(g_ctxt.pep, &(g_ctxt.peq->fid), 0);
-    if (ret) {
-        printf("fi_pep_bind() failed: %s\n", fi_strerror(-ret));
-        exit(2);
-    }
-    // Listen for incoming connections
-    ret = fi_listen(g_ctxt.pep);
-    if (ret) {
-        printf("fi_listen() failed: %s\n", fi_strerror(-ret));
-        exit(2);
-    }
-
-    // // Get the local address
-    // ret = fi_getname(&(g_ctxt.pep->fid), g_ctxt.pep_addr, &(g_ctxt.pep_addr_len));
-    // if (ret) {
-    //     printf("fi_getname() failed: %s\n", fi_strerror(-ret));
-    //     exit(2);
-    // }
-    // if (g_ctxt.pep_addr_len > MAX_LF_ADDR_SIZE) {
-    //     printf("local name is too big to fit in local buffer\n");
-    //     exit(2);
-    // }
 
     // Synchronously read from the passive event queue, init the server ep
     struct fi_eq_cm_entry entry;
@@ -935,6 +965,13 @@ void do_pong(test_config_t *params) {
         fi_freeinfo(entry.info);
         printf("Failed to initialize server endpoint.\n");
         exit(2);
+    }
+
+    // Allocate a memory region
+    ret = register_memory_region();
+    if (ret != 0) {
+        printf("register_memory_region failed: %s\n", fi_strerror(-ret));
+        exit(1);
     }
 
     // Accept the incoming connection
@@ -993,7 +1030,8 @@ void do_pong(test_config_t *params) {
 
         // Post a receive request: Pong
         do {
-            ret = fi_recvmsg(ep, &msg, 0);
+            msg.msg_iov = &msg_iov;
+            ret         = fi_recvmsg(ep, &msg, 0);
             if (ret < 0 && ret != -FI_EAGAIN) {
                 printf("fi_recvmsg() failed: %s\n", fi_strerror(-ret));
                 exit(2);
@@ -1002,15 +1040,16 @@ void do_pong(test_config_t *params) {
 
         // Get receive completion
         do {
-            ret = fi_cq_readfrom(g_ctxt.rx_cq, &comp, 1, &src_addr);
+            ret = fi_cq_read(g_ctxt.rx_cq, &comp, 1);
             if (ret < 0 && ret != -FI_EAGAIN) {
-                printf("CQ read failed: %s", fi_strerror(-ret));
+                printf("CQ read failed: (%d) %s\n", ret, fi_strerror(-ret));
                 break;
             }
         } while (ret == -FI_EAGAIN);
 
         // Post a send request: PING!
-        ret = fi_sendmsg(ep, &msg, FI_COMPLETION);
+        msg.msg_iov = &msg_iov;
+        ret         = fi_sendmsg(ep, &msg, FI_COMPLETION);
         if (ret) {
             printf("fi_sendmsg() failed: %s\n", fi_strerror(-ret));
             printf("Insert a message size: ");
@@ -1050,18 +1089,12 @@ int main(int argc, char **argv) {
         exit(1);
     }
 
-    // Create the fabric, domain, cq, and configure pep
-    ret = lf_initialize();
-    if (ret != 0) {
-        printf("lf_initialize failed: %s\n", fi_strerror(-ret));
-        exit(1);
-    }
+    /* Initialize the fabric */
+    ret = fi_fabric(g_ctxt.fi->fabric_attr, &(g_ctxt.fabric), NULL);
 
-    // Allocate a memory region
-    ret = register_memory_region();
-    if (ret != 0) {
-        printf("register_memory_region failed: %s\n", fi_strerror(-ret));
-        exit(1);
+    if (ret) {
+        printf("fi_fabric() failed: %s\n", fi_strerror(-ret));
+        return ret;
     }
 
     // Do test
@@ -1079,7 +1112,6 @@ int main(int argc, char **argv) {
     }
 
 cleanup_and_exit:
-    free(g_mr.buffer);
     fi_freeinfo(g_ctxt.fi);
     return 0;
 }

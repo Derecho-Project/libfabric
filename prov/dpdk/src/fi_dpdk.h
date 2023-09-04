@@ -55,11 +55,13 @@
 // be placed in the fi_info file and become a provider parameter.
 #define MAX_ENDPOINTS_PER_APP 128
 
-#define PROVIDER_NAME         "dpdk"
-#define DPDK_MAX_CM_DATA_SIZE 256
-#define DPDK_DEF_CQ_SIZE      1024
-#define DPDK_MAX_EVENTS       1024
-#define DPDK_IOV_LIMIT        8
+#define PROVIDER_NAME             "dpdk"
+#define DPDK_MAX_CM_DATA_SIZE     256
+#define DPDK_DEF_CQ_SIZE          1024
+#define DPDK_MAX_EVENTS           1024
+#define DPDK_IOV_LIMIT            8
+#define DPDK_MAX_RMA_IOV          DPDK_IOV_LIMIT
+#define MAX_MR_BUCKETS_PER_DOMAIN 512
 
 #define DPDK_NEED_RESP     BIT(1)
 #define DPDK_NEED_ACK      BIT(2)
@@ -72,6 +74,27 @@
 #define DPDK_COPY_RECV     BIT(9)
 #define DPDK_CLAIM_RECV    BIT(10)
 #define DPDK_MULTI_RECV    FI_MULTI_RECV /* BIT(16) */
+
+#define DO_WARN_ONCE(cond, var, format, ...)                                                       \
+    ({                                                                                             \
+        static bool var = false;                                                                   \
+        if ((cond) && !var) {                                                                      \
+            var = true;                                                                            \
+            DPDK_WARN(FI_LOG_EP_CTRL, format, ##__VA_ARGS__);                                      \
+        };                                                                                         \
+        cond;                                                                                      \
+    })
+
+#define PASTE(x, y) x##y
+/** Prints the given warning message (like fprintf(stderr, format, ...)) if cond
+ * is true, but only once per execution. */
+#define WARN_ONCE(cond, format, ...)                                                               \
+    DO_WARN_ONCE(cond, PASTE(xyzwarn_, __LINE__), format, ##__VA_ARGS__)
+
+//////////////////////////////////////////////////////////
+// Variables defined for latency breakdown
+uint64_t get_clock_realtime_ns();
+/////////////////////////////////////////////////////////
 
 // ==================== Global variables ====================
 // Global structures for the DPDK provider
@@ -100,9 +123,21 @@ struct dpdk_mr {
     // Libfabric memory region descriptor
     struct fid_mr mr_fid;
     // Memory Region references
-    void  *buf;
-    size_t len;
+    void           *buf;
+    size_t          len;
+    uint32_t        lkey;
+    uint32_t        rkey;
+    int             access;
+    struct dpdk_mr *next;
 };
+
+struct dpdk_mr_table {
+    size_t          capacity;
+    size_t          mr_count;
+    struct dpdk_mr *entries[MAX_MR_BUCKETS_PER_DOMAIN];
+};
+
+struct dpdk_mr *dpdk_mr_lookup(struct dpdk_mr_table *tbl, uint32_t rkey);
 
 // ==================== Event Descriptor and DPDK Queues ====================
 struct dpdk_xfer_queue {
@@ -112,7 +147,7 @@ struct dpdk_xfer_queue {
     int              max_wr;
     int              max_sge;
     rte_spinlock_t   lock;
-    // What is this?
+    // List of XFER entries corresponding to RECV request waiting for their SEND
     struct dlist_entry active_head;
     // TODO: maybe a union for the following?
     // Send-specific
@@ -177,22 +212,22 @@ enum {
 // In uRDMA there are two distinct structures. I merged them. Is this a good idea?
 // Should we keep them separate? Should we use a union?
 struct dpdk_xfer_entry {
-    struct dlist_entry    entry;
-    void                 *context;
-    enum xfer_send_opcode opcode;
-    struct ee_state      *remote_ep;
-    uint64_t              remote_addr;
-    uint32_t              rkey;
-    uint32_t              flags;
-    uint32_t              index;
-    enum xfer_send_state  state;
-    uint32_t              msn;
-    size_t                total_length;
-    size_t                bytes_sent;
-    size_t                bytes_acked;
-    uint64_t              atomic_add_swap;
-    uint64_t              atomic_compare;
-    uint8_t               atomic_opcode;
+    struct dlist_entry      entry;
+    void                   *context;
+    enum xfer_send_opcode   opcode;
+    struct ee_state        *remote_ep;
+    const struct fi_rma_iov rma_iov[DPDK_MAX_RMA_IOV]; /* remote SGL */
+    size_t                  rma_iov_count;             /* # elements in rma_iov */
+    uint32_t                flags;
+    uint32_t                index;
+    enum xfer_send_state    state;
+    uint32_t                msn;
+    size_t                  total_length;
+    size_t                  bytes_sent;
+    size_t                  bytes_acked;
+    uint64_t                atomic_add_swap;
+    uint64_t                atomic_compare;
+    uint8_t                 atomic_opcode;
 
     // For send
     uint32_t local_stag; /* only used for READs */
@@ -275,6 +310,14 @@ struct dpdk_domain {
     // Mutex to access the list of EP
     struct ofi_genlock ep_mutex;
 
+    // List of MR associated with this domain
+    struct dpdk_mr_table mr_tbl;
+    struct ofi_genlock   mr_tbl_lock;
+
+    // Ring and list for orphan SENDS
+    struct rte_ring   *free_ctx_ring;
+    struct dlist_entry orphan_sends;
+
     // Progress thread data
     struct dpdk_progress progress;
 
@@ -353,6 +396,7 @@ struct dpdk_ep {
 
 // Message ops
 extern struct fi_ops_msg dpdk_msg_ops;
+extern struct fi_ops_rma dpdk_rma_ops;
 
 // connection manager ops
 extern struct fi_ops_cm dpdk_cm_ops;
@@ -420,6 +464,7 @@ struct dpdk_domain_resources {
     struct rte_mempool *cm_pool;
     // cm flow
     struct rte_flow *cm_flow;
+    struct rte_flow *arp_flow;
     // cm session counter
     atomic_uint cm_session_counter;
     /* The passive endpoint and domain are set during fi_passive_ep() and
@@ -569,6 +614,7 @@ enum fi_wc_status {
 enum fi_wc_opcode {
     FI_WC_SEND,
     FI_WC_RDMA_WRITE,
+    FI_WC_RDMA_WRITE_WITH_IMM,
     FI_WC_RDMA_READ,
     FI_WC_COMP_SWAP,
     FI_WC_FETCH_ADD,
@@ -661,7 +707,9 @@ int  dpdk_eq_open(struct fid_fabric *fabric_fid, struct fi_eq_attr *attr, struct
 void dpdk_tx_queue_insert(struct dpdk_ep *ep, struct dpdk_xfer_entry *tx_entry);
 
 //===================== DPDK Configurations ================
-extern struct cfg_t *dpdk_config;
+extern struct cfg_t       *dpdk_config;
+extern struct dpdk_fabric *dpdk_prov_fabric;
+
 #define CFG_OPT_DPDK_ARGS            "dpdk_args"
 #define CFG_OPT_DEFAULT_CM_PORT      "default_cm_port"
 #define CFG_OPT_DEFAULT_CM_RING_SIZE "default_cm_ring_size"

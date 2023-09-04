@@ -33,6 +33,8 @@ static struct rte_flow *generate_cm_flow(uint16_t port_id, uint16_t rx_queue_id,
                                          uint16_t port, struct rte_flow_error *error) {
     struct rte_flow_attr         attr;
     struct rte_flow_item         pattern[4];
+    struct rte_flow_item_eth     item_eth_mask = {};
+    struct rte_flow_item_eth     item_eth_spec = {};
     struct rte_flow_item_ipv4    ipv4_spec;
     struct rte_flow_item_ipv4    ipv4_mask;
     struct rte_flow_item_udp     udp_spec;
@@ -55,7 +57,11 @@ static struct rte_flow *generate_cm_flow(uint16_t port_id, uint16_t rx_queue_id,
     action[1].type = RTE_FLOW_ACTION_TYPE_END;
 
     // patterns
-    pattern[0].type = RTE_FLOW_ITEM_TYPE_ETH;
+    item_eth_spec.hdr.ether_type = RTE_BE16(RTE_ETHER_TYPE_IPV4);
+    item_eth_mask.hdr.ether_type = RTE_BE16(0xFFFF);
+    pattern[0].type              = RTE_FLOW_ITEM_TYPE_ETH;
+    pattern[0].mask              = &item_eth_mask;
+    pattern[0].spec              = &item_eth_spec;
 
     bzero(&ipv4_spec, sizeof(ipv4_spec));
     ipv4_spec.hdr.next_proto_id = 0x11; // UDP
@@ -78,6 +84,47 @@ static struct rte_flow *generate_cm_flow(uint16_t port_id, uint16_t rx_queue_id,
     pattern[2].last       = NULL;
 
     pattern[3].type = RTE_FLOW_ITEM_TYPE_END;
+
+    err = rte_flow_validate(port_id, &attr, pattern, action, error);
+    if (!err) {
+        flow = rte_flow_create(port_id, &attr, pattern, action, error);
+    }
+
+    return flow;
+}
+
+static struct rte_flow *generate_arp_flow(uint16_t port_id, uint16_t rx_queue_id, uint32_t ip,
+                                          uint16_t port, struct rte_flow_error *error) {
+    struct rte_flow_attr         attr;
+    struct rte_flow_item         pattern[2];
+    struct rte_flow_item_eth     item_eth_mask = {};
+    struct rte_flow_item_eth     item_eth_spec = {};
+    struct rte_flow_action       action[2];
+    struct rte_flow             *flow  = NULL;
+    struct rte_flow_action_queue queue = {.index = rx_queue_id};
+    int                          err;
+
+    bzero(&attr, sizeof(attr));
+    bzero(pattern, sizeof(pattern));
+    bzero(action, sizeof(action));
+
+    // rule attr
+    attr.ingress = 1;
+
+    // action sequence
+    action[0].type = RTE_FLOW_ACTION_TYPE_QUEUE;
+    action[0].conf = &queue;
+    action[1].type = RTE_FLOW_ACTION_TYPE_END;
+
+    // patterns
+    // TODO: There is a specific enum for ARP but I was not able to use it
+    item_eth_spec.hdr.ether_type = RTE_BE16(RTE_ETHER_TYPE_ARP);
+    item_eth_mask.hdr.ether_type = RTE_BE16(0xFFFF);
+
+    pattern[0].type = RTE_FLOW_ITEM_TYPE_ETH;
+    pattern[0].mask = &item_eth_mask;
+    pattern[0].spec = &item_eth_spec;
+    pattern[1].type = RTE_FLOW_ITEM_TYPE_END;
 
     err = rte_flow_validate(port_id, &attr, pattern, action, error);
     if (!err) {
@@ -271,10 +318,11 @@ int create_dpdk_domain_resources(struct fi_info *info, struct dpdk_domain_resour
         goto error_group_2;
     }
 
+    // [Azure] No distinction here
     res->data_rxq_id = 0;
     res->data_txq_id = 0;
-    res->cm_rxq_id   = 1;
-    res->cm_txq_id   = 1;
+    res->cm_rxq_id   = 0;
+    res->cm_txq_id   = 0;
 
     int      socket_id = rte_eth_dev_socket_id(port_id);
     char     name[256];
@@ -283,7 +331,14 @@ int create_dpdk_domain_resources(struct fi_info *info, struct dpdk_domain_resour
         cfg_cm_ring_size = (uint16_t)cfg_getint(res->domain_config, CFG_OPT_DOMAIN_CM_RING_SIZE);
     }
 
-    sprintf(name, "lf.D.cmtx");
+    char substr[23];
+    if (strlen(res->domain_name) > 22) {
+        strncpy(substr, res->domain_name, 22);
+        substr[22] = '\0';
+        sprintf(name, "lf.%s.cmxr", substr);
+    } else {
+        sprintf(name, "lf.%s.cmxr", res->domain_name);
+    }
     res->cm_tx_ring =
         rte_ring_create(name, cfg_cm_ring_size, socket_id, RING_F_MP_RTS_ENQ | RING_F_SC_DEQ);
     if (!res->cm_tx_ring) {
@@ -294,7 +349,14 @@ int create_dpdk_domain_resources(struct fi_info *info, struct dpdk_domain_resour
     }
 
     // RX pool for control path
-    sprintf(name, "lf.D.cmrx");
+    bzero(substr, 23);
+    if (strlen(res->domain_name) > 22) {
+        strncpy(substr, res->domain_name, 22);
+        substr[22] = '\0';
+        sprintf(name, "lf.%s.cmp", substr);
+    } else {
+        sprintf(name, "lf.%s.cmp", res->domain_name);
+    }
     // Dimension of the CP mempool (must be power of 2)
     size_t pool_size = 1024;
     // Dimension of the mbufs in the mempool. Must contain at least an Ethernet frame + private
@@ -317,12 +379,19 @@ int create_dpdk_domain_resources(struct fi_info *info, struct dpdk_domain_resour
 
     // RX pool for data path
     char rx_pool_name[32];
-    sprintf(rx_pool_name, "rx_pool_D");
+    bzero(substr, 23);
+    if (strlen(res->domain_name) > 22) {
+        strncpy(substr, res->domain_name, 22);
+        substr[22] = '\0';
+        sprintf(rx_pool_name, "rx_pool_%s", substr);
+    } else {
+        sprintf(rx_pool_name, "rx_pool_%s", res->domain_name);
+    }
     // Dimension of the TX mempool (must be power of 2)
     pool_size = rte_align32pow2(2 * MAX_ENDPOINTS_PER_APP * dpdk_default_rx_size);
     // Dimension of the mbufs in the mempool. Must contain at least an Ethernet frame + private
     // DPDK data (see documentation)
-    mbuf_size = RTE_MBUF_DEFAULT_DATAROOM;
+    mbuf_size = RTE_MBUF_DEFAULT_DATAROOM + RTE_PKTMBUF_HEADROOM;
     // Other parameters
     cache_size   = 64;
     private_size = 0;
@@ -349,7 +418,7 @@ int create_dpdk_domain_resources(struct fi_info *info, struct dpdk_domain_resour
     if (devinfo.tx_offload_capa & RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE) {
         port_conf.txmode.offloads |= RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE;
     }
-    if ((err = rte_eth_dev_configure(port_id, 2, 2, &port_conf)) != 0) {
+    if ((err = rte_eth_dev_configure(port_id, 1, 1, &port_conf)) != 0) {
         DPDK_WARN(FI_LOG_FABRIC, "rte_eth_dev_configure on port:%u failed with error:%s.\n",
                   port_id, rte_strerror(rte_errno));
         goto error_group_2;
@@ -394,22 +463,23 @@ int create_dpdk_domain_resources(struct fi_info *info, struct dpdk_domain_resour
     }
 
     // 2) Connection management (control path) queues
-    nb_rxd = cfg_cm_ring_size;
-    nb_txd = cfg_cm_ring_size;
-    if ((err = rte_eth_rx_queue_setup(port_id, res->cm_rxq_id, nb_rxd, socket_id, NULL,
-                                      res->cm_pool)) != 0)
-    {
-        DPDK_WARN(FI_LOG_FABRIC,
-                  "rte_eth_rx_queue_setup failed on port:%u, qid:%u failed with error:%s.\n",
-                  port_id, res->cm_rxq_id, rte_strerror(rte_errno));
-        goto error_group_3;
-    }
-    if ((err = rte_eth_tx_queue_setup(port_id, res->cm_txq_id, nb_txd, socket_id, &txconf)) != 0) {
-        DPDK_WARN(FI_LOG_FABRIC,
-                  "rte_eth_tx_queue_setup failed on port:%u, qid:%u failed with error:%s.\n",
-                  port_id, res->cm_txq_id, rte_strerror(rte_errno));
-        goto error_group_3;
-    }
+    // nb_rxd = cfg_cm_ring_size;
+    // nb_txd = cfg_cm_ring_size;
+    // if ((err = rte_eth_rx_queue_setup(port_id, res->cm_rxq_id, nb_rxd, socket_id, NULL,
+    //                                   res->cm_pool)) != 0)
+    // {
+    //     DPDK_WARN(FI_LOG_FABRIC,
+    //               "rte_eth_rx_queue_setup failed on port:%u, qid:%u failed with error:%s.\n",
+    //               port_id, res->cm_rxq_id, rte_strerror(rte_errno));
+    //     goto error_group_3;
+    // }
+    // if ((err = rte_eth_tx_queue_setup(port_id, res->cm_txq_id, nb_txd, socket_id, &txconf)) != 0)
+    // {
+    //     DPDK_WARN(FI_LOG_FABRIC,
+    //               "rte_eth_tx_queue_setup failed on port:%u, qid:%u failed with error:%s.\n",
+    //               port_id, res->cm_txq_id, rte_strerror(rte_errno));
+    //     goto error_group_3;
+    // }
 
     do {
         err = rte_eth_dev_start(port_id);
@@ -429,15 +499,27 @@ int create_dpdk_domain_resources(struct fi_info *info, struct dpdk_domain_resour
     //     goto error_group_3;
     // }
 
-    // Enable the flow
+    // // Enable the flow 1: UDP packets with destination port equal to the CM port go to CM
     // struct rte_flow_error flow_error;
-    // if ((res->cm_flow = generate_cm_flow(port_id, 1, res->local_cm_addr.sin_addr.s_addr,
-    //                                      res->local_cm_addr.sin_port, &flow_error)) == NULL)
+    // if ((res->cm_flow =
+    //          generate_cm_flow(port_id, res->cm_rxq_id, res->local_cm_addr.sin_addr.s_addr,
+    //                           res->local_cm_addr.sin_port, &flow_error)) == NULL)
     // {
     //     DPDK_WARN(FI_LOG_FABRIC, "cm flow generation failed on port:%u, error:%s.\n", port_id,
     //               flow_error.message ? flow_error.message : "unkown");
     //     goto error_group_3;
     // }
+
+    // // Enable the flow 2: ARP packets go to CM
+    // if ((res->arp_flow =
+    //          generate_arp_flow(port_id, res->cm_rxq_id, res->local_cm_addr.sin_addr.s_addr,
+    //                            res->local_cm_addr.sin_port, &flow_error)) == NULL)
+    // {
+    //     DPDK_WARN(FI_LOG_FABRIC, "ARP flow generation failed on port:%u, error:%s.\n", port_id,
+    //               flow_error.message ? flow_error.message : "unkown");
+    //     goto error_group_3;
+    // }
+
     // session counter
     atomic_init(&res->cm_session_counter, 0);
 
@@ -520,10 +602,23 @@ int dpdk_create_fabric(struct fi_fabric_attr *attr, struct fid_fabric **fabric_f
     struct dpdk_fabric *fabric;
     int                 ret;
 
+    // TODO: Can we have multiple fabric instances in the same application?
+    // My answer is currently NO: if we had them, we could open domains on the same NIC
+    // as other fabric instances, which would be a problem: how do you distinguish different
+    // packets? A solution would be to enforce that domains in different fabric use different
+    // UDP/TCP ports, but this would be too difficult to enforce. So why don't just return the same
+    // instance of the fabric?
+    if (dpdk_prov_fabric) {
+        *fabric_fid = &dpdk_prov_fabric->util_fabric.fabric_fid;
+        return FI_SUCCESS;
+    }
+
     // STEP 1: common setup routine
     fabric = calloc(1, sizeof(*fabric));
-    if (!fabric)
+    if (!fabric) {
         return -FI_ENOMEM;
+    }
+    dpdk_prov_fabric = fabric;
 
     ret = ofi_fabric_init(&dpdk_prov, dpdk_util_prov.info->fabric_attr, attr, &fabric->util_fabric,
                           context);

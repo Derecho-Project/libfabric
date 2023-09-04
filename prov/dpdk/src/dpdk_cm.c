@@ -214,9 +214,9 @@ static int dpdk_ep_connect(struct fid_ep *ep_fid, const void *addr, const void *
     atomic_store(&ep->session_id, ++domain->res->cm_session_counter);
 
     // STEP 2.5 - Get the dst MAC address from the ARP cache
-    uint8_t *dst_mac = arp_get_hwaddr_or_lookup(domain, paddrin->sin_addr.s_addr);
-    DPDK_DBG(FI_LOG_EP_CTRL, "dst_mac is %02x:%02x:%02x:%02x:%02x:%02x:%02x\n", dst_mac[0],
-             dst_mac[1], dst_mac[2], dst_mac[3], dst_mac[4], dst_mac[5], dst_mac[6]);
+    uint8_t *dst_mac = arp_get_hwaddr_or_lookup(domain->res, paddrin->sin_addr.s_addr);
+    DPDK_DBG(FI_LOG_EP_CTRL, "dst_mac is %02x:%02x:%02x:%02x:%02x:%02x\n", dst_mac[0], dst_mac[1],
+             dst_mac[2], dst_mac[3], dst_mac[4], dst_mac[5]);
     memcpy(ep->remote_eth_addr.addr_bytes, dst_mac, RTE_ETHER_ADDR_LEN);
 
     // STEP 3 - send connection request
@@ -287,30 +287,13 @@ static int dpdk_ep_accept(struct fid_ep *ep, const void *param, size_t paramlen)
     }
 
     // 2 - set up endpoint for connection ready.
-    conn_handle             = container_of(dep->conn_handle, struct dpdk_conn_handle, fid);
+    conn_handle = container_of(dep->conn_handle, struct dpdk_conn_handle, fid);
+    memcpy(dep->remote_eth_addr.addr_bytes, conn_handle->remote_eth_addr, RTE_ETHER_ADDR_LEN);
     dep->remote_ipv4_addr   = conn_handle->remote_ip_addr;
     dep->remote_cm_udp_port = conn_handle->remote_ctrl_port;
     dep->remote_udp_port    = conn_handle->remote_data_port;
 
-    // 3 - set endpoint to connected state
-    atomic_store(&dep->conn_state, ep_conn_state_connected);
-
-    // 4 - generate a FI_CONNECTED event locally, and
-    struct dpdk_cm_entry cm_entry;
-    cm_entry.fid  = &ep->fid;
-    cm_entry.info = NULL;
-    memcpy(&cm_entry.data, param, paramlen);
-    struct dpdk_eq *eq = container_of(dep->util_ep.eq, struct dpdk_eq, util_eq);
-    ret                = fi_eq_write(&eq->util_eq.eq_fid, FI_CONNECTED, (void *)&cm_entry,
-                                     sizeof(struct fi_eq_cm_entry) + paramlen, 0);
-    if (ret < 0) {
-        DPDK_WARN(FI_LOG_EP_CTRL,
-                  "%s failed to insert connreq event to event queue with error code: %d.", __func__,
-                  ret);
-        goto error_group_1;
-    }
-
-    // 5 - notify the peer node with CONNECTED
+    // 3 - notify the peer node with CONNECTED
     struct rte_mbuf    *connack_mbuf = NULL;
     struct dpdk_domain *domain = container_of(dep->util_ep.domain, struct dpdk_domain, util_domain);
     assert(domain->res);
@@ -337,6 +320,24 @@ static int dpdk_ep_accept(struct fid_ep *ep, const void *param, size_t paramlen)
         goto error_group_1;
     }
     DPDK_DBG(FI_LOG_EP_CTRL, "connack msg added to cm ring.\n");
+
+    // 4 - set endpoint to connected state
+    atomic_store(&dep->conn_state, ep_conn_state_connected);
+
+    // 5 - generate a FI_CONNECTED event locally, and
+    struct dpdk_cm_entry cm_entry;
+    cm_entry.fid  = &ep->fid;
+    cm_entry.info = NULL;
+    memcpy(&cm_entry.data, param, paramlen);
+    struct dpdk_eq *eq = container_of(dep->util_ep.eq, struct dpdk_eq, util_eq);
+    ret                = fi_eq_write(&eq->util_eq.eq_fid, FI_CONNECTED, (void *)&cm_entry,
+                                     sizeof(struct fi_eq_cm_entry) + paramlen, 0);
+    if (ret < 0) {
+        DPDK_WARN(FI_LOG_EP_CTRL,
+                  "%s failed to insert connreq event to event queue with error code: %d.", __func__,
+                  ret);
+        goto error_group_1;
+    }
 
     return FI_SUCCESS;
     // error handling
@@ -805,8 +806,8 @@ int dpdk_cm_recv(struct rte_mbuf *m, struct dpdk_domain_resources *res) {
 
     switch (rte_be_to_cpu_16(eth_hdr->ether_type)) {
     case RTE_ETHER_TYPE_ARP:
-        DPDK_INFO(FI_LOG_EP_DATA, "Received ARP request\n");
-        arp_receive(res->domain, m);
+        DPDK_INFO(FI_LOG_EP_DATA, "Received ARP request/reply\n");
+        arp_receive(res, m);
         return ret;
     case RTE_ETHER_TYPE_IPV4:
         break;
@@ -828,7 +829,8 @@ int dpdk_cm_recv(struct rte_mbuf *m, struct dpdk_domain_resources *res) {
     offset += sizeof(*cm_hdr);
     void *cm_data = rte_pktmbuf_mtod_offset(m, void *, offset);
 
-    DPDK_TRACE(FI_LOG_EP_CTRL, "Receiving CM Message with type:%d.\n", cm_hdr->type);
+    DPDK_TRACE(FI_LOG_EP_CTRL, "Receiving CM Message with type:%d.\n",
+               rte_be_to_cpu_32(cm_hdr->type));
 
     switch (rte_be_to_cpu_32(cm_hdr->type)) {
     case DPDK_CM_MSG_CONNECTION_REQUEST:

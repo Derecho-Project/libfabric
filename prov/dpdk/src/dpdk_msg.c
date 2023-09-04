@@ -8,30 +8,17 @@ static void free_extbuf_cb(void *addr, void *opaque) {
 static int ep_get_next_recv_entry(struct dpdk_ep *ep, struct dpdk_xfer_entry **xfer_entry) {
     int ret;
 
-    rte_spinlock_lock(&ep->rq.lock);
     ret = rte_ring_dequeue(ep->rq.free_ring, (void **)xfer_entry);
-    rte_spinlock_unlock(&ep->rq.lock);
     if (ret == -ENOENT)
         ret = -ENOSPC;
     return ret;
 } /* ep_get_next_recv_xfer */
 
-// Returns the given receive XFER back to the free pool.  It is removed from the active set if
-// still_in_hash is true. The rq lock MUST be locked when calling this function.
-// TODO; This isn't called by anyone? really? Why?
-void ep_free_recv_xfer(struct dpdk_ep *ep, struct dpdk_xfer_entry *wqe) {
-    dlist_remove(&wqe->entry);
-    rte_ring_enqueue(ep->rq.free_ring, wqe);
-} /* ep_free_recv_xfer */
-
 static int ep_get_next_send_entry(struct dpdk_ep *ep, struct dpdk_xfer_entry **xfer_entry) {
     int ret;
 
-    rte_spinlock_lock(&ep->sq.lock);
     ret = rte_ring_dequeue(ep->sq.free_ring, (void **)xfer_entry);
-    rte_spinlock_unlock(&ep->sq.lock);
     if (ret == -ENOENT) {
-        FI_WARN(&dpdk_prov, FI_LOG_EP_CTRL, "Send queue full!");
         ret = -ENOSPC;
     }
     return ret;
@@ -82,8 +69,9 @@ static ssize_t dpdk_recvmsg(struct fid_ep *ep_fid, const struct fi_msg *msg, uin
     rx_entry->recv_size  = 0;
     rx_entry->input_size = 0;
     rx_entry->complete   = false;
+    rx_entry->flags      = flags;
 
-    FI_DBG(&dpdk_prov, FI_LOG_EP_CTRL, "Enqueue a read request for EP %u\n", ep->udp_port);
+    FI_DBG(&dpdk_prov, FI_LOG_EP_CTRL, "Enqueue a receive request for EP %u\n", ep->udp_port);
     ret = rte_ring_enqueue(ep->rq.ring, rx_entry);
     if (ret < 0) {
         ret = -ret;
@@ -154,6 +142,7 @@ static ssize_t dpdk_sendmsg(struct fid_ep *ep_fid, const struct fi_msg *msg, uin
     // Get a free TX entry from the TX queue ring associated to the EP
     ret = ep_get_next_send_entry(ep, &tx_entry);
     if (ret < 0) {
+        FI_WARN(&dpdk_prov, FI_LOG_EP_DATA, "No descriptor available for this message\n");
         return ret;
     }
 
@@ -163,7 +152,7 @@ static ssize_t dpdk_sendmsg(struct fid_ep *ep_fid, const struct fi_msg *msg, uin
     tx_entry->flags = flags;
 
     // Fill the TX entry with the data from the msg
-    tx_entry->opcode  = xfer_send;
+    tx_entry->opcode  = (flags & FI_REMOTE_CQ_DATA) ? xfer_send_with_imm : xfer_send;
     tx_entry->context = msg->context;
     memcpy(tx_entry->iov, msg->msg_iov, msg->iov_count * sizeof(*msg->msg_iov));
     tx_entry->iov_count    = msg->iov_count;

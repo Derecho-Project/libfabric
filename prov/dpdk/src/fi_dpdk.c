@@ -15,6 +15,9 @@ cfg_t *dpdk_domain_config(const char *domain_name) {
     return NULL;
 }
 
+// Single instance of a DPDK provider
+struct dpdk_fabric *dpdk_prov_fabric = NULL;
+
 // ================ Provider Initialization Functions =================
 static void fi_dpdk_fini(void) {
 

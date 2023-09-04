@@ -10,6 +10,8 @@
 /* This file contains definitions and function prototypes for the userspace protocol processing.*/
 
 struct packet_context {
+    struct dlist_entry   entry;
+    struct dpdk_ep      *dst_ep;
     struct ee_state     *src_ep;
     size_t               ddp_seg_length;
     struct rdmap_packet *rdmap;
@@ -27,8 +29,7 @@ struct packet_context {
 #define MTU           1500
 #define INNER_HDR_LEN (IP_HDR_LEN + UDP_HDR_LEN + TRP_HDR_LEN + RDMAP_HDR_LEN)
 #define HDR_MBUF_EXTRA_SPACE                                                                       \
-    (sizeof(struct rdmap_terminate_packet) + sizeof(struct rdmap_terminate_payload) -              \
-     sizeof(struct rdmap_untagged_packet))
+    (sizeof(struct rdmap_readreq_packet) - sizeof(struct rdmap_untagged_packet))
 
 /* Offsets of headers in the hdr mbufs */
 #define ETHERNET_HDR_OFFSET 0
@@ -92,9 +93,9 @@ typedef struct arp_hdr {
 } __attribute__((packed)) arp_hdr_t;
 
 uint8_t *arp_get_hwaddr(uint32_t saddr);
-uint8_t *arp_get_hwaddr_or_lookup(struct dpdk_domain *domain, uint32_t saddr);
-void     arp_receive(struct dpdk_domain *domain, struct rte_mbuf *arp_mbuf);
-int32_t  arp_request(struct dpdk_domain *domain, uint32_t saddr, uint32_t daddr);
+uint8_t *arp_get_hwaddr_or_lookup(struct dpdk_domain_resources *domain_res, uint32_t saddr);
+void     arp_receive(struct dpdk_domain_resources *domain_res, struct rte_mbuf *arp_mbuf);
+int32_t  arp_request(struct dpdk_domain_resources *domain_res, uint32_t saddr, uint32_t daddr);
 
 // ARP Table
 #define ARP_TRASL_TABLE_INSERT_FAILED   0
@@ -145,7 +146,7 @@ struct rte_udp_hdr *prepend_udp_header(struct rte_mbuf *sendmsg, unsigned int sr
                                        unsigned int dst_port, uint16_t ddp_length);
 
 /* TRP */
-#define RETRANSMIT_MAX 5
+#define RETRANSMIT_MAX 0
 
 enum {
     trp_req = 0x1000,
@@ -222,7 +223,7 @@ void maybe_sack_pending(struct pending_datagram_info *pending, uint32_t psn_min,
 #define DDP_V1_TAGGED_LAST_DF   0xc1
 #define DDP_GET_T(flags)        ((flags >> 7) & 0x1)
 #define DDP_GET_L(flags)        ((flags >> 6) & 0x1)
-#define DDP_GET_DV(flags)       ((flags)&0x3)
+#define DDP_GET_DV(flags)       ((flags) & 0x3)
 
 struct read_atomic_response_state {
     char    *vaddr;
@@ -271,7 +272,7 @@ int resend_ddp_segment(struct dpdk_ep *ep, struct rte_mbuf *sendmsg, struct ee_s
 
 #define RDMAP_V1                0x40
 #define RDMAP_GET_RV(flags)     ((flags >> 6) & 0x3)
-#define RDMAP_GET_OPCODE(flags) ((flags)&0xf)
+#define RDMAP_GET_OPCODE(flags) ((flags) & 0xf)
 
 /** Given a pointer to a structure representing a packet header, returns a
  * pointer to the payload (one byte immediately after the header) */
@@ -281,7 +282,7 @@ struct rdmap_packet {
     uint8_t  ddp_flags;  /* 0=Tagged 1=Last 7-6=DDP_Version */
     uint8_t  rdmap_info; /* 1-0=RDMAP_Version 7-4=Opcode */
     uint32_t sink_stag;
-    uint32_t immediate;  /* The immediate data */
+    uint32_t immediate; /* The immediate data */
 } __attribute__((__packed__));
 static_assert(sizeof(struct rdmap_packet) == 10, "unexpected sizeof(rdmap_packet)");
 
@@ -406,6 +407,9 @@ enum rdmap_errno {
 void memcpy_from_iov(char *restrict dest, size_t dest_size, const struct iovec *restrict src,
                      size_t iov_count, size_t offset);
 void do_rdmap_send(struct dpdk_ep *ep, struct dpdk_xfer_entry *entry);
+void do_rdmap_write(struct dpdk_ep *ep, struct dpdk_xfer_entry *entry);
+void do_rdmap_read_request(struct dpdk_ep *ep, struct dpdk_xfer_entry *entry);
+int  do_rdmap_read_response(struct dpdk_ep *ep, struct read_atomic_response_state *readresp);
 void do_rdmap_terminate(struct dpdk_ep *ep, struct packet_context *orig, enum rdmap_errno errcode);
 
 int setup_queue_tbl(struct rx_queue *rxq, uint32_t lcore, uint32_t queue, uint16_t port_mtu);

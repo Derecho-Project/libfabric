@@ -24,22 +24,22 @@ static ssize_t dpdk_cq_readfrom(struct fid_cq *cq_fid, void *buf, size_t count,
     // struct dpdk_ep *ep = cq->ep;
 
     // Array of WQEs that I read from the CQE.
-    // I am expected to return only those successfult?
+    // TODO: I am expected to return only those successfult?
     // See the libfabric spec for more details.
     struct fi_dpdk_wc *cqe[dpdk_default_rx_burst_size];
 
-    // rte_spinlock_lock(&ep->rq.lock);
     ret = rte_ring_dequeue_burst(cq->cqe_ring, (void **)cqe, count, NULL);
-    // rte_spinlock_unlock(&ep->rq.lock);
     if (ret == 0) {
         return -EAGAIN;
     }
 
-    // TODO: WHat if I have more than one CQE TO RETURN?
-    struct fi_cq_msg_entry *comp = (struct fi_cq_msg_entry *)buf;
-    comp->flags                  = cqe[0]->wc_flags;
-    comp->len                    = cqe[0]->byte_len;
-    comp->op_context             = cqe[0]->wr_context;
+    for (uint32_t i = 0; i < ret; i++) {
+        struct fi_cq_data_entry *comp = (struct fi_cq_data_entry *)buf + i;
+        comp->op_context              = cqe[i]->wr_context;
+        comp->flags                   = cqe[i]->wc_flags;
+        comp->len                     = cqe[i]->byte_len;
+        comp->data                    = cqe[i]->imm_data;
+    }
 
     // TODO: implement according to the spec
     if (src_addr) {
@@ -47,7 +47,7 @@ static ssize_t dpdk_cq_readfrom(struct fid_cq *cq_fid, void *buf, size_t count,
     }
 
     // Return the CQ descriptor to the free ring
-    rte_ring_enqueue_burst(cq->free_ring, (void **)cqe, count, NULL);
+    rte_ring_enqueue_burst(cq->free_ring, (void **)cqe, ret, NULL);
 
     return ret;
 }
@@ -104,7 +104,7 @@ static struct fi_ops dpdk_cq_fi_ops = {
 
 static struct fi_ops_cq dpdk_cq_ops = {
     .size      = sizeof(struct fi_ops_cq),
-    .read      = ofi_cq_read, // FW to readfrom
+    .read      = ofi_cq_read, // by default, already FW to readfrom
     .readfrom  = dpdk_cq_readfrom,
     .readerr   = dpdk_cq_readerr,
     .sread     = ofi_cq_sread,

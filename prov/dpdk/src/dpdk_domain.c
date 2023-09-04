@@ -75,6 +75,11 @@ int dpdk_domain_open(struct fid_fabric *fabric_fid, struct fi_info *info,
         DPDK_WARN(FI_LOG_DOMAIN, "Failed to get domain resources.\n");
         return ret;
     }
+    // if a domain for the requested name already exists, return it */
+    if (res->domain) {
+        *domain_fid = &res->domain->util_domain.domain_fid;
+        return FI_SUCCESS;
+    }
 
     /* 1. libfabric-specific initialization */
     ret = ofi_prov_check_info(&dpdk_util_prov, fabric_fid->api_version, info);
@@ -136,6 +141,23 @@ int dpdk_domain_open(struct fid_fabric *fabric_fid, struct fi_info *info,
     // Initialize the mutex to access EP list and info
     ofi_genlock_init(&domain->ep_mutex, OFI_LOCK_MUTEX);
 
+    // Initialize the packet_context ring for orphan send descriptors
+    char name[46];
+    sprintf(name, "pkt_ctx_ring_%s", res->domain_name);
+    domain->free_ctx_ring =
+        rte_ring_create(name, dpdk_default_rx_size, rte_socket_id(), RING_F_SP_ENQ | RING_F_SC_DEQ);
+    if (!domain->free_ctx_ring) {
+        DPDK_WARN(FI_LOG_DOMAIN, "Failed to create free_ctx_ring\n");
+        ret = -FI_ENOMEM;
+        goto free;
+    }
+    for (int i = 0; i < dpdk_default_rx_size; i++) {
+        struct packet_context *ctx = malloc(sizeof(struct packet_context));
+        rte_ring_enqueue(domain->free_ctx_ring, ctx);
+    }
+    // Initialize the list of orphan sends
+    dlist_init(&domain->orphan_sends);
+
     // Initialize the progress thread structure for this domain
     ret = dpdk_init_progress(&domain->progress, info, domain->lcore_id);
     if (ret) {
@@ -147,6 +169,11 @@ int dpdk_domain_open(struct fid_fabric *fabric_fid, struct fi_info *info,
     setup_queue_tbl(&domain->lcore_queue_conf.rx_queue_list[0], domain->lcore_id, res->data_rxq_id,
                     res->mtu); // pool and tbl
     domain->lcore_queue_conf.rx_queue_list[0].portid = res->port_id;
+    ofi_genlock_init(&domain->mr_tbl_lock, OFI_LOCK_MUTEX);
+
+    // Initialize the MR tbl
+    domain->mr_tbl.capacity = MAX_MR_BUCKETS_PER_DOMAIN;
+    domain->mr_tbl.mr_count = 0;
 
     // bind domain and res
     res->domain = domain;
