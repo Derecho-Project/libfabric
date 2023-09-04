@@ -69,9 +69,7 @@ static void memcpy_mbuf_to_iov(struct iovec *restrict dst, size_t          dst_c
 
 } /* memcpy_to_iov */
 
-// TODO: is this needed? Is it called more than once? Why can't be just an instruction?
-// There was also the "del" version but it was really just one line used once, so I integrated
-// it in the caller code
+// TODO: do we really need a separate function for this?
 static void xfer_queue_add_active(struct dpdk_xfer_queue *q, struct dpdk_xfer_entry *wqe) {
     dlist_insert_tail(&wqe->entry, &q->active_head);
 
@@ -288,7 +286,10 @@ static void try_complete_wqe(struct dpdk_ep *ep, struct dpdk_xfer_entry *wqe) {
 } /* try_complete_wqe */
 
 /* Process RDMAP Send OPcode */
-static void process_rdma_send(struct dpdk_ep *ep, struct packet_context *orig) {
+// 0 - if the send has been successfully posted
+// > 0 - if the send needs to wait for the corresponding receive
+// < 0 - if there was an error
+static int process_rdma_send(struct dpdk_ep *ep, struct packet_context *orig, bool retry) {
     struct dpdk_xfer_entry       *xfer_e;
     struct dlist_entry           *tmp;
     struct rdmap_untagged_packet *rdmap = (struct rdmap_untagged_packet *)orig->rdmap;
@@ -312,8 +313,12 @@ static void process_rdma_send(struct dpdk_ep *ep, struct packet_context *orig) {
     ret = xfer_recv_queue_lookup(&ep->rq, msn, &xfer_e);
     assert(ret != -EINVAL);
 
-    // If not found, we've got either a duplicate or a message with no matching recv request (=>
-    // the queue is empty)
+    // If not found and this is a retry, we have to wait more
+    if (ret < 0 && retry) {
+        return 1;
+    }
+    // If not found and this is the first time we try to match with a recv, we've got either a
+    // duplicate or a message with no matching recv request.
     if (ret < 0) {
         if (!dlist_empty(&ep->rq.active_head)) {
             /* This is a duplicate of a previously received
@@ -323,13 +328,19 @@ static void process_rdma_send(struct dpdk_ep *ep, struct packet_context *orig) {
             DPDK_WARN(FI_LOG_EP_CTRL, "<ep=%u> Received msn=%u but expected msn=%u\n", ep->udp_port,
                       msn, expected_msn);
             do_rdmap_terminate(ep, orig, ddp_error_untagged_invalid_msn);
+            return -1;
         } else {
-            DPDK_WARN(FI_LOG_EP_CTRL, "<ep=%u> Received SEND msn=%u to empty receive queue\n",
-                      ep->udp_port, msn);
-            assert(rte_ring_empty(ep->rq.ring));
-            do_rdmap_terminate(ep, orig, ddp_error_untagged_no_buffer);
+            DPDK_DBG(FI_LOG_EP_CTRL, "<ep=%u> Received SEND msn=%u to empty receive queue\n",
+                     ep->udp_port, msn);
+            // This send is orphan: we will try to complete it later
+            struct dpdk_domain *domain =
+                container_of(ep->util_ep.domain, struct dpdk_domain, util_domain);
+            struct packet_context *ctx;
+            rte_ring_dequeue(domain->free_ctx_ring, (void **)&ctx);
+            *ctx = *orig;
+            dlist_insert_tail(&ctx->entry, &domain->orphan_sends);
+            return 1;
         }
-        return;
     }
 
     // Process the matching request
@@ -340,18 +351,22 @@ static void process_rdma_send(struct dpdk_ep *ep, struct packet_context *orig) {
                   "<ep=%" PRIx16 "> DROP: offset=%zu + payload_length=%zu > wr_len=%zu\n",
                   ep->udp_port, offset, payload_length, xfer_e->total_length);
         do_rdmap_terminate(ep, orig, ddp_error_untagged_message_too_long);
-        return;
+        return -1;
     }
 
     if (DDP_GET_L(rdmap->head.ddp_flags)) {
         if (xfer_e->input_size != 0) {
             DPDK_DBG(FI_LOG_EP_CTRL, "<ep=%u> silently DROP duplicate last packet.\n",
                      ep->udp_port);
-            return;
+            return -1;
         }
         xfer_e->input_size = offset + payload_length;
     }
 
+    // if (retry) {
+    //     DPDK_DBG(FI_LOG_EP_CTRL, "<ep=%u> Found match for previously orphan SEND (msn=%u)!\n",
+    //              ep->udp_port, msn);
+    // }
     DPDK_DBG(FI_LOG_EP_CTRL, "<ep=%u> recv_size=%u, iov_count=%u, data_buffer=%p\n", ep->udp_port,
              xfer_e->recv_size + payload_length, xfer_e->iov_count, xfer_e->iov[0].iov_base);
 
@@ -386,7 +401,37 @@ static void process_rdma_send(struct dpdk_ep *ep, struct packet_context *orig) {
             }
         }
     }
+
+    return 0;
 } /* process_send */
+
+/* Try to match SEND requests with RECV requests that were posted later */
+static void try_match_orphan_sends(struct dpdk_domain *domain) {
+    struct packet_context *ctx;
+
+    if (dlist_empty(&domain->orphan_sends)) {
+        return;
+    }
+
+    // For each orphan, try to re-process the send
+    dlist_foreach_container(&domain->orphan_sends, struct packet_context, ctx, entry) {
+
+        // Dequeue the recv entries still in the ring. If none, continue to wait.
+        // If some, there could be a match, so try to process the send again.
+        dequeue_recv_entries(ctx->dst_ep);
+        if (dlist_empty(&ctx->dst_ep->rq.active_head)) {
+            continue;
+        }
+
+        // In case the match is found (0), or in case of error (<0),  the orphan is removed from the
+        // list, the mbuf is freed, the descriptor is reused. Otherwise, just wait more.
+        if (process_rdma_send(ctx->dst_ep, ctx, true) <= 0) {
+            dlist_remove(&ctx->entry);
+            rte_pktmbuf_free(ctx->mbuf_head);
+            rte_ring_enqueue(domain->free_ctx_ring, ctx);
+        }
+    }
+}
 
 static void process_rdma_read_request(struct dpdk_ep *ep, struct packet_context *orig) {
     struct rdmap_readreq_packet       *rdmap = (struct rdmap_readreq_packet *)orig->rdmap;
@@ -427,7 +472,8 @@ static void process_rdma_read_request(struct dpdk_ep *ep, struct packet_context 
     uint32_t  rdma_length = rte_be_to_cpu_32(rdmap->read_msg_size);
     if (vaddr < (uintptr_t)mr->buf || vaddr + rdma_length > (uintptr_t)mr->buf + mr->len) {
         DPDK_WARN(FI_LOG_EP_CTRL,
-                  "<ep=%u> RDMA READ failure: source [%p, %p] outside of memory region [%p, %p]\n",
+                  "<ep=%u> RDMA READ failure: source [%p, %p] outside of memory region "
+                  "[%p, %p]\n",
                   ep->udp_port, vaddr, vaddr + rdma_length, (uintptr_t)mr->buf,
                   (uintptr_t)mr->buf + mr->len);
         do_rdmap_terminate(ep, orig, rdmap_error_base_or_bounds_violation);
@@ -497,9 +543,9 @@ void flush_tx_queue(struct dpdk_ep *ep) {
         return;
     }
 
-    /* Transmit the enqueued packets. It is the responsibility of the rte_eth_tx_burst() function to
-     * transparently free the memory buffers of packets previously sent. So we should have cloned
-     * those that we do not want to free */
+    /* Transmit the enqueued packets. It is the responsibility of the rte_eth_tx_burst()
+     * function to transparently free the memory buffers of packets previously sent. So we
+     * should have cloned those that we do not want to free */
     while (begin != ep->txq_end) {
         ret = rte_eth_tx_burst(domain->res->port_id, domain->res->data_txq_id, begin, nb_segs);
         DPDK_DBG(FI_LOG_EP_DATA, "Transmitted %d packets\n", ret);
@@ -593,15 +639,16 @@ static void process_terminate(struct dpdk_ep *ep, struct packet_context *orig) {
             break;
         case rdmap_opcode_rdma_read_response:
             DPDK_DBG(FI_LOG_EP_CTRL,
-                     "<ep=%u> TERMINATE sink_stag=%u has tagged message error but no matching RDMA "
+                     "<ep=%u> TERMINATE sink_stag=%u has tagged message error but no "
+                     "matching RDMA "
                      "READ Response\n",
                      ep->udp_port, rte_be_to_cpu_32(t->head.sink_stag));
         default:
-            DPDK_DBG(
-                FI_LOG_EP_CTRL,
-                "<ep=%u> TERMINATE sink_stag=%u has tagged message error but invalid opcode %u\n",
-                ep->udp_port, rte_be_to_cpu_32(t->head.sink_stag),
-                RDMAP_GET_OPCODE(t->head.rdmap_info));
+            DPDK_DBG(FI_LOG_EP_CTRL,
+                     "<ep=%u> TERMINATE sink_stag=%u has tagged message error but invalid "
+                     "opcode %u\n",
+                     ep->udp_port, rte_be_to_cpu_32(t->head.sink_stag),
+                     RDMAP_GET_OPCODE(t->head.rdmap_info));
         }
         break;
     default:
@@ -760,7 +807,8 @@ static void ddp_place_tagged_data(struct dpdk_ep *ep, struct packet_context *ori
     if (vaddr < (uintptr_t)mr->buf || vaddr + rdma_length > (uintptr_t)mr->buf + mr->len) {
 
         DPDK_WARN(FI_LOG_EP_CTRL,
-                  "<ep=%u> received DDP tagged message with destination [%p, %p] outside of memory "
+                  "<ep=%u> received DDP tagged message with destination [%p, %p] outside "
+                  "of memory "
                   "region [%p, %p]\n",
                   ep->udp_port, vaddr, vaddr + rdma_length, mr->buf, mr->buf + mr->len);
         do_rdmap_terminate(ep, orig, ddp_error_tagged_base_or_bounds_violation);
@@ -780,8 +828,8 @@ static void ddp_place_tagged_data(struct dpdk_ep *ep, struct packet_context *ori
         process_rdma_read_response(ep, orig);
         break;
     case rdmap_opcode_rdma_write_with_imm:
-        // If inline data, we should post a CQE to notify the receiver of the immediate data.
-        // but only if this is the last segment!
+        // If inline data, we should post a CQE to notify the receiver of the immediate
+        // data. but only if this is the last segment!
         if (DDP_GET_L(orig->rdmap->ddp_flags)) {
             struct fi_dpdk_wc *cqe;
             struct dpdk_cq    *cq = container_of(ep->util_ep.rx_cq, struct dpdk_cq, util_cq);
@@ -853,10 +901,10 @@ static int process_receive_queue(struct dpdk_ep *ep, void *prefetch_addr) {
     // struct rte_mbuf *rxmbuf[dpdk_default_tx_burst_size];
     // uint16_t         rx_count, pkt;
 
-    // This seems a nice way to have the hardware filter the packets directed to this specific
-    // QP instead of having to receive them in a single point, use a rte_ring to dispatch them,
-    // and here insert them in the right queue. Is this right? TODO: check flow director. if
-    // (qp->dev->flags & port_fdir) {
+    // This seems a nice way to have the hardware filter the packets directed to this
+    // specific QP instead of having to receive them in a single point, use a rte_ring to
+    // dispatch them, and here insert them in the right queue. Is this right? TODO: check
+    // flow director. if (qp->dev->flags & port_fdir) {
     //     rx_count = rte_eth_rx_burst(qp->dev->portid, qp->shm_qp->rx_queue, rxmbuf,
     //                                 qp->shm_qp->rx_burst_size);
     // } else if...
@@ -906,13 +954,14 @@ static void process_rx_packet(struct dpdk_domain *domain, struct rte_mbuf *mbuf)
 
     uint16_t base_port = rte_be_to_cpu_16(domain->res->local_cm_addr.sin_port);
 
-    // TODO: We cannot discard packets absed on UDP checksum if we do not know how to compute
-    // it... If some checksums are bad, we don't want to process the packet if (mbuf->ol_flags &
-    // (RTE_MBUF_F_RX_L4_CKSUM_BAD | RTE_MBUF_F_RX_IP_CKSUM_BAD)) {
+    // TODO: We cannot discard packets absed on UDP checksum if we do not know how to
+    // compute it... If some checksums are bad, we don't want to process the packet if
+    // (mbuf->ol_flags & (RTE_MBUF_F_RX_L4_CKSUM_BAD | RTE_MBUF_F_RX_IP_CKSUM_BAD)) {
     //     if (rte_log_get_global_level() >= RTE_LOG_DEBUG) {
     //         uint16_t actual_udp_checksum, actual_ipv4_cksum;
     //         ipv4_hdr = rte_pktmbuf_mtod_offset(mbuf, struct rte_ipv4_hdr *,
-    //         sizeof(*eth_hdr)); udp_hdr  = rte_pktmbuf_mtod_offset(mbuf, struct rte_udp_hdr *,
+    //         sizeof(*eth_hdr)); udp_hdr  = rte_pktmbuf_mtod_offset(mbuf, struct
+    //         rte_udp_hdr *,
     //                                            sizeof(*eth_hdr) + sizeof(*ipv4_hdr));
     //         actual_udp_checksum    = udp_hdr->dgram_cksum;
     //         udp_hdr->dgram_cksum   = 0;
@@ -949,8 +998,8 @@ static void process_rx_packet(struct dpdk_domain *domain, struct rte_mbuf *mbuf)
 
     // Check the UDP port. We can have three cases:
     // 1. The packet is for the base_port => This is a connection request
-    // 2. The packet is for the base_port + n => This is a data packet for the n'th EP, if it
-    // exists
+    // 2. The packet is for the base_port + n => This is a data packet for the n'th EP, if
+    // it exists
     // 3. The packet is for another port => Not for us, drop it
     udp_hdr          = (struct rte_udp_hdr *)rte_pktmbuf_adj(mbuf, sizeof(*ipv4_hdr));
     uint16_t rx_port = rte_be_to_cpu_16(udp_hdr->dst_port);
@@ -981,6 +1030,7 @@ static void process_rx_packet(struct dpdk_domain *domain, struct rte_mbuf *mbuf)
         dst_ep->remote_udp_port = rte_be_to_cpu_16(udp_hdr->src_port);
     }
 
+    ctx.dst_ep = dst_ep;
     ctx.src_ep = &dst_ep->remote_ep;
     if (!ctx.src_ep) {
         /* Drop the packet; do not send TERMINATE */
@@ -1119,7 +1169,11 @@ static void process_rx_packet(struct dpdk_domain *domain, struct rte_mbuf *mbuf)
         case rdmap_opcode_send_inv:
         case rdmap_opcode_send_se:
         case rdmap_opcode_send_se_inv:
-            process_rdma_send(dst_ep, &ctx);
+            if (process_rdma_send(dst_ep, &ctx, false) > 0) {
+                // This is the case we received a send but the
+                // corresponding recv was not posted yet...
+                goto only_exit;
+            }
             break;
         case rdmap_opcode_rdma_read_request:
             process_rdma_read_request(dst_ep, &ctx);
@@ -1141,6 +1195,7 @@ static void process_rx_packet(struct dpdk_domain *domain, struct rte_mbuf *mbuf)
     }
 free_and_exit:
     rte_pktmbuf_free(mbuf);
+only_exit:
     return;
 } /* process_rx_packet */
 
@@ -1398,8 +1453,9 @@ int dpdk_run_progress(void *arg) {
         ofi_genlock_unlock(&domain->ep_mutex);
 
         // handling both data and control incoming packets.
-        // TODO: we should separate the data and control plane with hardware queues.
         do_receive(domain);
+
+        try_match_orphan_sends(domain);
     }
 
     return -1;

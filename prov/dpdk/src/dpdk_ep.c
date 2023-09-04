@@ -11,49 +11,33 @@
 // ================== HELPER FUNCTIONS ========
 static int ep_queue_init(struct dpdk_ep *ep, struct dpdk_xfer_queue *q, uint32_t q_size,
                          uint32_t max_recv_sge, char *q_name) {
-    size_t wqe_size;
-    char   name[RTE_RING_NAMESIZE];
-    int    i, ret;
+    char name[RTE_RING_NAMESIZE];
+    int  i, ret;
 
     // Compute the ring size (=elements) and byte size. Elements must be a power of 2.
-    size_t ring_size       = rte_align32pow2(q_size + 1);
-    size_t ring_size_bytes = rte_ring_get_memsize(ring_size);
+    size_t ring_size = rte_align32pow2(q_size + 1);
 
     // 1. Create the active descriptor ring
-    snprintf(name, RTE_RING_NAMESIZE, "ep%" PRIu16 "_%s_ring", ep->udp_port, q_name);
-    q->ring = rte_malloc(NULL, ring_size_bytes, RTE_CACHE_LINE_SIZE);
+    snprintf(name, RTE_RING_NAMESIZE, "ep%u_%s_ring", ep->udp_port, q_name);
+    q->ring = rte_ring_create(name, ring_size, rte_socket_id(),
+                              RING_F_MP_RTS_ENQ | RING_F_SC_DEQ | RING_F_EXACT_SZ);
     if (!q->ring) {
-        FI_WARN(&dpdk_prov, FI_LOG_EP_CTRL, "Failed to allocate memory for ring %s", name);
         return -rte_errno;
-    }
-    ret = rte_ring_init(q->ring, name, ring_size, RING_F_MP_RTS_ENQ | RING_F_SC_DEQ);
-    if (ret) {
-        FI_WARN(&dpdk_prov, FI_LOG_EP_CTRL, "Failed to initialize ring %s", name);
-        return ret;
     }
 
     // 2. Create the free descriptor ring
-    snprintf(name, RTE_RING_NAMESIZE, "ep%" PRIu16 "_%s_free", ep->udp_port, q_name);
-    q->free_ring = rte_malloc(NULL, ring_size_bytes, RTE_CACHE_LINE_SIZE);
+    snprintf(name, RTE_RING_NAMESIZE, "ep%u_%s_free", ep->udp_port, q_name);
+    q->free_ring = rte_ring_create(name, ring_size, rte_socket_id(),
+                                   RING_F_MP_RTS_ENQ | RING_F_SC_DEQ | RING_F_EXACT_SZ);
     if (!q->free_ring) {
-        FI_WARN(&dpdk_prov, FI_LOG_EP_CTRL, "Failed to allocate memory for ring %s", name);
         return -rte_errno;
     }
-    ret = rte_ring_init(q->free_ring, name, ring_size, RING_F_MP_RTS_ENQ | RING_F_SC_DEQ);
-    if (ret) {
-        FI_WARN(&dpdk_prov, FI_LOG_EP_CTRL, "Failed to initialize ring %s", name);
-        return ret;
-    }
 
-    // 3. Allocate the storage for the descriptors
-    wqe_size   = sizeof(struct dpdk_xfer_entry) + max_recv_sge * sizeof(struct iovec);
-    q->storage = (char *)rte_malloc(NULL, ring_size * wqe_size, RTE_CACHE_LINE_SIZE);
-    if (!q->storage)
-        return -errno;
-
-    // 4. Enqueue all the descriptors in the free ring
+    // 3. Allocate and enqueue all the descriptors in the free ring
+    struct dpdk_xfer_entry *xfe;
     for (i = 0; i < q_size; ++i) {
-        rte_ring_enqueue(q->free_ring, q->storage + i * wqe_size);
+        xfe = rte_malloc(NULL, sizeof(struct dpdk_xfer_entry), 0);
+        rte_ring_enqueue(q->free_ring, xfe);
     }
 
     dlist_init(&q->active_head);
@@ -225,7 +209,7 @@ int dpdk_endpoint(struct fid_domain *domain, struct fi_info *info, struct fid_ep
         FI_WARN(&dpdk_prov, FI_LOG_EP_CTRL, "Failed to init send queue of ep%d", ep->udp_port);
         goto err6;
     }
-    ret = ep_queue_init(ep, &ep->rq, dpdk_default_rx_size, DPDK_IOV_LIMIT, "recv");
+    ret = ep_queue_init(ep, &ep->rq, dpdk_default_rx_size * 10, DPDK_IOV_LIMIT, "recv");
     if (ret) {
         // [Weijia] ep->udp_port hasn't been initialized here, right?
         FI_WARN(&dpdk_prov, FI_LOG_EP_CTRL, "Failed to init recv queue of ep%d", ep->udp_port);

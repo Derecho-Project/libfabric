@@ -147,7 +147,7 @@ struct dpdk_xfer_queue {
     int              max_wr;
     int              max_sge;
     rte_spinlock_t   lock;
-    // What is this?
+    // List of XFER entries corresponding to RECV request waiting for their SEND
     struct dlist_entry active_head;
     // TODO: maybe a union for the following?
     // Send-specific
@@ -313,6 +313,10 @@ struct dpdk_domain {
     // List of MR associated with this domain
     struct dpdk_mr_table mr_tbl;
     struct ofi_genlock   mr_tbl_lock;
+
+    // Ring and list for orphan SENDS
+    struct rte_ring   *free_ctx_ring;
+    struct dlist_entry orphan_sends;
 
     // Progress thread data
     struct dpdk_progress progress;

@@ -10,6 +10,8 @@
 /* This file contains definitions and function prototypes for the userspace protocol processing.*/
 
 struct packet_context {
+    struct dlist_entry   entry;
+    struct dpdk_ep      *dst_ep;
     struct ee_state     *src_ep;
     size_t               ddp_seg_length;
     struct rdmap_packet *rdmap;

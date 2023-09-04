@@ -14,20 +14,11 @@ static int ep_get_next_recv_entry(struct dpdk_ep *ep, struct dpdk_xfer_entry **x
     return ret;
 } /* ep_get_next_recv_xfer */
 
-// Returns the given receive XFER back to the free pool.  It is removed from the active set if
-// still_in_hash is true. The rq lock MUST be locked when calling this function.
-// TODO; This isn't called by anyone? really? Why?
-void ep_free_recv_xfer(struct dpdk_ep *ep, struct dpdk_xfer_entry *wqe) {
-    dlist_remove(&wqe->entry);
-    rte_ring_enqueue(ep->rq.free_ring, wqe);
-} /* ep_free_recv_xfer */
-
 static int ep_get_next_send_entry(struct dpdk_ep *ep, struct dpdk_xfer_entry **xfer_entry) {
     int ret;
 
     ret = rte_ring_dequeue(ep->sq.free_ring, (void **)xfer_entry);
     if (ret == -ENOENT) {
-        FI_WARN(&dpdk_prov, FI_LOG_EP_CTRL, "Send queue full!");
         ret = -ENOSPC;
     }
     return ret;
@@ -151,6 +142,7 @@ static ssize_t dpdk_sendmsg(struct fid_ep *ep_fid, const struct fi_msg *msg, uin
     // Get a free TX entry from the TX queue ring associated to the EP
     ret = ep_get_next_send_entry(ep, &tx_entry);
     if (ret < 0) {
+        FI_WARN(&dpdk_prov, FI_LOG_EP_DATA, "No descriptor available for this message\n");
         return ret;
     }
 
