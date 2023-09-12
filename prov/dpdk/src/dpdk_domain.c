@@ -144,14 +144,15 @@ int dpdk_domain_open(struct fid_fabric *fabric_fid, struct fi_info *info,
     // Initialize the packet_context ring for orphan send descriptors
     char name[46];
     sprintf(name, "pkt_ctx_ring_%s", res->domain_name);
+    unsigned int ring_size = 65536;
     domain->free_ctx_ring =
-        rte_ring_create(name, dpdk_default_rx_size, rte_socket_id(), RING_F_SP_ENQ | RING_F_SC_DEQ);
+        rte_ring_create(name, ring_size, rte_socket_id(), RING_F_SP_ENQ | RING_F_SC_DEQ);
     if (!domain->free_ctx_ring) {
         DPDK_WARN(FI_LOG_DOMAIN, "Failed to create free_ctx_ring\n");
         ret = -FI_ENOMEM;
         goto free;
     }
-    for (int i = 0; i < dpdk_default_rx_size; i++) {
+    for (int i = 0; i < ring_size; i++) {
         struct packet_context *ctx = malloc(sizeof(struct packet_context));
         rte_ring_enqueue(domain->free_ctx_ring, ctx);
     }
