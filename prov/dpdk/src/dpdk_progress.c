@@ -408,13 +408,14 @@ static int process_rdma_send(struct dpdk_ep *ep, struct packet_context *orig, bo
 /* Try to match SEND requests with RECV requests that were posted later */
 static void try_match_orphan_sends(struct dpdk_domain *domain) {
     struct packet_context *ctx;
+    struct dlist_entry    *tmp;
 
     if (dlist_empty(&domain->orphan_sends)) {
         return;
     }
 
     // For each orphan, try to re-process the send
-    dlist_foreach_container(&domain->orphan_sends, struct packet_context, ctx, entry) {
+    dlist_foreach_container_safe(&domain->orphan_sends, struct packet_context, ctx, entry, tmp) {
 
         // Dequeue the recv entries still in the ring. If none, continue to wait.
         // If some, there could be a match, so try to process the send again.
