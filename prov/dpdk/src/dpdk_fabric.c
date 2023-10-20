@@ -203,6 +203,7 @@ static void *connection_manager(void *arg) {
         while (res) {
             struct rte_mbuf *pkts[8];
             uint16_t         npkts;
+            int              nb_pkts;
             // incoming
             while ((!res->domain) && (npkts = rte_eth_rx_burst(res->port_id, 0, pkts, 8)) > 0) {
                 DPDK_DBG(FI_LOG_EP_CTRL, "connection manager detected %u incoming packets.\n",
@@ -213,16 +214,17 @@ static void *connection_manager(void *arg) {
                     rte_pktmbuf_free(pkts[i]);
                 }
             }
-            // outgoing
-            while ((npkts = rte_ring_sc_dequeue_burst(res->cm_tx_ring, (void **)pkts, 8, NULL)) > 0)
+            while ((nb_pkts = rte_ring_sc_dequeue_burst(res->cm_tx_ring, (void **)pkts, 8, NULL)) >
+                   0)
             {
+
                 DPDK_DBG(FI_LOG_EP_CTRL, "connection manager detected %u outgoing packets.\n",
-                         npkts);
+                         nb_pkts);
                 is_busy        = true;
                 uint16_t nsent = 0;
-                while (nsent < npkts) {
-                    nsent +=
-                        rte_eth_tx_burst(res->port_id, res->cm_txq_id, &pkts[nsent], npkts - nsent);
+                while (nsent < nb_pkts) {
+                    nsent += rte_eth_tx_burst(res->port_id, res->cm_txq_id, &pkts[nsent],
+                                              nb_pkts - nsent);
                 }
             }
             res = res->next;
@@ -325,22 +327,13 @@ int create_dpdk_domain_resources(struct fi_info *info, struct dpdk_domain_resour
     res->cm_txq_id   = 0;
 
     int      socket_id = rte_eth_dev_socket_id(port_id);
-    char     name[256];
+    char     name[32];
     uint16_t cfg_cm_ring_size = 16;
     if (res->domain_config) {
         cfg_cm_ring_size = (uint16_t)cfg_getint(res->domain_config, CFG_OPT_DOMAIN_CM_RING_SIZE);
     }
-
-    char substr[23];
-    if (strlen(res->domain_name) > 22) {
-        strncpy(substr, res->domain_name, 22);
-        substr[22] = '\0';
-        sprintf(name, "lf.%s.cmxr", substr);
-    } else {
-        sprintf(name, "lf.%s.cmxr", res->domain_name);
-    }
     res->cm_tx_ring =
-        rte_ring_create(name, cfg_cm_ring_size, socket_id, RING_F_MP_RTS_ENQ | RING_F_SC_DEQ);
+        rte_ring_create("lf.cmxr", cfg_cm_ring_size, socket_id, RING_F_SP_ENQ | RING_F_SC_DEQ);
     if (!res->cm_tx_ring) {
         DPDK_WARN(FI_LOG_FABRIC, "failed to create cm_tx_ring, error:%s.\n",
                   rte_strerror(rte_errno));
@@ -348,15 +341,6 @@ int create_dpdk_domain_resources(struct fi_info *info, struct dpdk_domain_resour
         goto error_group_2;
     }
 
-    // RX pool for control path
-    bzero(substr, 23);
-    if (strlen(res->domain_name) > 22) {
-        strncpy(substr, res->domain_name, 22);
-        substr[22] = '\0';
-        sprintf(name, "lf.%s.cmp", substr);
-    } else {
-        sprintf(name, "lf.%s.cmp", res->domain_name);
-    }
     // Dimension of the CP mempool (must be power of 2)
     size_t pool_size = 1024;
     // Dimension of the mbufs in the mempool. Must contain at least an Ethernet frame + private
@@ -369,7 +353,8 @@ int create_dpdk_domain_resources(struct fi_info *info, struct dpdk_domain_resour
     size_t cache_size   = 64;
     size_t private_size = 0;
 
-    res->cm_pool = rte_pktmbuf_pool_create(name, pool_size, cache_size, 0, mbuf_size, socket_id);
+    res->cm_pool =
+        rte_pktmbuf_pool_create("lf.cmp", pool_size, cache_size, 0, mbuf_size, socket_id);
     if (!res->cm_pool) {
         DPDK_WARN(FI_LOG_FABRIC, "failed to create memory pool-%s, error:%s.\n", name,
                   rte_strerror(rte_errno));
@@ -378,15 +363,15 @@ int create_dpdk_domain_resources(struct fi_info *info, struct dpdk_domain_resour
     }
 
     // RX pool for data path
-    char rx_pool_name[32];
-    bzero(substr, 23);
-    if (strlen(res->domain_name) > 22) {
-        strncpy(substr, res->domain_name, 22);
-        substr[22] = '\0';
-        sprintf(rx_pool_name, "rx_pool_%s", substr);
-    } else {
-        sprintf(rx_pool_name, "rx_pool_%s", res->domain_name);
-    }
+    // char rx_pool_name[32];
+    // bzero(substr, 19);
+    // if (strlen(res->domain_name) > 10) {
+    //     strncpy(substr, res->domain_name, 10);
+    //     substr[10] = '\0';
+    //     sprintf(rx_pool_name, "rx_pool_%s", substr);
+    // } else {
+    //     sprintf(rx_pool_name, "rx_pool_%s", res->domain_name);
+    // }
     // Dimension of the TX mempool (must be power of 2)
     pool_size = rte_align32pow2(2 * MAX_ENDPOINTS_PER_APP * dpdk_default_rx_size);
     // Dimension of the mbufs in the mempool. Must contain at least an Ethernet frame + private
@@ -396,12 +381,12 @@ int create_dpdk_domain_resources(struct fi_info *info, struct dpdk_domain_resour
     cache_size   = 64;
     private_size = 0;
 
-    res->rx_data_pool = rte_pktmbuf_pool_create(rx_pool_name, pool_size, cache_size, private_size,
+    res->rx_data_pool = rte_pktmbuf_pool_create("rx_pool", pool_size, cache_size, private_size,
                                                 mbuf_size, socket_id);
     if (res->rx_data_pool == NULL) {
-        ofi_mutex_unlock(&res->domain_lock);
         DPDK_WARN(FI_LOG_CORE, "Cannot create RX mbuf pool for domain %s: %s\n", res->domain_name,
                   rte_strerror(rte_errno));
+        ofi_mutex_unlock(&res->domain_lock);
         goto error_group_2;
     }
     DPDK_TRACE(FI_LOG_CORE, "RX mempool created.\n");

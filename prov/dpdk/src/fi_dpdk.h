@@ -439,7 +439,7 @@ struct dpdk_domain_resources {
      * life cycle. Therefore, we don't need a lock on it.
      */
     struct dpdk_domain_resources *next;
-    char                          domain_name[32];
+    char                          domain_name[64];
     cfg_t                        *domain_config;
     // domain resources
     uint16_t port_id;

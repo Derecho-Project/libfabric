@@ -142,9 +142,16 @@ int dpdk_domain_open(struct fid_fabric *fabric_fid, struct fi_info *info,
     ofi_genlock_init(&domain->ep_mutex, OFI_LOCK_MUTEX);
 
     // Initialize the packet_context ring for orphan send descriptors
-    char name[46];
-    sprintf(name, "pkt_ctx_ring_%s", res->domain_name);
+    char         name[32], substr[11];
     unsigned int ring_size = 65536;
+    bzero(substr, 11);
+    if (strlen(res->domain_name) > 10) {
+        strncpy(substr, res->domain_name, 10);
+        substr[10] = '\0';
+        sprintf(name, "orprng-%s", substr);
+    } else {
+        sprintf(name, "orprng-%s", res->domain_name);
+    }
     domain->free_ctx_ring =
         rte_ring_create(name, ring_size, rte_socket_id(), RING_F_SP_ENQ | RING_F_SC_DEQ);
     if (!domain->free_ctx_ring) {

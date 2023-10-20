@@ -607,6 +607,10 @@ void send_trp_ack(struct dpdk_ep *ep) {
 
     assert(!(ee->trp_flags & trp_recv_missing));
     sendmsg = rte_pktmbuf_alloc(ep->tx_hdr_mempool);
+    if (!sendmsg) {
+        RTE_LOG(ERR, USER1, "Failed to allocate mbuf for TRP ACK\n");
+        return;
+    }
 
     trp = rte_pktmbuf_mtod_offset(sendmsg, struct trp_hdr *, TRP_HDR_OFFSET);
     sendmsg->data_len += TRP_HDR_LEN + UDP_HDR_LEN + IP_HDR_LEN + RTE_ETHER_HDR_LEN;
@@ -631,6 +635,10 @@ void send_trp_sack(struct dpdk_ep *ep) {
 
     assert(ee->trp_flags & trp_recv_missing);
     sendmsg = rte_pktmbuf_alloc(ep->tx_hdr_mempool);
+    if (!sendmsg) {
+        RTE_LOG(ERR, USER1, "Failed to allocate mbuf for TRP SACK\n");
+        return;
+    }
     RTE_LOG(DEBUG, USER1, "Sending TRP SACK\n");
 
     trp = rte_pktmbuf_mtod_offset(sendmsg, struct trp_hdr *, TRP_HDR_OFFSET);
@@ -698,8 +706,12 @@ int resend_ddp_segment(struct dpdk_ep *ep, struct rte_mbuf *sendmsg, struct ee_s
     }
 
     // Clone. The clone is necessary because the rte_eth_tx_burst function will free the mbufs,
-    // but we need to keep them until they have been acknowledged
+    // but we need to keep them until they have been acknowledged.
     sendmsg = rte_pktmbuf_clone(sendmsg, sendmsg->pool);
+    if (!sendmsg) {
+        DPDK_DBG(FI_LOG_EP_CTRL, "Failed to clone mbuf: allocation failed!\n");
+        return -ENOMEM;
+    }
 
     // Prepare the TRP header
     // TODO: Should this be a sort of "prepend TRP header" as well? Why in a function called DDP?
@@ -877,8 +889,9 @@ void do_rdmap_send(struct dpdk_ep *ep, struct dpdk_xfer_entry *wqe) {
         }
 
         send_ddp_segment(ep, sendmsg, NULL, wqe, RDMAP_HDR_LEN + payload_length);
-        FI_DBG(&dpdk_prov, FI_LOG_EP_DATA, "<ep=%u> SEND transmit msn=%" PRIu32 " [%zu-%zu]\n",
-               ep->udp_port, wqe->msn, wqe->bytes_sent, wqe->bytes_sent + payload_length);
+        FI_DBG(&dpdk_prov, FI_LOG_EP_DATA, "<ep=%u> SEND transmit msn=%u mo=%u [%zu-%zu]\n",
+               ep->udp_port, wqe->msn, rte_be_to_cpu_32(new_rdmap->mo), wqe->bytes_sent,
+               wqe->bytes_sent + payload_length);
 
         wqe->bytes_sent += payload_length;
     }

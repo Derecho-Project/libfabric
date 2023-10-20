@@ -285,13 +285,13 @@ int dpdk_endpoint(struct fid_domain *domain, struct fi_info *info, struct fid_ep
     ep->ord_active        = 0;
 
     // Dimension of the TX mempools (must be power of 2)
-    size_t pool_size = rte_align32pow2(2 * MAX_ENDPOINTS_PER_APP * dpdk_default_tx_size);
+    size_t pool_size = rte_align32pow2(128 * dpdk_default_tx_size);
 
     // Initialize header memory pool. TODO: handle memory cleanup
     // We keep the original idea to reserve a private size to store local TX info
     // represented by the pending_datagram_info struct
     // TODO: Maybe add some space after the header to store "small" data that can be copied?
-    size_t mbuf_size = RTE_ETHER_HDR_LEN + INNER_HDR_LEN + RTE_ETHER_CRC_LEN + HDR_MBUF_EXTRA_SPACE;
+    size_t mbuf_size    = 2048 + RTE_PKTMBUF_HEADROOM;
     size_t cache_size   = 64;
     size_t private_size = PENDING_DATAGRAM_INFO_SIZE;
     char   tx_hdr_mempool_name[32];
