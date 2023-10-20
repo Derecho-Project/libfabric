@@ -840,6 +840,10 @@ void do_rdmap_send(struct dpdk_ep *ep, struct dpdk_xfer_entry *wqe) {
         // Data payload length. Not part of the pktmbuf, as sendmsg refers only to the headers
         payload_length = RTE_MIN(mtu, wqe->total_length - wqe->bytes_sent);
 
+        // Bugfix. Adjust buf_addr of the mbuf. TODO: WHY??? Not needed in the other cases...
+        // That was causing a significant issue and making the program incorrect
+        sendmsg->buf_addr = (void *)sendmsg + sendmsg->data_off + sendmsg->priv_size;
+
         // Prepare the RDMAP header
         new_rdmap =
             rte_pktmbuf_mtod_offset(sendmsg, struct rdmap_untagged_packet *, RDMAP_HDR_OFFSET);
