@@ -158,7 +158,7 @@ void enqueue_ether_frame(struct rte_mbuf *sendmsg, unsigned int ether_type, stru
             rte_ether_addr_copy(&domain->res->local_eth_addr, &hdr_frag->src_addr);
             hdr_frag->ether_type = rte_cpu_to_be_16(ether_type);
             m->l2_len            = sizeof(*hdr_frag);
-            m->ol_flags          = RTE_MBUF_F_TX_IP_CKSUM | RTE_MBUF_F_TX_IPV4;
+            m->ol_flags |= RTE_MBUF_F_TX_IP_CKSUM | RTE_MBUF_F_TX_IPV4;
 
             // Set IOVA mapping for the fragment
             set_iova_mapping(m, pg_sz);
@@ -570,7 +570,7 @@ void send_udp_dgram(struct dpdk_ep *ep, struct rte_mbuf *sendmsg, uint32_t raw_c
     struct dpdk_domain  *domain = container_of(ep->util_ep.domain, struct dpdk_domain, util_domain);
     assert(domain->res);
 
-    sendmsg->ol_flags = RTE_MBUF_F_TX_IP_CKSUM | RTE_MBUF_F_TX_IPV4;
+    sendmsg->ol_flags |= RTE_MBUF_F_TX_IP_CKSUM | RTE_MBUF_F_TX_IPV4;
     // if (domain->dev_flags & port_checksum_offload) {
     //     sendmsg->ol_flags |= RTE_MBUF_F_TX_UDP_CKSUM | RTE_MBUF_F_TX_IPV4 |
     //     RTE_MBUF_F_TX_IP_CKSUM;
