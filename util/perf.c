@@ -22,7 +22,7 @@
 
 #include <ofi.h>
 
-#define MR_SIZE 8192 // This will become a parameter of the test
+#define MR_SIZE 65536 // This will become a parameter of the test
 
 #define LF_VERSION         OFI_VERSION_LATEST
 #define MAX_LF_ADDR_SIZE   128 - sizeof(uint32_t) - 2 * sizeof(uint64_t)
@@ -332,7 +332,7 @@ int start_server_side() {
     }
     // Print the local address TODO: This should check the address format!!
     struct sockaddr_in *addr = (struct sockaddr_in *)g_ctxt.pep_addr;
-    printf("Server server address: %s:%d\n", inet_ntoa(addr->sin_addr), ntohs(addr->sin_port));
+    printf("Server address: %s:%d\n", inet_ntoa(addr->sin_addr), ntohs(addr->sin_port));
     printf("Server started! Listening for incoming connections...\n");
 
     return 0;
@@ -491,8 +491,9 @@ int register_memory_region() {
 
     // Important: memory allocation should be page aligned to the page size used by the DPDK
     // provider. The length must be a multiple of the page size.
-    g_mr.size   = RTE_ALIGN(MR_SIZE, sysconf(_SC_PAGESIZE));
-    g_mr.buffer = alloc_mem(g_mr.size, sysconf(_SC_PAGESIZE), false);
+    size_t page_size = 2097152; // sysconf(_SC_PAGESIZE);
+    g_mr.size        = RTE_ALIGN(MR_SIZE, page_size);
+    g_mr.buffer      = alloc_mem(g_mr.size, page_size, (page_size > sysconf(_SC_PAGESIZE)));
 
     if (!g_mr.buffer || g_mr.size <= 0) {
         printf("Failed to allocate a memory region of size %lu\n", g_mr.size);
@@ -503,7 +504,7 @@ int register_memory_region() {
 
     /* Register the memory */
     ret = fi_mr_reg(g_ctxt.domain, (void *)g_mr.buffer, g_mr.size, mr_access, 0, 0, 0, &g_mr.mr,
-                    NULL);
+                    &page_size);
     if (ret) {
         printf("fi_mr_reg() failed: %s\n", fi_strerror(-ret));
         return ret;
