@@ -1212,281 +1212,260 @@ static void do_receive(struct dpdk_domain *domain) {
     uint64_t         cur_tsc;
     int              j;
 
-    for (int h = 0; h < 2; h++) {
-        /* RX packets */
-        rx_count =
-            rte_eth_rx_burst(domain->res->port_id, h, pkts_burst, dpdk_default_rx_burst_size);
+    /* RX packets */
+    rx_count = rte_eth_rx_burst(domain->res->port_id, domain->res->data_rxq_id, pkts_burst,
+                                dpdk_default_rx_burst_size);
 
-        /* Prefetch first packets */
-        for (j = 0; j < PREFETCH_OFFSET && j < rx_count; j++) {
-            rte_prefetch0(rte_pktmbuf_mtod(pkts_burst[j], void *));
-        }
-
-        /* Process already prefetched packets */
-        // TODO: Why we replicate the code? This is code copied from DPDK examples in case of
-        // fragmentation/reassembly But how does it work exactly?
-        for (j = 0; j < (rx_count - PREFETCH_OFFSET); j++) {
-            rte_prefetch0(rte_pktmbuf_mtod(pkts_burst[j + PREFETCH_OFFSET], void *));
-            // TODO: We do not support VLAN or VXLAN yet. See dpdk-playground for an example
-            struct rte_ether_hdr *eth_hdr = rte_pktmbuf_mtod(pkts_burst[j], struct rte_ether_hdr *);
-            uint16_t              ether_type = rte_be_to_cpu_16(eth_hdr->ether_type);
-            switch (rte_be_to_cpu_16(eth_hdr->ether_type)) {
-            case RTE_ETHER_TYPE_ARP:
-                DPDK_INFO(FI_LOG_EP_DATA, "Received ARP packet\n");
-                arp_receive(domain->res, pkts_burst[j]);
-                rte_pktmbuf_free(pkts_burst[j]);
-                break;
-            case RTE_ETHER_TYPE_IPV4:
-                reassembled = reassemble(pkts_burst[j], &domain->lcore_queue_conf, 0, cur_tsc);
-                if (reassembled) {
-                    process_rx_packet(domain, reassembled);
-                }
-                break;
-            case RTE_ETHER_TYPE_IPV6:
-                // [Weijia]: IPv6 needs more care.
-                DPDK_INFO(FI_LOG_EP_DATA, "IPv6 is not supported yet\n");
-                rte_pktmbuf_free(pkts_burst[j]);
-                break;
-            default:
-                DPDK_INFO(FI_LOG_EP_DATA, "Unknown Ether type %#" PRIx16 "\n",
-                          rte_be_to_cpu_16(eth_hdr->ether_type));
-                rte_pktmbuf_free(pkts_burst[j]);
-                break;
-            }
-        }
-
-        /* Process remaining prefetched packets */
-        for (; j < rx_count; j++) {
-            struct rte_ether_hdr *eth_hdr = rte_pktmbuf_mtod(pkts_burst[j], struct rte_ether_hdr *);
-            uint16_t              ether_type = rte_be_to_cpu_16(eth_hdr->ether_type);
-            // TODO: We do not support VLAN or VXLAN yet. See dpdk-playground for an example
-            switch (rte_be_to_cpu_16(eth_hdr->ether_type)) {
-            case RTE_ETHER_TYPE_ARP:
-                DPDK_INFO(FI_LOG_EP_DATA, "Received ARP packet\n");
-                arp_receive(domain->res, pkts_burst[j]);
-                rte_pktmbuf_free(pkts_burst[j]);
-                break;
-            case RTE_ETHER_TYPE_IPV4:
-                reassembled = reassemble(pkts_burst[j], &domain->lcore_queue_conf, 0, cur_tsc);
-                if (reassembled) {
-                    process_rx_packet(domain, reassembled);
-                }
-            }
-
-            /* Process remaining prefetched packets */
-            for (; j < rx_count; j++) {
-                struct rte_ether_hdr *eth_hdr =
-                    rte_pktmbuf_mtod(pkts_burst[j], struct rte_ether_hdr *);
-                uint16_t ether_type = rte_be_to_cpu_16(eth_hdr->ether_type);
-                // TODO: We do not support VLAN or VXLAN yet. See dpdk-playground for an example
-                switch (rte_be_to_cpu_16(eth_hdr->ether_type)) {
-                case RTE_ETHER_TYPE_ARP:
-                    DPDK_INFO(FI_LOG_EP_DATA, "Received ARP packet\n");
-                    arp_receive(domain, pkts_burst[j]);
-                    rte_pktmbuf_free(pkts_burst[j]);
-                    break;
-                case RTE_ETHER_TYPE_IPV4:
-                    reassembled = reassemble(pkts_burst[j], &domain->lcore_queue_conf, 0, cur_tsc);
-                    if (reassembled) {
-                        process_rx_packet(domain, reassembled);
-                    }
-                    break;
-                case RTE_ETHER_TYPE_IPV6:
-                    // [Weijia]: IPv6 needs more care.
-                    DPDK_INFO(FI_LOG_EP_DATA, "IPv6 is not supported yet\n");
-                    rte_pktmbuf_free(pkts_burst[j]);
-                    break;
-                default:
-                    DPDK_INFO(FI_LOG_EP_DATA, "Unknown Ether type %#" PRIx16 "\n",
-                              rte_be_to_cpu_16(eth_hdr->ether_type));
-                    rte_pktmbuf_free(pkts_burst[j]);
-                    break;
-                }
-
-                rte_ip_frag_free_death_row(&domain->lcore_queue_conf.death_row, PREFETCH_OFFSET);
-            }
-        }
-    } /* do_receive */
-
-    /* Make forward progress on the queue pair. */
-    static void progress_ep(struct dpdk_ep * ep) {
-        struct dlist_entry     *cur, *tmp;
-        struct dpdk_xfer_entry *send_xfer, *next;
-        uint32_t                psn;
-        int                     scount, ret;
-
-        /* The following is a per-EP receive we can enable only if we support NIC filtering */
-        // TODO: Consider checking if the NIC supports NIC filtering, and enabling this
-        // in alternative to the process_receive_queue() call in the main loop.
-        // send_xfer = container_of(&ep->sq.active_head, struct dpdk_xfer_entry, entry);
-        // process_receive_queue(ep, send_xfer);
-
-        /* Call any timers only once per millisecond */
-        sweep_unacked_packets(ep);
-
-        /* Process READ OPCODE Response last segments. */
-        while (!binheap_empty(ep->remote_ep.recv_rresp_last_psn)) {
-            binheap_peek(ep->remote_ep.recv_rresp_last_psn, &psn);
-            if (psn < ep->remote_ep.recv_ack_psn) {
-                /* We have received all prior packets, so since we have
-                 * received the RDMA READ Response segment with L=1, we
-                 * are guaranteed to have placed all data corresponding
-                 * to this RDMA READ Response, and can complete the
-                 * corresponding WQE. The heap ensures that we process
-                 * the segments in the correct order, and
-                 * try_complete_wqe() ensures that we do not complete an
-                 * RDMA READ request out of order. */
-                send_xfer = find_first_rdma_read_atomic(ep);
-                if (!(WARN_ONCE(!send_xfer, "No RDMA READ request pending\n"))) {
-                    send_xfer->state = SEND_XFER_COMPLETE;
-                    try_complete_wqe(ep, send_xfer);
-                }
-                binheap_pop(ep->remote_ep.recv_rresp_last_psn);
-            } else {
-                break;
-            }
-        }
-
-        scount = 0;
-        dlist_foreach_safe(&ep->sq.active_head, cur, tmp) {
-            send_xfer = container_of(cur, struct dpdk_xfer_entry, entry);
-            if (cur->next) {
-                next = container_of(cur->next, struct dpdk_xfer_entry, entry);
-                rte_prefetch0(next);
-            }
-            assert(send_xfer->state != SEND_XFER_INIT);
-            progress_send_xfer(ep, send_xfer);
-            if (send_xfer->state == SEND_XFER_TRANSFER) {
-                scount++;
-            }
-        }
-
-        if (scount == 0) {
-            ret = rte_ring_dequeue(ep->sq.ring, (void **)&send_xfer);
-            if (ret == 0) {
-                assert(send_xfer->state == SEND_XFER_INIT);
-                send_xfer->state = SEND_XFER_TRANSFER;
-                switch (send_xfer->opcode) {
-                case xfer_send_with_imm:
-                case xfer_write_with_imm:
-                case xfer_send:
-                    send_xfer->msn = send_xfer->remote_ep->next_send_msn++;
-                    break;
-                case xfer_read:
-                case xfer_atomic:
-                    send_xfer->msn = send_xfer->remote_ep->next_read_msn++;
-                    break;
-                case xfer_write:
-                    break;
-                }
-                xfer_queue_add_active(&ep->sq, send_xfer);
-                progress_send_xfer(ep, send_xfer);
-                scount = 1;
-            }
-        }
-
-        scount += respond_next_read_atomic(ep);
-
-        if (ep->remote_ep.trp_flags & trp_ack_update) {
-            if (unlikely(ep->remote_ep.trp_flags & trp_recv_missing)) {
-                send_trp_sack(ep);
-            } else {
-                send_trp_ack(ep);
-            }
-        }
-
-        flush_tx_queue(ep);
-
-    } /* progress_ep */
-
-    // ================ Main Progress Functions =================
-    struct progress_arg {
-        struct dpdk_progress *progress;
-        bool                  clear_signal;
-    };
-
-    /* This function initializes the progress */
-    int dpdk_init_progress(struct dpdk_progress * progress, struct fi_info * info, int lcore_id) {
-        int ret;
-
-        // TODO: this should become a parameter in some way
-        progress->lcore_id = lcore_id;
-        atomic_store(&progress->stop_progress, false);
-        progress->fid.fclass = DPDK_CLASS_PROGRESS;
-        slist_init(&progress->event_list);
-
-        // Mutex to access EP list
-        ret = ofi_genlock_init(&progress->lock, OFI_LOCK_MUTEX);
-        if (ret) {
-            return ret;
-        }
-
-        return 0;
+    /* Prefetch first packets */
+    for (j = 0; j < PREFETCH_OFFSET && j < rx_count; j++) {
+        rte_prefetch0(rte_pktmbuf_mtod(pkts_burst[j], void *));
     }
 
-    int dpdk_start_progress(struct dpdk_progress * progress) {
-        int ret;
+    /* Process already prefetched packets */
+    // TODO: Why we replicate the code? This is code copied from DPDK examples in case of
+    // fragmentation/reassembly But how does it work exactly?
+    for (j = 0; j < (rx_count - PREFETCH_OFFSET); j++) {
+        rte_prefetch0(rte_pktmbuf_mtod(pkts_burst[j + PREFETCH_OFFSET], void *));
+        // TODO: We do not support VLAN or VXLAN yet. See dpdk-playground for an example
+        struct rte_ether_hdr *eth_hdr    = rte_pktmbuf_mtod(pkts_burst[j], struct rte_ether_hdr *);
+        uint16_t              ether_type = rte_be_to_cpu_16(eth_hdr->ether_type);
+        switch (rte_be_to_cpu_16(eth_hdr->ether_type)) {
+        case RTE_ETHER_TYPE_ARP:
+            DPDK_INFO(FI_LOG_EP_DATA, "Received ARP packet.\n");
+            arp_receive(domain->res, pkts_burst[j]);
+            rte_pktmbuf_free(pkts_burst[j]);
+            break;
+        case RTE_ETHER_TYPE_IPV4:
+            reassembled = reassemble(pkts_burst[j], &domain->lcore_queue_conf, 0, cur_tsc);
+            if (reassembled) {
+                process_rx_packet(domain, reassembled);
+            }
+            break;
+        case RTE_ETHER_TYPE_IPV6:
+            // [Weijia]: IPv6 needs more care.
+            DPDK_INFO(FI_LOG_EP_DATA, "IPv6 is not supported yet\n");
+            rte_pktmbuf_free(pkts_burst[j]);
+            break;
+        default:
+            DPDK_INFO(FI_LOG_EP_DATA, "Unknown Ether type %#x\n",
+                      rte_be_to_cpu_16(eth_hdr->ether_type));
+            rte_pktmbuf_free(pkts_burst[j]);
+            break;
+        }
+    }
 
-        struct progress_arg arg = {
-            .progress     = progress,
-            .clear_signal = false,
-        };
-
-        ret = rte_eal_remote_launch(dpdk_run_progress, &arg, progress->lcore_id);
-        if (ret) {
-            DPDK_WARN(FI_LOG_DOMAIN, "unable to start progress lcore thread\n");
-            ret = -ret;
+    /* Process remaining prefetched packets */
+    for (; j < rx_count; j++) {
+        struct rte_ether_hdr *eth_hdr    = rte_pktmbuf_mtod(pkts_burst[j], struct rte_ether_hdr *);
+        uint16_t              ether_type = rte_be_to_cpu_16(eth_hdr->ether_type);
+        // TODO: We do not support VLAN or VXLAN yet. See dpdk-playground for an example
+        switch (rte_be_to_cpu_16(eth_hdr->ether_type)) {
+        case RTE_ETHER_TYPE_ARP:
+            DPDK_INFO(FI_LOG_EP_DATA, "Received ARP packet\n");
+            arp_receive(domain->res, pkts_burst[j]);
+            rte_pktmbuf_free(pkts_burst[j]);
+            break;
+        case RTE_ETHER_TYPE_IPV4:
+            reassembled = reassemble(pkts_burst[j], &domain->lcore_queue_conf, 0, cur_tsc);
+            if (reassembled) {
+                process_rx_packet(domain, reassembled);
+            }
+            break;
+        case RTE_ETHER_TYPE_IPV6:
+            // [Weijia]: IPv6 needs more care.
+            DPDK_INFO(FI_LOG_EP_DATA, "IPv6 is not supported yet\n");
+            rte_pktmbuf_free(pkts_burst[j]);
+            break;
+        default:
+            DPDK_INFO(FI_LOG_EP_DATA, "Unknown Ether type %#x\n",
+                      rte_be_to_cpu_16(eth_hdr->ether_type));
+            rte_pktmbuf_free(pkts_burst[j]);
+            break;
         }
 
+        rte_ip_frag_free_death_row(&domain->lcore_queue_conf.death_row, PREFETCH_OFFSET);
+    }
+} /* do_receive */
+
+/* Make forward progress on the queue pair. */
+static void progress_ep(struct dpdk_ep *ep) {
+    struct dlist_entry     *cur, *tmp;
+    struct dpdk_xfer_entry *send_xfer, *next;
+    uint32_t                psn;
+    int                     scount, ret;
+
+    /* The following is a per-EP receive we can enable only if we support NIC filtering */
+    // TODO: Consider checking if the NIC supports NIC filtering, and enabling this
+    // in alternative to the process_receive_queue() call in the main loop.
+    // send_xfer = container_of(&ep->sq.active_head, struct dpdk_xfer_entry, entry);
+    // process_receive_queue(ep, send_xfer);
+
+    /* Call any timers only once per millisecond */
+    sweep_unacked_packets(ep);
+
+    /* Process READ OPCODE Response last segments. */
+    while (!binheap_empty(ep->remote_ep.recv_rresp_last_psn)) {
+        binheap_peek(ep->remote_ep.recv_rresp_last_psn, &psn);
+        if (psn < ep->remote_ep.recv_ack_psn) {
+            /* We have received all prior packets, so since we have
+             * received the RDMA READ Response segment with L=1, we
+             * are guaranteed to have placed all data corresponding
+             * to this RDMA READ Response, and can complete the
+             * corresponding WQE. The heap ensures that we process
+             * the segments in the correct order, and
+             * try_complete_wqe() ensures that we do not complete an
+             * RDMA READ request out of order. */
+            send_xfer = find_first_rdma_read_atomic(ep);
+            if (!(WARN_ONCE(!send_xfer, "No RDMA READ request pending\n"))) {
+                send_xfer->state = SEND_XFER_COMPLETE;
+                try_complete_wqe(ep, send_xfer);
+            }
+            binheap_pop(ep->remote_ep.recv_rresp_last_psn);
+        } else {
+            break;
+        }
+    }
+
+    scount = 0;
+    dlist_foreach_safe(&ep->sq.active_head, cur, tmp) {
+        send_xfer = container_of(cur, struct dpdk_xfer_entry, entry);
+        if (cur->next) {
+            next = container_of(cur->next, struct dpdk_xfer_entry, entry);
+            rte_prefetch0(next);
+        }
+        assert(send_xfer->state != SEND_XFER_INIT);
+        progress_send_xfer(ep, send_xfer);
+        if (send_xfer->state == SEND_XFER_TRANSFER) {
+            scount++;
+        }
+    }
+
+    if (scount == 0) {
+        ret = rte_ring_dequeue(ep->sq.ring, (void **)&send_xfer);
+        if (ret == 0) {
+            assert(send_xfer->state == SEND_XFER_INIT);
+            send_xfer->state = SEND_XFER_TRANSFER;
+            switch (send_xfer->opcode) {
+            case xfer_send_with_imm:
+            case xfer_write_with_imm:
+            case xfer_send:
+                send_xfer->msn = send_xfer->remote_ep->next_send_msn++;
+                break;
+            case xfer_read:
+            case xfer_atomic:
+                send_xfer->msn = send_xfer->remote_ep->next_read_msn++;
+                break;
+            case xfer_write:
+                break;
+            }
+            xfer_queue_add_active(&ep->sq, send_xfer);
+            progress_send_xfer(ep, send_xfer);
+            scount = 1;
+        }
+    }
+
+    scount += respond_next_read_atomic(ep);
+
+    if (ep->remote_ep.trp_flags & trp_ack_update) {
+        if (unlikely(ep->remote_ep.trp_flags & trp_recv_missing)) {
+            send_trp_sack(ep);
+        } else {
+            send_trp_ack(ep);
+        }
+    }
+
+    flush_tx_queue(ep);
+
+} /* progress_ep */
+
+// ================ Main Progress Functions =================
+struct progress_arg {
+    struct dpdk_progress *progress;
+    bool                  clear_signal;
+};
+
+/* This function initializes the progress */
+int dpdk_init_progress(struct dpdk_progress *progress, struct fi_info *info, int lcore_id) {
+    int ret;
+
+    // TODO: this should become a parameter in some way
+    progress->lcore_id = lcore_id;
+    atomic_store(&progress->stop_progress, false);
+    progress->fid.fclass = DPDK_CLASS_PROGRESS;
+    slist_init(&progress->event_list);
+
+    // Mutex to access EP list
+    ret = ofi_genlock_init(&progress->lock, OFI_LOCK_MUTEX);
+    if (ret) {
         return ret;
     }
 
-    // This is the main DPDK lcore loop => one polling thread PER DEVICE (= per domain)
-    int dpdk_run_progress(void *arg) {
+    return 0;
+}
 
-        // Arguments
-        struct progress_arg  *arguments = (struct progress_arg *)arg;
-        struct dpdk_progress *progress  = arguments->progress;
+int dpdk_start_progress(struct dpdk_progress *progress) {
+    int ret;
 
-        struct slist_entry *prev, *cur;
-        struct dpdk_domain *domain = container_of(progress, struct dpdk_domain, progress);
-        struct dpdk_ep     *ep;
+    struct progress_arg arg = {
+        .progress     = progress,
+        .clear_signal = false,
+    };
 
-        while (likely(!atomic_load(&progress->stop_progress))) {
-            // outgoing data plane
-            ofi_genlock_lock(&domain->ep_mutex);
-            slist_foreach(&domain->endpoint_list, cur, prev) {
-                ep = container_of(cur, struct dpdk_ep, entry);
-                switch (atomic_load(&ep->conn_state)) {
-                case ep_conn_state_unbound:
-                    /* code */
-                    break;
-                case ep_conn_state_connecting:
-                case ep_conn_state_connected:
-                    progress_ep(ep);
-                    break;
-                case ep_conn_state_shutdown:
-                    /* code */
-                    break;
-                case ep_conn_state_error:
-                    /* code */
-                    break;
-                default:
-                    break;
-                }
+    ret = rte_eal_remote_launch(dpdk_run_progress, &arg, progress->lcore_id);
+    if (ret) {
+        DPDK_WARN(FI_LOG_DOMAIN, "unable to start progress lcore thread\n");
+        ret = -ret;
+    }
+
+    return ret;
+}
+
+// This is the main DPDK lcore loop => one polling thread PER DEVICE (= per domain)
+int dpdk_run_progress(void *arg) {
+
+    // Arguments
+    struct progress_arg  *arguments = (struct progress_arg *)arg;
+    struct dpdk_progress *progress  = arguments->progress;
+
+    struct slist_entry *prev, *cur;
+    struct dpdk_domain *domain = container_of(progress, struct dpdk_domain, progress);
+    struct dpdk_ep     *ep;
+
+    while (likely(!atomic_load(&progress->stop_progress))) {
+        // outgoing data plane
+        ofi_genlock_lock(&domain->ep_mutex);
+        slist_foreach(&domain->endpoint_list, cur, prev) {
+            ep = container_of(cur, struct dpdk_ep, entry);
+            switch (atomic_load(&ep->conn_state)) {
+            case ep_conn_state_unbound:
+                /* code */
+                break;
+            case ep_conn_state_connecting:
+            case ep_conn_state_connected:
+                progress_ep(ep);
+                break;
+            case ep_conn_state_shutdown:
+                /* code */
+                break;
+            case ep_conn_state_error:
+                /* code */
+                break;
+            default:
+                break;
             }
-            ofi_genlock_unlock(&domain->ep_mutex);
-
-            // handling both data and control incoming packets.
-            do_receive(domain);
-
-            try_match_orphan_sends(domain);
         }
+        ofi_genlock_unlock(&domain->ep_mutex);
 
-        return -1;
+        // handling both data and control incoming packets.
+        do_receive(domain);
+
+        try_match_orphan_sends(domain);
     }
 
-    void dpdk_close_progress(struct dpdk_progress * progress) {
-        printf("dpdk_close_progress: UNIMPLEMENTED\n");
-        atomic_store(&progress->stop_progress, true);
-    }
+    return -1;
+}
+
+void dpdk_close_progress(struct dpdk_progress *progress) {
+    printf("dpdk_close_progress: UNIMPLEMENTED\n");
+    atomic_store(&progress->stop_progress, true);
+}
