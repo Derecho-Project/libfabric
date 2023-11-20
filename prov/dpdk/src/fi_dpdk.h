@@ -61,7 +61,7 @@
 #define DPDK_MAX_EVENTS           1024
 #define DPDK_IOV_LIMIT            8
 #define DPDK_MAX_RMA_IOV          DPDK_IOV_LIMIT
-#define MAX_MR_BUCKETS_PER_DOMAIN 512
+#define MAX_MR_BUCKETS_PER_DOMAIN 64
 
 #define DPDK_NEED_RESP     BIT(1)
 #define DPDK_NEED_ACK      BIT(2)
@@ -128,6 +128,7 @@ struct dpdk_mr {
     uint32_t        lkey;
     uint32_t        rkey;
     int             access;
+    size_t          page_size;
     struct dpdk_mr *next;
 };
 

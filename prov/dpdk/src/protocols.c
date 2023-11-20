@@ -30,7 +30,7 @@ static inline int mbuf_crosses_page_boundary(struct rte_mbuf *m, size_t pg_sz) {
     return (start / pg_sz) != ((end - 1) / pg_sz);
 }
 
-static inline int set_iova_mapping(struct rte_mbuf *sendmsg, size_t page_size) {
+static inline int set_iova_mapping(struct dpdk_domain *domain, struct rte_mbuf *sendmsg) {
     int ret = 0;
     // Get the mbuf pointing to external memory: the last of the chain.
     // IOVA mapping of DPDK-managed memory is already set by DPDK
@@ -52,6 +52,23 @@ static inline int set_iova_mapping(struct rte_mbuf *sendmsg, size_t page_size) {
     // physical addresses. In this case, we need to split in two parts the mbuf containing the
     // user data (as it is allocated on external memory).
     if (rte_eal_iova_mode() != RTE_IOVA_VA) {
+        // Retrieve page size from domain.
+        // TODO: The efficiency can be improved
+        size_t page_size = 0;
+        for (int i = 0; i < MAX_MR_BUCKETS_PER_DOMAIN; i++) {
+            struct dpdk_mr *mr = domain->mr_tbl.entries[i];
+            while (mr) {
+                if (mr->buf <= start_address && start_address < mr->buf + mr->len) {
+                    page_size = mr->page_size;
+                    break;
+                }
+                mr = mr->next;
+            }
+            if (page_size > 0) {
+                break;
+            }
+        }
+
         // Reset the data offset: it causes errors in the driver with IOVA
         // TODO: Maybe this can be avoided by implementing the IP fragmentation
         // manually (copy from the original DPDK version).
@@ -61,8 +78,9 @@ static inline int set_iova_mapping(struct rte_mbuf *sendmsg, size_t page_size) {
         // If mbuf crosses a page boundary, split it in two parts, one per page
         if (mbuf_crosses_page_boundary(ext_mbuf, page_size)) {
 
-            FI_DBG(&dpdk_prov, FI_LOG_EP_DATA, "%s():%i: splitting mbuf crossing page boundary\n",
-                   __func__, __LINE__);
+            FI_DBG(&dpdk_prov, FI_LOG_EP_DATA,
+                   "%s():%i: splitting mbuf crossing page boundary [pg_sz=%lu]\n", __func__,
+                   __LINE__, page_size);
             // 1. Get page boundary starting from last_mbuf->buf_addr (+ data_off)
             uint64_t start         = (uint64_t)start_address;
             uint64_t end           = start + ext_mbuf->data_len;
@@ -114,8 +132,6 @@ void enqueue_ether_frame(struct rte_mbuf *sendmsg, unsigned int ether_type, stru
 
     struct dpdk_domain *domain = container_of(ep->util_ep.domain, struct dpdk_domain, util_domain);
     assert(domain->res);
-    // TODO: retrieve this from the domain!
-    size_t pg_sz = sysconf(_SC_PAGESIZE);
 
     struct rte_ether_hdr *eth =
         rte_pktmbuf_mtod_offset(sendmsg, struct rte_ether_hdr *, ETHERNET_HDR_OFFSET);
@@ -161,7 +177,7 @@ void enqueue_ether_frame(struct rte_mbuf *sendmsg, unsigned int ether_type, stru
             m->ol_flags |= RTE_MBUF_F_TX_IP_CKSUM | RTE_MBUF_F_TX_IPV4;
 
             // Set IOVA mapping for the fragment
-            set_iova_mapping(m, pg_sz);
+            set_iova_mapping(domain, m);
 
             // Append the fragment to the transmission queue
             *(ep->txq_end++) = m;
@@ -177,7 +193,7 @@ void enqueue_ether_frame(struct rte_mbuf *sendmsg, unsigned int ether_type, stru
 
     } else {
         // Set IOVA mapping
-        set_iova_mapping(sendmsg, pg_sz);
+        set_iova_mapping(domain, sendmsg);
 
         // Append the mbuf chain to the transmission queue
         *(ep->txq_end++) = sendmsg;
@@ -932,6 +948,11 @@ void do_rdmap_write(struct dpdk_ep *ep, struct dpdk_xfer_entry *wqe) {
         sendmsg->pkt_len += header_length;
 
         payload_length = RTE_MIN(mtu, wqe->total_length - wqe->bytes_sent);
+
+        // Bugfix. Adjust buf_addr of the mbuf. TODO: WHY??? Not needed in the other cases...
+        // That was causing a significant issue and making the program incorrect
+        sendmsg->buf_addr = (void *)sendmsg + sendmsg->data_off + sendmsg->priv_size;
+
         new_rdmap =
             rte_pktmbuf_mtod_offset(sendmsg, struct rdmap_tagged_packet *, RDMAP_HDR_OFFSET);
         new_rdmap->head.ddp_flags =
