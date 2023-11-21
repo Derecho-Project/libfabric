@@ -22,13 +22,12 @@
 
 #include <ofi.h>
 
-#define MR_SIZE 65536 // This will become a parameter of the test
+#define MR_SIZE 33554432 // This will become a parameter of the test
 
 #define LF_VERSION         OFI_VERSION_LATEST
 #define MAX_LF_ADDR_SIZE   128 - sizeof(uint32_t) - 2 * sizeof(uint64_t)
 #define CONF_RDMA_TX_DEPTH 256
 #define CONF_RDMA_RX_DEPTH 256
-#define MAX_PAYLOAD_SIZE   1472
 
 #ifndef MAP_HUGE_SHIFT
 /* older kernels (or FreeBSD) will not have this define */
@@ -56,7 +55,6 @@ volatile bool queue_stop = false;
     }
 
 #define MSG              1024
-#define MAX_PAYLOAD_SIZE MR_SIZE
 #define MIN_PAYLOAD_SIZE 1
 
 typedef enum role {
@@ -209,8 +207,7 @@ int parse_arguments(int argc, char *argv[], test_config_t *config) {
                 fprintf(stderr, "! Invalid value for --size option: %s\n", argv[i]);
                 return -1;
             }
-            if (config->payload_size < MIN_PAYLOAD_SIZE || config->payload_size > MAX_PAYLOAD_SIZE)
-            {
+            if (config->payload_size < MIN_PAYLOAD_SIZE || config->payload_size > MR_SIZE) {
                 fprintf(stderr, "! Invalid value for --size option: %s\n", argv[i]);
                 return -1;
             }
