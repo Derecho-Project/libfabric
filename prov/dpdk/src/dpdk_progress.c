@@ -347,8 +347,7 @@ static int process_rdma_send(struct dpdk_ep *ep, struct packet_context *orig, bo
     offset         = rte_be_to_cpu_32(rdmap->mo);
     payload_length = orig->ddp_seg_length - sizeof(struct rdmap_untagged_packet);
     if (offset + payload_length > xfer_e->total_length) {
-        DPDK_INFO(FI_LOG_EP_CTRL,
-                  "<ep=%" PRIx16 "> DROP: offset=%zu + payload_length=%zu > wr_len=%zu\n",
+        DPDK_INFO(FI_LOG_EP_CTRL, "<ep=%u> DROP: offset=%zu + payload_length=%zu > wr_len=%zu\n",
                   ep->udp_port, offset, payload_length, xfer_e->total_length);
         do_rdmap_terminate(ep, orig, ddp_error_untagged_message_too_long);
         return -1;
@@ -363,10 +362,6 @@ static int process_rdma_send(struct dpdk_ep *ep, struct packet_context *orig, bo
         xfer_e->input_size = offset + payload_length;
     }
 
-    // if (retry) {
-    //     DPDK_DBG(FI_LOG_EP_CTRL, "<ep=%u> Found match for previously orphan SEND (msn=%u)!\n",
-    //              ep->udp_port, msn);
-    // }
     DPDK_DBG(FI_LOG_EP_CTRL, "<ep=%u> recv_size=%u, iov_count=%u, data_buffer=%p\n", ep->udp_port,
              xfer_e->recv_size + payload_length, xfer_e->iov_count, xfer_e->iov[0].iov_base);
 
