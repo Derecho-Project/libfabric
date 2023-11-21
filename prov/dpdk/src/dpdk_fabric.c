@@ -339,7 +339,7 @@ int create_dpdk_domain_resources(struct fi_info *info, struct dpdk_domain_resour
         sprintf(name, "lf.%s.cmxr", res->domain_name);
     }
     res->cm_tx_ring =
-        rte_ring_create(name, cfg_cm_ring_size, socket_id, RING_F_MP_RTS_ENQ | RING_F_SC_DEQ);
+        rte_ring_create(name, cfg_cm_ring_size, socket_id, RING_F_SP_ENQ | RING_F_SC_DEQ);
     if (!res->cm_tx_ring) {
         DPDK_WARN(FI_LOG_FABRIC, "failed to create cm_tx_ring, error:%s.\n",
                   rte_strerror(rte_errno));
@@ -359,10 +359,10 @@ int create_dpdk_domain_resources(struct fi_info *info, struct dpdk_domain_resour
     // Dimension of the CP mempool (must be power of 2)
     size_t pool_size = 1024;
     // Dimension of the mbufs in the mempool. Must contain at least an Ethernet frame + private
-    // DPDK data (see documentation). Must be at least 384 bytes for the Intel IGC driver, and at
-    // least 1152 for the Intel ie40 driver.
+    // DPDK data (see documentation). Must be at least 384 bytes for the Intel IGC driver, at
+    // least 1152 for the Intel ie40 driver, and at least 1636 for Azure DPDK.
     size_t mbuf_size = RTE_MAX(
-        1152, RTE_ETHER_HDR_LEN + sizeof(struct rte_ipv4_hdr) + sizeof(struct rte_udp_hdr) +
+        2048, RTE_ETHER_HDR_LEN + sizeof(struct rte_ipv4_hdr) + sizeof(struct rte_udp_hdr) +
                   sizeof(struct dpdk_cm_msg_hdr) + DPDK_MAX_CM_DATA_SIZE + RTE_ETHER_CRC_LEN);
     // Other parameters
     size_t cache_size   = 64;

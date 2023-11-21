@@ -19,13 +19,12 @@
 
 #include <ofi.h>
 
-#define MR_SIZE 67108864 //741824 // This will become a parameter of the test
+#define MR_SIZE 33554432 // This will become a parameter of the test
 
 #define LF_VERSION         OFI_VERSION_LATEST
 #define MAX_LF_ADDR_SIZE   128 - sizeof(uint32_t) - 2 * sizeof(uint64_t)
 #define CONF_RDMA_TX_DEPTH 256
 #define CONF_RDMA_RX_DEPTH 256
-#define MAX_PAYLOAD_SIZE   1472
 
 // This can be moved once we relax the requirements on the DPDK MR alignment and size
 #define ALIGN_TO(i, p)                                                                             \
@@ -281,7 +280,7 @@ int register_memory_region() {
 
     // Important: memory allocation should be page aligned to the page size used by the DPDK
     // provider. The length must be a multiple of the page size.
-    size_t page_size = sysconf(_SC_PAGESIZE);
+    size_t page_size = 2097152; // sysconf(_SC_PAGESIZE);
     g_mr.size        = ALIGN_TO(MR_SIZE, page_size);
     g_mr.buffer      = alloc_mem(g_mr.size, (page_size > sysconf(_SC_PAGESIZE)));
 

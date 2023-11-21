@@ -347,8 +347,7 @@ static int process_rdma_send(struct dpdk_ep *ep, struct packet_context *orig, bo
     offset         = rte_be_to_cpu_32(rdmap->mo);
     payload_length = orig->ddp_seg_length - sizeof(struct rdmap_untagged_packet);
     if (offset + payload_length > xfer_e->total_length) {
-        DPDK_INFO(FI_LOG_EP_CTRL,
-                  "<ep=%" PRIx16 "> DROP: offset=%zu + payload_length=%zu > wr_len=%zu\n",
+        DPDK_INFO(FI_LOG_EP_CTRL, "<ep=%u> DROP: offset=%zu + payload_length=%zu > wr_len=%zu\n",
                   ep->udp_port, offset, payload_length, xfer_e->total_length);
         do_rdmap_terminate(ep, orig, ddp_error_untagged_message_too_long);
         return -1;
@@ -363,10 +362,6 @@ static int process_rdma_send(struct dpdk_ep *ep, struct packet_context *orig, bo
         xfer_e->input_size = offset + payload_length;
     }
 
-    // if (retry) {
-    //     DPDK_DBG(FI_LOG_EP_CTRL, "<ep=%u> Found match for previously orphan SEND (msn=%u)!\n",
-    //              ep->udp_port, msn);
-    // }
     DPDK_DBG(FI_LOG_EP_CTRL, "<ep=%u> recv_size=%u, iov_count=%u, data_buffer=%p\n", ep->udp_port,
              xfer_e->recv_size + payload_length, xfer_e->iov_count, xfer_e->iov[0].iov_base);
 
@@ -988,12 +983,11 @@ static void process_rx_packet(struct dpdk_domain *domain, struct rte_mbuf *mbuf)
         goto free_and_exit;
     }
 
-    // [Weijia]: IPv6 needs more care.
+    // TODO:[Weijia]: IPv6 needs more care.
     if (ipv4_hdr->dst_addr != domain->res->local_cm_addr.sin_addr.s_addr) {
-        DPDK_DBG(FI_LOG_EP_DATA,
-                 "<dev=%s> Drop packet with IPv4 dst addr %" PRIx32 "; expected %" PRIx32 "\n",
-                 domain->util_domain.name, rte_be_to_cpu_32(ipv4_hdr->dst_addr),
-                 rte_be_to_cpu_32(domain->res->local_cm_addr.sin_addr.s_addr));
+        RTE_LOG(DEBUG, USER1, "<dev=%s> Drop packet with IPv4 dst addr %u; expected %u\n",
+                domain->util_domain.name, rte_be_to_cpu_32(ipv4_hdr->dst_addr),
+                rte_be_to_cpu_32(domain->res->local_cm_addr.sin_addr.s_addr));
         goto free_and_exit;
     }
 
@@ -1228,7 +1222,7 @@ static void do_receive(struct dpdk_domain *domain) {
         uint16_t              ether_type = rte_be_to_cpu_16(eth_hdr->ether_type);
         switch (rte_be_to_cpu_16(eth_hdr->ether_type)) {
         case RTE_ETHER_TYPE_ARP:
-            DPDK_INFO(FI_LOG_EP_DATA, "Received ARP packet\n");
+            DPDK_INFO(FI_LOG_EP_DATA, "Received ARP packet.\n");
             arp_receive(domain->res, pkts_burst[j]);
             rte_pktmbuf_free(pkts_burst[j]);
             break;
@@ -1244,7 +1238,7 @@ static void do_receive(struct dpdk_domain *domain) {
             rte_pktmbuf_free(pkts_burst[j]);
             break;
         default:
-            DPDK_INFO(FI_LOG_EP_DATA, "Unknown Ether type %#" PRIx16 "\n",
+            DPDK_INFO(FI_LOG_EP_DATA, "Unknown Ether type %#x\n",
                       rte_be_to_cpu_16(eth_hdr->ether_type));
             rte_pktmbuf_free(pkts_burst[j]);
             break;
@@ -1274,7 +1268,7 @@ static void do_receive(struct dpdk_domain *domain) {
             rte_pktmbuf_free(pkts_burst[j]);
             break;
         default:
-            DPDK_INFO(FI_LOG_EP_DATA, "Unknown Ether type %#" PRIx16 "\n",
+            DPDK_INFO(FI_LOG_EP_DATA, "Unknown Ether type %#x\n",
                       rte_be_to_cpu_16(eth_hdr->ether_type));
             rte_pktmbuf_free(pkts_burst[j]);
             break;

@@ -157,9 +157,10 @@ static int dpdk_mr_reg(struct fid *fid, const void *buf, size_t len, uint64_t ac
     free(iovas);
 
     // 7) Setup memory keys
-    dpdk_mr->rkey   = new_key;
-    dpdk_mr->lkey   = new_key;
-    dpdk_mr->access = access;
+    dpdk_mr->rkey      = new_key;
+    dpdk_mr->lkey      = new_key;
+    dpdk_mr->access    = access;
+    dpdk_mr->page_size = page_size;
 
     // 8) Add the MR to the MR table of the domain
     uint32_t hash = new_key % mr_tbl->capacity;
@@ -170,9 +171,9 @@ static int dpdk_mr_reg(struct fid *fid, const void *buf, size_t len, uint64_t ac
     ofi_genlock_unlock(&dpdk_domain->mr_tbl_lock);
 
     FI_DBG(&dpdk_prov, FI_LOG_MR,
-           "%s():%i: Registered memory region with key=%lu addr=[%p, %p] size=%lu\n", __func__,
-           __LINE__, new_key, data_buffer_orig, data_buffer_orig + data_buffer_len,
-           data_buffer_len);
+           "%s():%i: Registered memory region with key=%lu addr=[%p, %p] size=%lu, pg_sz=%lu\n",
+           __func__, __LINE__, new_key, data_buffer_orig, data_buffer_orig + data_buffer_len,
+           data_buffer_len, page_size);
 
     return FI_SUCCESS;
 
