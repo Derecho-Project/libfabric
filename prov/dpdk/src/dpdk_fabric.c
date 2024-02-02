@@ -387,7 +387,7 @@ int create_dpdk_domain_resources(struct fi_info *info, struct dpdk_domain_resour
         sprintf(rx_pool_name, "rx_pool_%s", res->domain_name);
     }
     // Dimension of the TX mempool (must be power of 2)
-    pool_size = rte_align32pow2(2 * MAX_ENDPOINTS_PER_APP * dpdk_default_rx_size);
+    pool_size = rte_align32pow2(16 * MAX_ENDPOINTS_PER_APP * dpdk_default_rx_size);
     // Dimension of the mbufs in the mempool. Must contain at least an Ethernet frame + private
     // DPDK data (see documentation)
     mbuf_size = RTE_MBUF_DEFAULT_DATAROOM + RTE_PKTMBUF_HEADROOM;

@@ -144,7 +144,7 @@ int dpdk_domain_open(struct fid_fabric *fabric_fid, struct fi_info *info,
     // Initialize the packet_context ring for orphan send descriptors
     char name[46];
     sprintf(name, "pkt_ctx_ring_%s", res->domain_name);
-    unsigned int ring_size = 65536;
+    unsigned int ring_size = 65536 * MAX_ENDPOINTS_PER_APP;
     domain->free_ctx_ring =
         rte_ring_create(name, ring_size, rte_socket_id(), RING_F_SP_ENQ | RING_F_SC_DEQ);
     if (!domain->free_ctx_ring) {
