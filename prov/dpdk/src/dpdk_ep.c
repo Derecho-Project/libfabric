@@ -318,6 +318,27 @@ int dpdk_endpoint(struct fid_domain *domain, struct fi_info *info, struct fid_ep
                  rte_strerror(rte_errno));
     }
 
+    // Initialize the ring to handle orphan send descriptors.
+    // Orphan sends are send requests for which the user has not posted a corresponding receive
+    // request (yet).
+    // TODO: shouldn't we put a more sensible limit here?
+    char name[46];
+    sprintf(name, "orphan_ring_%u", ep->udp_port);
+    unsigned int ring_size = 1048576;
+    ep->free_ctx_ring =
+        rte_ring_create(name, ring_size, rte_socket_id(), RING_F_SP_ENQ | RING_F_SC_DEQ);
+    if (!ep->free_ctx_ring) {
+        ret = -FI_ENOMEM;
+        rte_exit(EXIT_FAILURE, "Cannot create orphan send ring for EP %u: %s\n", ep->udp_port,
+                 rte_strerror(rte_errno));
+    }
+    for (int i = 0; i < ring_size; i++) {
+        struct packet_context *ctx = malloc(sizeof(struct packet_context));
+        rte_ring_enqueue(ep->free_ctx_ring, ctx);
+    }
+    // Initialize the list of orphan sends
+    dlist_init(&ep->orphan_sends);
+
     // Add this EP to EP list of the domain, and increase the associated values
     // MUST be done while holding the EP MUTEX.
     // [Weijia] Is it possible that num_endpoints being growing beyond MAX_ENDPOINTS_PER_APP,

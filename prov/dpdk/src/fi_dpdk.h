@@ -315,10 +315,6 @@ struct dpdk_domain {
     struct dpdk_mr_table mr_tbl;
     struct ofi_genlock   mr_tbl_lock;
 
-    // Ring and list for orphan SENDS
-    struct rte_ring   *free_ctx_ring;
-    struct dlist_entry orphan_sends;
-
     // Progress thread data
     struct dpdk_progress progress;
 
@@ -391,7 +387,11 @@ struct dpdk_ep {
     struct rte_mempool *tx_hdr_mempool;
     struct rte_mempool *tx_ddp_mempool;
 
-    // This is necessary because we keep EPs in a list
+    // Ring and list for orphan SENDS
+    struct rte_ring   *free_ctx_ring;
+    struct dlist_entry orphan_sends;
+
+    // We keep EPs in a list
     struct slist_entry entry;
 };
 

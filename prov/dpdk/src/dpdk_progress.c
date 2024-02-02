@@ -333,12 +333,13 @@ static int process_rdma_send(struct dpdk_ep *ep, struct packet_context *orig, bo
             DPDK_DBG(FI_LOG_EP_CTRL, "<ep=%u> Received SEND msn=%u to empty receive queue\n",
                      ep->udp_port, msn);
             // This send is orphan: we will try to complete it later
-            struct dpdk_domain *domain =
-                container_of(ep->util_ep.domain, struct dpdk_domain, util_domain);
             struct packet_context *ctx;
-            rte_ring_dequeue(domain->free_ctx_ring, (void **)&ctx);
+            if (unlikely(rte_ring_dequeue(ep->free_ctx_ring, (void **)&ctx) < 0)) {
+                DPDK_WARN(FI_LOG_EP_CTRL, "<ep=%u> No space left in orphan list\n", ep->udp_port);
+                rte_panic("<ep=%u> No space left in orphan list\n", ep->udp_port);
+            }
             *ctx = *orig;
-            dlist_insert_tail(&ctx->entry, &domain->orphan_sends);
+            dlist_insert_tail(&ctx->entry, &ep->orphan_sends);
             return 1;
         }
     }
@@ -401,30 +402,29 @@ static int process_rdma_send(struct dpdk_ep *ep, struct packet_context *orig, bo
 } /* process_send */
 
 /* Try to match SEND requests with RECV requests that were posted later */
-static void try_match_orphan_sends(struct dpdk_domain *domain) {
+static void try_match_orphan_sends(struct dpdk_ep *ep) {
     struct packet_context *ctx;
     struct dlist_entry    *tmp;
 
-    if (dlist_empty(&domain->orphan_sends)) {
+    if (dlist_empty(&ep->orphan_sends)) {
+        return;
+    }
+
+    // Dequeue the recv entries still in the ring. If none, continue to wait.
+    // If some, there could be a match, so try to process the send again.
+    dequeue_recv_entries(ep);
+    if (dlist_empty(&ep->rq.active_head)) {
         return;
     }
 
     // For each orphan, try to re-process the send
-    dlist_foreach_container_safe(&domain->orphan_sends, struct packet_context, ctx, entry, tmp) {
-
-        // Dequeue the recv entries still in the ring. If none, continue to wait.
-        // If some, there could be a match, so try to process the send again.
-        dequeue_recv_entries(ctx->dst_ep);
-        if (dlist_empty(&ctx->dst_ep->rq.active_head)) {
-            continue;
-        }
-
-        // In case the match is found (0), or in case of error (<0),  the orphan is removed from the
-        // list, the mbuf is freed, the descriptor is reused. Otherwise, just wait more.
-        if (process_rdma_send(ctx->dst_ep, ctx, true) <= 0) {
+    dlist_foreach_container_safe(&ep->orphan_sends, struct packet_context, ctx, entry, tmp) {
+        // In case the match is found (0), or in case of error (<0),  the orphan is removed from
+        // the list, the mbuf is freed, the descriptor is reused. Otherwise, just wait more.
+        if (process_rdma_send(ep, ctx, true) <= 0) {
             dlist_remove(&ctx->entry);
             rte_pktmbuf_free(ctx->mbuf_head);
-            rte_ring_enqueue(domain->free_ctx_ring, ctx);
+            rte_ring_enqueue(ep->free_ctx_ring, ctx);
         }
     }
 }
@@ -755,6 +755,7 @@ static void sweep_unacked_packets(struct dpdk_ep *ep) {
             }
             DPDK_WARN(FI_LOG_EP_CTRL, "Shutdown EP %u\n", ep->udp_port);
             // TODO: Handle the shutdown
+            rte_panic("<ep=%u> error retransmitting psn=%u\n", ep->udp_port, pending->psn);
             // Should we free the mbuf here?
             atomic_store(&ep->conn_state, ep_conn_state_error);
             if (p == ee->tx_head) {
@@ -1367,6 +1368,7 @@ static void progress_ep(struct dpdk_ep *ep) {
 
     flush_tx_queue(ep);
 
+    try_match_orphan_sends(ep);
 } /* progress_ep */
 
 // ================ Main Progress Functions =================
@@ -1449,8 +1451,6 @@ int dpdk_run_progress(void *arg) {
 
         // handling both data and control incoming packets.
         do_receive(domain);
-
-        try_match_orphan_sends(domain);
     }
 
     return -1;
