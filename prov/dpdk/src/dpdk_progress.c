@@ -1198,7 +1198,7 @@ only_exit:
 /* Receive action on the network. Takes care of IPv4 defragmentation, and foreach
  * reassembled packet invokes the process_rx_packet function */
 static void do_receive(struct dpdk_domain *domain) {
-    struct rte_mbuf *pkts_burst[dpdk_default_tx_burst_size];
+    struct rte_mbuf *pkts_burst[dpdk_default_rx_burst_size];
     struct rte_mbuf *reassembled;
     uint16_t         rx_count;
     uint64_t         cur_tsc;
