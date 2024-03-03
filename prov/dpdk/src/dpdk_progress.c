@@ -324,7 +324,7 @@ static int process_rdma_send(struct dpdk_ep *ep, struct packet_context *orig, bo
             /* This is a duplicate of a previously received
              * message --- should never happen since TRP will not
              * give us a duplicate packet. */
-            expected_msn = container_of(&ep->rq.active_head, struct dpdk_xfer_entry, entry)->msn;
+            expected_msn = container_of((&ep->rq.active_head)->next, struct dpdk_xfer_entry, entry)->msn;
             DPDK_WARN(FI_LOG_EP_CTRL, "<ep=%u> Received msn=%u but expected msn=%u\n", ep->udp_port,
                       msn, expected_msn);
             do_rdmap_terminate(ep, orig, ddp_error_untagged_invalid_msn);
