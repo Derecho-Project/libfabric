@@ -321,27 +321,28 @@ static int process_rdma_send(struct dpdk_ep *ep, struct packet_context *orig, bo
     // duplicate or a message with no matching recv request.
     if (ret < 0) {
         if (!dlist_empty(&ep->rq.active_head)) {
-            /* This is a duplicate of a previously received
-             * message --- should never happen since TRP will not
-             * give us a duplicate packet. */
-            expected_msn = container_of(&ep->rq.active_head, struct dpdk_xfer_entry, entry)->msn;
-            DPDK_WARN(FI_LOG_EP_CTRL, "<ep=%u> Received msn=%u but expected msn=%u\n", ep->udp_port,
+            expected_msn = container_of((&ep->rq.active_head)->next, struct dpdk_xfer_entry, entry)->msn;
+            if (msn < expected_msn) {
+                /* This is a duplicate of a previously received
+                * message --- should never happen since TRP will not
+                * give us a duplicate packet. */
+                DPDK_WARN(FI_LOG_EP_CTRL, "<ep=%u> Received msn=%u but expected msn=%u\n", ep->udp_port,
                       msn, expected_msn);
-            do_rdmap_terminate(ep, orig, ddp_error_untagged_invalid_msn);
-            return -1;
-        } else {
-            DPDK_DBG(FI_LOG_EP_CTRL, "<ep=%u> Received SEND msn=%u to empty receive queue\n",
-                     ep->udp_port, msn);
-            // This send is orphan: we will try to complete it later
-            struct packet_context *ctx;
-            if (unlikely(rte_ring_dequeue(ep->free_ctx_ring, (void **)&ctx) < 0)) {
-                DPDK_WARN(FI_LOG_EP_CTRL, "<ep=%u> No space left in orphan list\n", ep->udp_port);
-                rte_panic("<ep=%u> No space left in orphan list\n", ep->udp_port);
+                do_rdmap_terminate(ep, orig, ddp_error_untagged_invalid_msn);
+                return -1;
             }
-            *ctx = *orig;
-            dlist_insert_tail(&ctx->entry, &ep->orphan_sends);
-            return 1;
+            // Else, just proceed by queuing the packet as an orphan send
         }
+        DPDK_DBG(FI_LOG_EP_CTRL, "<ep=%u> Received SEND msn=%u to empty receive queue\n", ep->udp_port, msn);
+        // This send is orphan: we will try to complete it later
+        struct packet_context *ctx;
+        if (unlikely(rte_ring_dequeue(ep->free_ctx_ring, (void **)&ctx) < 0)) {
+            DPDK_WARN(FI_LOG_EP_CTRL, "<ep=%u> No space left in orphan list\n", ep->udp_port);
+            rte_panic("<ep=%u> No space left in orphan list\n", ep->udp_port);
+        }
+        *ctx = *orig;
+        dlist_insert_tail(&ctx->entry, &ep->orphan_sends);
+        return 1;
     }
 
     // Process the matching request
